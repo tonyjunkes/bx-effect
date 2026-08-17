@@ -1,0 +1,237 @@
+import models.effect.Effect@bxEffect;
+import models.effect.EffectRuntime@bxEffect;
+import models.effect.Scope@bxEffect;
+import models.effect.context.Context@bxEffect;
+import models.effect.context.Layer@bxEffect;
+import models.effect.context.ServiceTag@bxEffect;
+import models.effect.testing.TestClock@bxEffect;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Scope and resource lifecycles", () => {
+
+			it( "closes Scope finalizers once in LIFO order", () => {
+				var activeScope = new Scope();
+				var events = [];
+				activeScope.addFinalizer( () => events.append( "first" ), Context::empty() );
+				activeScope.addFinalizer( () => events.append( "second" ), Context::empty() );
+
+				for ( var entry in activeScope.close() ) {
+					entry.finalizer();
+				}
+
+				expect( events ).toBe( [ "second", "first" ] );
+				expect( activeScope.isClosed() ).toBeTrue();
+				expect( activeScope.close() ).toBe( [] );
+				expect( () => activeScope.addFinalizer( () => {}, Context::empty() ) )
+					.toThrow( type: "BXEffect.ScopeClosed" );
+				expect( () => activeScope.addChild( {
+					isDone : () => true,
+					interrupt : () => null
+				} ) ).toThrow( type: "BXEffect.ScopeClosed" );
+			} );
+
+			it( "runs ensuring finalizers for success, expected failure, and defects", () => {
+				var events = [];
+				var finalizer = Effect::sync( () => events.append( "cleanup" ) );
+
+				expect( Effect::runSync( Effect::succeed( "ok" ).ensuring( finalizer ) ) )
+					.toBe( "ok" );
+				expect( Effect::runSyncExit( Effect::fail( "bad" ).ensuring( finalizer ) ).cause().error() )
+					.toBe( "bad" );
+				Effect::runSyncExit(
+					Effect::sync( () => {
+						throw( type: "BXEffect.TestDefect", message: "boom" );
+					} ).ensuring( finalizer )
+				);
+
+				expect( events ).toBe( [ "cleanup", "cleanup", "cleanup" ] );
+			} );
+
+			it( "passes the completed Exit to onExit", () => {
+				var observed = [];
+				var successful = Effect::succeed( "value" ).onExit( ( result ) => Effect::sync( () => {
+					observed.append( result.isSuccess() ? result.value() : "failed" );
+				} ) );
+				var failed = Effect::fail( "bad" ).onExit( ( result ) => Effect::sync( () => {
+					observed.append( result.isFailure() ? result.cause().error() : "succeeded" );
+				} ) );
+
+				Effect::runSync( successful );
+				Effect::runSyncExit( failed );
+
+				expect( observed ).toBe( [ "value", "bad" ] );
+			} );
+
+			it( "releases acquired resources after success and expected failure", () => {
+				var events = [];
+				var resource = Effect::acquireRelease(
+					Effect::sync( () => {
+						events.append( "acquire" );
+						return "connection";
+					} ),
+					( connection ) => Effect::sync( () => events.append( "release:#connection#" ) )
+				);
+
+				var succeeding = resource.flatMap( ( connection ) => Effect::sync( () => {
+					events.append( "use:#connection#" );
+					return "done";
+				} ) );
+				expect( Effect::runSync( succeeding ) ).toBe( "done" );
+				expect( events ).toBe( [ "acquire", "use:connection", "release:connection" ] );
+
+				events = [];
+				var failing = resource.flatMap( ( ignored ) => Effect::fail( "bad" ) );
+				var failedExit = Effect::runSyncExit( failing );
+				expect( failedExit.cause().error() ).toBe( "bad" );
+				expect( events ).toBe( [ "acquire", "release:connection" ] );
+			} );
+
+			it( "closes every acquired resource in reverse acquisition order", () => {
+				var events = [];
+				var first = Effect::acquireRelease(
+					Effect::sync( () => events.append( "acquire-1" ) ),
+					( ignored ) => Effect::sync( () => events.append( "release-1" ) )
+				);
+				var second = Effect::acquireRelease(
+					Effect::sync( () => events.append( "acquire-2" ) ),
+					( ignored ) => Effect::sync( () => events.append( "release-2" ) )
+				);
+
+				Effect::runSync( first.flatMap( ( ignoredFirst ) => second ) );
+
+				expect( events ).toBe( [ "acquire-1", "acquire-2", "release-2", "release-1" ] );
+			} );
+
+			it( "preserves primary and cleanup failures while still running all cleanup", () => {
+				var events = [];
+				var first = Effect::acquireRelease(
+					Effect::succeed( "first" ),
+					( ignored ) => Effect::sync( () => events.append( "release-1" ) )
+				);
+				var second = Effect::acquireRelease(
+					Effect::succeed( "second" ),
+					( ignored ) => Effect::sync( () => {
+						events.append( "release-2" );
+						throw( type: "BXEffect.TestCleanup", message: "cleanup failed" );
+					} )
+				);
+				var exit = Effect::runSyncExit(
+					first.flatMap( ( ignoredFirst ) => second )
+						.flatMap( ( ignoredSecond ) => Effect::fail( "primary" ) )
+				);
+
+				expect( events ).toBe( [ "release-2", "release-1" ] );
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Sequential" );
+				expect( exit.cause().left().kind() ).toBe( "Fail" );
+				expect( exit.cause().left().error() ).toBe( "primary" );
+				expect( exit.cause().right().kind() ).toBe( "Die" );
+				expect( exit.cause().right().defect().message ).toBe( "cleanup failed" );
+			} );
+
+			it( "builds scoped Layers with cleanup after the provided program", () => {
+				var database = ServiceTag::of( "app/Database" );
+				var events = [];
+				var live = Layer::scoped(
+					database,
+					Effect::acquireRelease(
+						Effect::sync( () => {
+							events.append( "acquire" );
+							return "database";
+						} ),
+						( connection ) => Effect::sync( () => events.append( "release:#connection#" ) )
+					)
+				);
+				var program = Effect::service( database )
+					.tap( ( connection ) => Effect::sync( () => events.append( "use:#connection#" ) ) )
+					.provide( live );
+
+				expect( Effect::runSync( program ) ).toBe( "database" );
+				expect( events ).toBe( [ "acquire", "use:database", "release:database" ] );
+			} );
+
+			it( "releases acquired resources after a TestClock timeout interrupts a child", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var events = [];
+				var program = Effect::acquireRelease(
+					Effect::sync( () => {
+						events.append( "acquire" );
+						return "resource";
+					} ),
+					( ignored ) => Effect::sync( () => events.append( "release" ) )
+				).flatMap( ( ignored ) => Effect::sleep( 100 ) )
+					.timeout( 10 );
+
+				var fiber = runtime.runFork( program );
+				awaitClockPending( clock, 2 );
+				clock.advance( 10 );
+				var exit = fiber.await();
+				awaitCondition( () => events.len() == 2 );
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().error()._tag ).toBe( "TimeoutError" );
+				expect( events ).toBe( [ "acquire", "release" ] );
+			} );
+
+			it( "releases acquired resources after TestClock Fiber interruption", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var events = [];
+				var program = Effect::acquireRelease(
+					Effect::sync( () => {
+						events.append( "acquire" );
+						return "resource";
+					} ),
+					( ignored ) => Effect::sync( () => events.append( "release" ) )
+				).flatMap( ( ignored ) => Effect::sleep( 100 ) );
+				var fiber = runtime.runFork( program );
+				awaitClockPending( clock, 1 );
+				fiber.interrupt();
+				fiber.await();
+				awaitCondition( () => events.len() == 2 );
+
+				expect( events ).toBe( [ "acquire", "release" ] );
+			} );
+
+			it( "finalizes an interrupted race loser exactly once", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var releases = new AtomicInteger( 0 );
+				var slow = Effect::acquireRelease(
+					Effect::succeed( "resource" ),
+					( ignored ) => Effect::sync( () => releases.incrementAndGet() )
+				).flatMap( ( ignored ) => Effect::sleep( 100 ).as( "slow" ) );
+				var winner = Effect::sleep( 10 ).as( "winner" );
+				var fiber = runtime.runFork( Effect::race( [ slow, winner ] ) );
+
+				awaitClockPending( clock, 2 );
+				clock.advance( 10 );
+				expect( fiber.join() ).toBe( "winner" );
+				awaitCondition( () => releases.get() == 1 );
+
+				expect( releases.get() ).toBe( 1 );
+				expect( clock.pendingCount() ).toBe( 0 );
+			} );
+
+		} );
+	}
+
+	private function awaitClockPending( required TestClock clock, required numeric expectedCount ) {
+		var clockToCheck = arguments.clock;
+		var expectedPending = arguments.expectedCount;
+		awaitCondition( () => clockToCheck.pendingCount() == expectedPending );
+	}
+
+	private function awaitCondition( required function predicate ) {
+		var deadline = getTickCount() + 1000;
+		while ( !arguments.predicate() && getTickCount() < deadline ) {
+			sleep( 1 );
+		}
+		expect( arguments.predicate() ).toBeTrue();
+	}
+
+}

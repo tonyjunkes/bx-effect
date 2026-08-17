@@ -1,0 +1,73 @@
+import models.effect.Cause@bxEffect;
+import models.effect.Deferred@bxEffect;
+import models.effect.Effect@bxEffect;
+import models.effect.Exit@bxEffect;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Deferred", () => {
+
+			it( "completes lazily once and releases every awaiter with the same value", () => {
+				var deferredValue = Deferred::make();
+				var firstFiber = Effect::runFork( deferredValue.await() );
+				var secondFiber = Effect::runFork( deferredValue.await() );
+
+				expect( deferredValue.isDone() ).toBeFalse();
+				expect( deferredValue.poll().isPresent() ).toBeFalse();
+				expect( Effect::runSync( deferredValue.succeed( "ready" ) ) ).toBeTrue();
+				expect( Effect::runSync( deferredValue.succeed( "ignored" ) ) ).toBeFalse();
+				expect( firstFiber.join() ).toBe( "ready" );
+				expect( secondFiber.join() ).toBe( "ready" );
+				expect( deferredValue.poll().get().value() ).toBe( "ready" );
+			} );
+
+			it( "preserves expected failure, defect, interruption, and complete Exit causes", () => {
+				var failed = Deferred::make();
+				Effect::runSync( failed.fail( "bad" ) );
+				var failedExit = Effect::runSyncExit( failed.await() );
+				expect( failedExit.cause().kind() ).toBe( "Fail" );
+				expect( failedExit.cause().error() ).toBe( "bad" );
+
+				var died = Deferred::make();
+				Effect::runSync( died.die( "broken" ) );
+				expect( Effect::runSyncExit( died.await() ).cause().kind() ).toBe( "Die" );
+
+				var interrupted = Deferred::make();
+				Effect::runSync( interrupted.interrupt( "fiber-1" ) );
+				expect( Effect::runSyncExit( interrupted.await() ).cause().kind() ).toBe( "Interrupt" );
+
+				var complete = Deferred::make();
+				var completeCause = Cause::parallel( Cause::fail( "left" ), Cause::fail( "right" ) );
+				Effect::runSync( complete.complete( Exit::failure( completeCause ) ) );
+				expect( Effect::runSyncExit( complete.await() ).cause().pretty() )
+					.toBe( completeCause.pretty() );
+			} );
+
+			it( "does not let an interrupted awaiter cancel the shared Deferred", () => {
+				var deferredValue = Deferred::make();
+				var interruptedWaiter = Effect::runFork( deferredValue.await() );
+
+				interruptedWaiter.interrupt();
+				var interruptionExit = interruptedWaiter.await();
+
+				expect( interruptionExit.isFailure() ).toBeTrue();
+				expect( interruptionExit.cause().kind() ).toBe( "Interrupt" );
+				expect( deferredValue.isDone() ).toBeFalse();
+				expect( Effect::runSync( deferredValue.succeed( "still available" ) ) ).toBeTrue();
+				expect( Effect::runSync( deferredValue.await() ) ).toBe( "still available" );
+			} );
+
+			it( "rejects non-Exit completion values in the defect channel", () => {
+				var deferredValue = Deferred::make();
+				var completionExit = Effect::runSyncExit( deferredValue.complete( "not an exit" ) );
+
+				expect( completionExit.isFailure() ).toBeTrue();
+				expect( completionExit.cause().kind() ).toBe( "Die" );
+				expect( completionExit.cause().defect().type ).toBe( "BXEffect.InvalidDeferredOutcome" );
+			} );
+
+		} );
+	}
+
+}

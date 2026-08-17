@@ -1,0 +1,138 @@
+import models.effect.Effect@bxEffect;
+import models.effect.PubSub@bxEffect;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "PubSub", () => {
+
+			it( "subscribes lazily and broadcasts only to subscriptions active at publication", () => {
+				var pubSubSource = PubSub::unbounded();
+				var lazySubscription = pubSubSource.subscribe();
+				Effect::runSync( pubSubSource.publish( "before" ) );
+				var firstSubscription = Effect::runSync( lazySubscription );
+				var secondSubscription = Effect::runSync( pubSubSource.subscribe() );
+				expect( firstSubscription.poll().isPresent() ).toBeFalse();
+				expect( secondSubscription.poll().isPresent() ).toBeFalse();
+
+				Effect::runSync( pubSubSource.publish( "broadcast" ) );
+				expect( Effect::runSync( firstSubscription.take() ) ).toBe( "broadcast" );
+				expect( Effect::runSync( secondSubscription.take() ) ).toBe( "broadcast" );
+			} );
+
+			it( "backpressures a bounded publisher until every active subscription has room", () => {
+				var pubSubSource = PubSub::bounded( 1 );
+				var fastSubscription = Effect::runSync( pubSubSource.subscribe() );
+				var slowSubscription = Effect::runSync( pubSubSource.subscribe() );
+				Effect::runSync( pubSubSource.publish( "first" ) );
+				var blockedPublisher = Effect::runFork( pubSubSource.publish( "second" ) );
+				expect( blockedPublisher.isDone() ).toBeFalse();
+
+				expect( Effect::runSync( fastSubscription.take() ) ).toBe( "first" );
+				expect( blockedPublisher.isDone() ).toBeFalse();
+				expect( Effect::runSync( slowSubscription.take() ) ).toBe( "first" );
+				blockedPublisher.join();
+				expect( Effect::runSync( fastSubscription.take() ) ).toBe( "second" );
+				expect( Effect::runSync( slowSubscription.take() ) ).toBe( "second" );
+			} );
+
+			it( "unsubscribes one slow consumer and releases blocked publishers", () => {
+				var pubSubSource = PubSub::bounded( 1 );
+				var activeSubscription = Effect::runSync( pubSubSource.subscribe() );
+				var departingSubscription = Effect::runSync( pubSubSource.subscribe() );
+				Effect::runSync( pubSubSource.publish( "first" ) );
+				var blockedPublisher = Effect::runFork( pubSubSource.publish( "second" ) );
+				expect( blockedPublisher.isDone() ).toBeFalse();
+
+				expect( Effect::runSync( departingSubscription.unsubscribe() ) ).toBeTrue();
+				expect( Effect::runSync( activeSubscription.take() ) ).toBe( "first" );
+				blockedPublisher.join();
+				expect( Effect::runSync( activeSubscription.take() ) ).toBe( "second" );
+				expect( pubSubSource.subscriberCount() ).toBe( 1 );
+			} );
+
+			it( "closes a subscription after withSubscription completes", () => {
+				var pubSubSource = PubSub::unbounded();
+				var result = Effect::runSync( pubSubSource.withSubscription( ( subscription ) =>
+					pubSubSource.publish( "scoped" ).flatMap( () => subscription.take() )
+				) );
+
+				expect( result ).toBe( "scoped" );
+				expect( pubSubSource.subscriberCount() ).toBe( 0 );
+			} );
+
+			it( "turns hub shutdown into expected errors and drops retained subscription values", () => {
+				var pubSubSource = PubSub::unbounded();
+				var subscription = Effect::runSync( pubSubSource.subscribe() );
+				Effect::runSync( pubSubSource.publish( "discarded" ) );
+				expect( Effect::runSync( pubSubSource.shutdown() ) ).toBeTrue();
+				expect( Effect::runSync( pubSubSource.shutdown() ) ).toBeFalse();
+				expect( pubSubSource.isShutdown() ).toBeTrue();
+				expect( subscription.poll().isPresent() ).toBeFalse();
+
+				var takeExit = Effect::runSyncExit( subscription.take() );
+				expect( takeExit.cause().kind() ).toBe( "Fail" );
+				expect( takeExit.cause().error()._tag ).toBe( "PubSubShutdown" );
+				expect( takeExit.cause().error().operation ).toBe( "take" );
+
+				var publishExit = Effect::runSyncExit( pubSubSource.publish( "ignored" ) );
+				expect( publishExit.cause().error()._tag ).toBe( "PubSubShutdown" );
+				expect( publishExit.cause().error().operation ).toBe( "publish" );
+
+				var subscribeExit = Effect::runSyncExit( pubSubSource.subscribe() );
+				expect( subscribeExit.cause().error()._tag ).toBe( "PubSubShutdown" );
+				expect( subscribeExit.cause().error().operation ).toBe( "subscribe" );
+			} );
+
+			it( "wakes a blocked take with SubscriptionShutdown after unsubscribe", () => {
+				var pubSubSource = PubSub::unbounded();
+				var subscription = Effect::runSync( pubSubSource.subscribe() );
+				var waitingFiber = Effect::runFork( subscription.take() );
+				expect( waitingFiber.isDone() ).toBeFalse();
+
+				Effect::runSync( subscription.unsubscribe() );
+				var takeExit = waitingFiber.await();
+				expect( takeExit.isFailure() ).toBeTrue();
+				expect( takeExit.cause().kind() ).toBe( "Fail" );
+				expect( takeExit.cause().error()._tag ).toBe( "SubscriptionShutdown" );
+			} );
+
+			it( "interrupts a blocked publisher without delivering its value", () => {
+				var pubSubSource = PubSub::bounded( 1 );
+				var subscription = Effect::runSync( pubSubSource.subscribe() );
+				Effect::runSync( pubSubSource.publish( "first" ) );
+				var waitingFiber = Effect::runFork( pubSubSource.publish( "never" ) );
+				expect( waitingFiber.isDone() ).toBeFalse();
+
+				waitingFiber.interrupt();
+				var interruptionExit = waitingFiber.await();
+				expect( interruptionExit.isFailure() ).toBeTrue();
+				expect( interruptionExit.cause().kind() ).toBe( "Interrupt" );
+				expect( Effect::runSync( subscription.take() ) ).toBe( "first" );
+				expect( subscription.poll().isPresent() ).toBeFalse();
+			} );
+
+			it( "interrupts a blocked take without consuming a later broadcast", () => {
+				var pubSubSource = PubSub::unbounded();
+				var subscription = Effect::runSync( pubSubSource.subscribe() );
+				var waitingFiber = Effect::runFork( subscription.take() );
+				expect( waitingFiber.isDone() ).toBeFalse();
+
+				waitingFiber.interrupt();
+				var interruptionExit = waitingFiber.await();
+				expect( interruptionExit.isFailure() ).toBeTrue();
+				expect( interruptionExit.cause().kind() ).toBe( "Interrupt" );
+				Effect::runSync( pubSubSource.publish( "still available" ) );
+				expect( Effect::runSync( subscription.take() ) ).toBe( "still available" );
+			} );
+
+			it( "rejects invalid bounded capacities before constructing native state", () => {
+				expect( () => PubSub::bounded( 0 ) ).toThrow( type: "BXEffect.InvalidPubSubCapacity" );
+				expect( () => PubSub::bounded( -1 ) ).toThrow( type: "BXEffect.InvalidPubSubCapacity" );
+				expect( () => PubSub::bounded( 1.5 ) ).toThrow( type: "BXEffect.InvalidPubSubCapacity" );
+			} );
+
+		} );
+	}
+
+}

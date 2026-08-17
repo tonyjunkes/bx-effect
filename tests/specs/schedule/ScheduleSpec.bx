@@ -1,0 +1,111 @@
+import models.effect.Effect@bxEffect;
+import models.effect.Schedule@bxEffect;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Schedule, retry, repeat, and timeout", () => {
+
+			it( "models finite, spaced, and exponential decisions", () => {
+				var recurs = Schedule::recurs( 2 );
+				var exponential = Schedule::exponential( 10 );
+
+				expect( recurs.next( 0, null ).continue ).toBeTrue();
+				expect( recurs.next( 1, null ).continue ).toBeTrue();
+				expect( recurs.next( 2, null ).continue ).toBeFalse();
+				expect( exponential.next( 0, null ).delay ).toBe( 10 );
+				expect( exponential.next( 2, null ).delay ).toBe( 40 );
+				expect( Schedule::fixed( 5 ).next( 4, null ).delay ).toBe( 5 );
+			} );
+
+			it( "composes schedules and predicates deterministically", () => {
+				var limited = Schedule::recurs( 1 );
+				var delayed = Schedule::spaced( 2, "seconds" );
+				var both = limited.and( delayed );
+				var either = limited.or( Schedule::recurs( 3 ) );
+				var whilePositive = Schedule::recurs( 3 ).whileInput( ( value ) => value > 0 );
+				var untilThree = Schedule::recurs( 3 ).untilInput( ( value ) => value == 3 );
+
+				expect( both.next( 0, null ).continue ).toBeTrue();
+				expect( both.next( 0, null ).delay ).toBe( 2000 );
+				expect( both.next( 1, null ).continue ).toBeFalse();
+				expect( either.next( 2, null ).continue ).toBeTrue();
+				expect( whilePositive.next( 0, 0 ).continue ).toBeFalse();
+				expect( untilThree.next( 0, 3 ).continue ).toBeFalse();
+			} );
+
+			it( "keeps jittered delays inside the configured range", () => {
+				var jittered = Schedule::spaced( 100 ).jittered( 0.5, 1.5 );
+				var decision = jittered.next( 0, null );
+
+				expect( decision.delay >= 50 ).toBeTrue();
+				expect( decision.delay <= 150 ).toBeTrue();
+				expect( () => Schedule::spaced( 1 ).jittered( 2, 1 ) )
+					.toThrow( type: "BXEffect.InvalidSchedule" );
+			} );
+
+			it( "retries expected failures without retrying defects", () => {
+				var attempts = 0;
+				var transient = Effect::sync( () => {
+					attempts++;
+					return attempts;
+				} ).flatMap( ( value ) => value < 3 ? Effect::fail( "retry" ) : Effect::succeed( value ) );
+
+				expect( Effect::runSync( transient.retry( Schedule::recurs( 3 ) ) ) ).toBe( 3 );
+				expect( attempts ).toBe( 3 );
+
+				var defectAttempts = 0;
+				var defect = Effect::sync( () => {
+					defectAttempts++;
+					throw( type: "BXEffect.Defect", message: "do not retry" );
+				} ).retry( { times: 3 } );
+				var exit = Effect::runSyncExit( defect );
+				expect( exit.cause().kind() ).toBe( "Die" );
+				expect( defectAttempts ).toBe( 1 );
+			} );
+
+			it( "stops retrying after the configured number of recurrences", () => {
+				var attempts = 0;
+				var program = Effect::sync( () => {
+					attempts++;
+					return null;
+				} ).flatMap( ( ignored ) => Effect::fail( "still bad" ) )
+					.retry( { times: 2 } );
+
+				var exit = Effect::runSyncExit( program );
+				expect( exit.cause().error() ).toBe( "still bad" );
+				expect( attempts ).toBe( 3 );
+			} );
+
+			it( "repeats successful effects and retains the final value", () => {
+				var values = 0;
+				var program = Effect::sync( () => {
+					values++;
+					return values;
+				} ).repeat( Schedule::recurs( 2 ) );
+
+				expect( Effect::runSync( program ) ).toBe( 3 );
+				expect( values ).toBe( 3 );
+			} );
+
+			it( "delays lazily through the runtime Clock and fails timed-out effects with TimeoutError", () => {
+				var started = 0;
+				var delayed = Effect::sleep( 5 ).tap( ( ignored ) => Effect::sync( () => started++ ) );
+				expect( started ).toBe( 0 );
+				Effect::runSync( delayed );
+				expect( started ).toBe( 1 );
+
+				var slow = Effect::fromBoxFuture( () => futureNew( () => {
+					sleep( 100 );
+					return "late";
+				} ) );
+				var exit = Effect::runSyncExit( slow.timeout( 10 ) );
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Fail" );
+				expect( exit.cause().error()._tag ).toBe( "TimeoutError" );
+			} );
+
+		} );
+	}
+
+}

@@ -1,0 +1,140 @@
+import models.effect.Cause@bxEffect;
+import models.effect.Effect@bxEffect;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Effect synchronous kernel", () => {
+
+			it( "constructs sync Effects lazily", () => {
+				var executions = 0;
+				var program = Effect::sync( () => {
+					executions++;
+					return 42;
+				} );
+
+				expect( executions ).toBe( 0 );
+
+				var exit = Effect::runSyncExit( program );
+
+				expect( executions ).toBe( 1 );
+				expect( exit.isSuccess() ).toBeTrue();
+				expect( exit.value() ).toBe( 42 );
+			} );
+
+			it( "maps successes lazily and skips the mapper on failure", () => {
+				var mappings = 0;
+				var mapper = ( value ) => {
+					mappings++;
+					return value * 3;
+				};
+				var successProgram = Effect::succeed( 2 ).map( mapper );
+				var failureProgram = Effect::fail( "stop" ).map( mapper );
+
+				expect( mappings ).toBe( 0 );
+				expect( Effect::runSyncExit( successProgram ).value() ).toBe( 6 );
+				expect( mappings ).toBe( 1 );
+				expect( Effect::runSyncExit( failureProgram ).cause().error() ).toBe( "stop" );
+				expect( mappings ).toBe( 1 );
+			} );
+
+			it( "keeps expected failures distinct from defects", () => {
+				var expectedExit = Effect::runSyncExit( Effect::fail( "not-found" ) );
+				var defectExit = Effect::runSyncExit( Effect::sync( () => {
+					throw( type: "KernelBoom", message: "boom" );
+				} ) );
+
+				expect( expectedExit.isFailure() ).toBeTrue();
+				expect( expectedExit.cause().kind() ).toBe( "Fail" );
+				expect( expectedExit.cause().error() ).toBe( "not-found" );
+				expect( isNull( expectedExit.cause().defect() ) ).toBeTrue();
+				expect( defectExit.isFailure() ).toBeTrue();
+				expect( defectExit.cause().kind() ).toBe( "Die" );
+				expect( defectExit.cause().defect().message ).toBe( "boom" );
+				expect( isNull( defectExit.cause().error() ) ).toBeTrue();
+			} );
+
+			it( "maps exceptions with the BoxLang-compatible try constructor", () => {
+				var executions = 0;
+				var program = Effect::try(
+					try: () => {
+						executions++;
+						throw( type: "UnsafeOperation", message: "invalid input" );
+					},
+					catch: ( error ) -> {
+						_tag : "InvalidInput",
+						message : error.message
+					}
+				);
+
+				expect( executions ).toBe( 0 );
+
+				var exit = Effect::runSyncExit( program );
+
+				expect( executions ).toBe( 1 );
+				expect( exit.cause().kind() ).toBe( "Fail" );
+				expect( exit.cause().error()._tag ).toBe( "InvalidInput" );
+				expect( exit.cause().error().message ).toBe( "invalid input" );
+			} );
+
+			it( "recovers expected failures without consuming defects", () => {
+				var recovered = Effect::fail( "missing" )
+					.catchAll( ( error ) => Effect::succeed( "recovered:#error#" ) );
+				var defect = Effect::sync( () => {
+					throw( type: "KernelBoom", message: "boom" );
+				} ).catchAll( ( error ) => Effect::succeed( "should-not-run" ) );
+
+				expect( Effect::runSyncExit( recovered ).value() ).toBe( "recovered:missing" );
+				expect( Effect::runSyncExit( defect ).cause().kind() ).toBe( "Die" );
+			} );
+
+			it( "allows explicit full-cause recovery", () => {
+				var program = Effect::sync( () => {
+					throw( type: "KernelBoom", message: "boom" );
+				} ).catchCause( ( effectCause ) => Effect::succeed( effectCause.kind() ) );
+
+				expect( Effect::runSyncExit( program ).value() ).toBe( "Die" );
+			} );
+
+			it( "defers suspended Effect construction", () => {
+				var constructions = 0;
+				var program = Effect::suspend( () => {
+					constructions++;
+					return Effect::succeed( 7 );
+				} );
+
+				expect( constructions ).toBe( 0 );
+				expect( Effect::runSyncExit( program ).value() ).toBe( 7 );
+				expect( constructions ).toBe( 1 );
+			} );
+
+			it( "interprets deep flatMap chains without growing the JVM stack", () => {
+				var depth = 100000;
+				var program = Effect::succeed( 0 );
+
+				for ( var index = 1; index <= depth; index++ ) {
+					program = program.flatMap( ( value ) => Effect::succeed( value + 1 ) );
+				}
+
+				var exit = Effect::runSyncExit( program );
+
+				expect( exit.isSuccess() ).toBeTrue();
+				expect( exit.value() ).toBe( depth );
+			} );
+
+			it( "preserves sequential and parallel Cause trees", () => {
+				var effectCause = Cause::sequential(
+					Cause::fail( "first" ),
+					Cause::parallel( Cause::die( "broken" ), Cause::fail( "second" ) )
+				);
+
+				expect( effectCause.failures() ).toBe( [ "first", "second" ] );
+				expect( effectCause.defects() ).toBe( [ "broken" ] );
+				expect( effectCause.isFailure() ).toBeTrue();
+				expect( effectCause.isDefect() ).toBeTrue();
+			} );
+
+		} );
+	}
+
+}

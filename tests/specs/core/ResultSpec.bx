@@ -1,0 +1,82 @@
+import models.effect.Result@bxEffect;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Result", () => {
+
+			it( "models pure success and failure values", () => {
+				var successValue = Result::success( 10 );
+				var failureValue = Result::failure( "invalid" );
+
+				expect( successValue.isSuccess() ).toBeTrue();
+				expect( successValue.value() ).toBe( 10 );
+				expect( isNull( successValue.error() ) ).toBeTrue();
+				expect( failureValue.isFailure() ).toBeTrue();
+				expect( failureValue.error() ).toBe( "invalid" );
+				expect( isNull( failureValue.value() ) ).toBeTrue();
+			} );
+
+			it( "transforms only the matching channel", () => {
+				var successMappings = 0;
+				var failureMappings = 0;
+				var successValue = Result::success( 2 )
+					.map( ( value ) => {
+						successMappings++;
+						return value * 3;
+					} )
+					.flatMap( ( value ) -> Result::success( value + 1 ) )
+					.mapError( ( error ) => {
+						failureMappings++;
+						return error;
+					} );
+				var failureValue = Result::failure( "bad" )
+					.map( ( value ) => {
+						successMappings++;
+						return value;
+					} )
+					.mapError( ( error ) => {
+						failureMappings++;
+						return "mapped:#error#";
+					} );
+
+				expect( successValue.value() ).toBe( 7 );
+				expect( failureValue.error() ).toBe( "mapped:bad" );
+				expect( successMappings ).toBe( 1 );
+				expect( failureMappings ).toBe( 1 );
+			} );
+
+			it( "matches both variants", () => {
+				expect( Result::success( 4 ).match(
+					( value ) -> "success:#value#",
+					( error ) -> "failure:#error#"
+				) ).toBe( "success:4" );
+				expect( Result::failure( "no" ).match(
+					( value ) -> "success:#value#",
+					( error ) -> "failure:#error#"
+				) ).toBe( "failure:no" );
+			} );
+
+			it( "interoperates with native Attempt without evaluating unused errors", () => {
+				var emptyCalls = 0;
+				var presentResult = Result::fromAttempt( attempt( 42 ), () => {
+					emptyCalls++;
+					return "empty";
+				} );
+				var emptyResult = Result::fromAttempt( attempt(), () => {
+					emptyCalls++;
+					return "empty";
+				} );
+
+				expect( presentResult.value() ).toBe( 42 );
+				expect( emptyResult.error() ).toBe( "empty" );
+				expect( emptyCalls ).toBe( 1 );
+				expect( presentResult.toAttempt().get() ).toBe( 42 );
+				expect( emptyResult.toAttempt().isEmpty() ).toBeTrue();
+				expect( Result::success( null ).toAttempt().isEmpty() ).toBeTrue();
+			} );
+
+		} );
+	}
+
+}

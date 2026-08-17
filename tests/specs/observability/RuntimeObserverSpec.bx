@@ -1,0 +1,111 @@
+import models.effect.Effect@bxEffect;
+import models.effect.EffectRuntime@bxEffect;
+import models.effect.Schedule@bxEffect;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Runtime observer boundary", () => {
+
+			it( "reports stable runtime, suspension, scope, and retry events", () => {
+				var events = [];
+				var runtime = new EffectRuntime( {
+					observer : ( eventName, details ) => events.append( eventName )
+				} );
+				var attempts = 0;
+				var retried = Effect::sync( () => {
+					attempts++;
+					return attempts;
+				} ).flatMap( ( value ) => value == 1 ? Effect::fail( "retry" ) : Effect::succeed( value ) )
+					.retry( Schedule::recurs( 1 ) );
+				var program = Effect::fromBoxFuture( () => futureNew( "ready" ) )
+					.flatMap( ( ignored ) => retried );
+
+				expect( runtime.runSync( program ) ).toBe( 2 );
+				expect( events[ 1 ] ).toBe( "runtime:started" );
+				expect( listFind( events.toList(), "effect:suspended" ) > 0 ).toBeTrue();
+				expect( listFind( events.toList(), "effect:resumed" ) > 0 ).toBeTrue();
+				expect( listFind( events.toList(), "retry:scheduled" ) > 0 ).toBeTrue();
+				expect( events[ events.len() - 1 ] ).toBe( "scope:closed" );
+				expect( events[ events.len() ] ).toBe( "runtime:completed" );
+			} );
+
+			it( "contains observer failures without changing cleanup or outcomes", () => {
+				var finalized = false;
+				var runtime = new EffectRuntime( {
+					observer : ( eventName, details ) => {
+						throw( type: "BXEffect.ObserverFailure", message: "diagnostic failure" );
+					}
+				} );
+				var program = Effect::succeed( "value" ).ensuring(
+					Effect::sync( () => {
+						finalized = true;
+						return null;
+					} )
+				);
+
+				expect( runtime.runSync( program ) ).toBe( "value" );
+				expect( finalized ).toBeTrue();
+			} );
+
+			it( "reports Fiber completion, interruption, and terminal defects", () => {
+				var events = [];
+				var runtime = new EffectRuntime( {
+					observer : ( eventName, details ) => events.append( {
+						name : eventName,
+						details : details
+					} )
+				} );
+
+				var completedFiber = runtime.runFork( Effect::succeed( "ready" ) );
+				expect( completedFiber.join() ).toBe( "ready" );
+
+				var nestedFuture = futureNew();
+				var nestedStarted = new AtomicBoolean( false );
+				var interruptedFiber = runtime.runFork( Effect::fromBoxFuture( () => {
+					nestedStarted.set( true );
+					return nestedFuture;
+				} ) );
+				awaitCondition( () => nestedStarted.get() );
+				interruptedFiber.interrupt();
+				interruptedFiber.await();
+				awaitCondition( () => countEvents( events, "fiber:interrupted" ) == 1 );
+
+				var defectExit = runtime.runSyncExit( Effect::sync( () => {
+					throw( type: "BXEffect.ObserverTestDefect", message: "broken" );
+				} ) );
+
+				expect( countEvents( events, "fiber:completed" ) ).toBe( 1 );
+				expect( defectExit.isFailure() ).toBeTrue();
+				expect( countEvents( events, "defect:unhandled" ) ).toBe( 1 );
+
+				expect( runtime.runSync( Effect::sync( () => {
+					throw( type: "BXEffect.ObserverRecoveredDefect", message: "recovered" );
+				} ).catchCause( ( ignoredCause ) => Effect::succeed( "recovered" ) ) ) )
+					.toBe( "recovered" );
+				expect( countEvents( events, "defect:unhandled" ) ).toBe( 1 );
+			} );
+
+		} );
+	}
+
+	private numeric function countEvents( required array events, required string eventName ) {
+		var count = 0;
+		for ( var event in arguments.events ) {
+			if ( event.name == arguments.eventName ) {
+				count++;
+			}
+		}
+		return count;
+	}
+
+	private function awaitCondition( required function predicate ) {
+		var deadline = getTickCount() + 1000;
+		while ( !arguments.predicate() && getTickCount() < deadline ) {
+			sleep( 1 );
+		}
+		expect( arguments.predicate() ).toBeTrue();
+	}
+
+}

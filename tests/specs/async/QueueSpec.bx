@@ -1,0 +1,102 @@
+import models.effect.Effect@bxEffect;
+import models.effect.Queue@bxEffect;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Queue", () => {
+
+			it( "keeps offers lazy, delivers FIFO values, and releases a producer after poll", () => {
+				var queueSource = Queue::bounded( 1 );
+				var firstOffer = queueSource.offer( "first" );
+				expect( queueSource.size() ).toBe( 0 );
+				Effect::runSync( firstOffer );
+				expect( queueSource.size() ).toBe( 1 );
+
+				var blockedOffer = Effect::runFork( queueSource.offer( "second" ) );
+				expect( blockedOffer.isDone() ).toBeFalse();
+				expect( queueSource.poll().get() ).toBe( "first" );
+				blockedOffer.join();
+				expect( Effect::runSync( queueSource.take() ) ).toBe( "second" );
+				expect( queueSource.poll().isPresent() ).toBeFalse();
+			} );
+
+			it( "uses FIFO order for unbounded queues", () => {
+				var queueSource = Queue::unbounded();
+				Effect::runSync( queueSource.offer( "first" ) );
+				Effect::runSync( queueSource.offer( "second" ) );
+				Effect::runSync( queueSource.offer( "third" ) );
+
+				expect( Effect::runSync( queueSource.take() ) ).toBe( "first" );
+				expect( Effect::runSync( queueSource.take() ) ).toBe( "second" );
+				expect( Effect::runSync( queueSource.take() ) ).toBe( "third" );
+			} );
+
+			it( "drains buffered values after shutdown and then fails offers and takes as expected errors", () => {
+				var queueSource = Queue::unbounded();
+				Effect::runSync( queueSource.offer( "drained" ) );
+				expect( Effect::runSync( queueSource.shutdown() ) ).toBeTrue();
+				expect( Effect::runSync( queueSource.shutdown() ) ).toBeFalse();
+				expect( queueSource.isShutdown() ).toBeTrue();
+				expect( Effect::runSync( queueSource.take() ) ).toBe( "drained" );
+
+				var takeExit = Effect::runSyncExit( queueSource.take() );
+				expect( takeExit.cause().kind() ).toBe( "Fail" );
+				expect( takeExit.cause().error()._tag ).toBe( "QueueShutdown" );
+				expect( takeExit.cause().error().operation ).toBe( "take" );
+
+				var offerExit = Effect::runSyncExit( queueSource.offer( "ignored" ) );
+				expect( offerExit.cause().kind() ).toBe( "Fail" );
+				expect( offerExit.cause().error()._tag ).toBe( "QueueShutdown" );
+				expect( offerExit.cause().error().operation ).toBe( "offer" );
+			} );
+
+			it( "releases a blocked take with QueueShutdown when shutdown occurs", () => {
+				var queueSource = Queue::unbounded();
+				var waitingFiber = Effect::runFork( queueSource.take() );
+				expect( waitingFiber.isDone() ).toBeFalse();
+
+				Effect::runSync( queueSource.shutdown() );
+				var takeExit = waitingFiber.await();
+				expect( takeExit.isFailure() ).toBeTrue();
+				expect( takeExit.cause().kind() ).toBe( "Fail" );
+				expect( takeExit.cause().error()._tag ).toBe( "QueueShutdown" );
+			} );
+
+			it( "interrupts a blocked offer without adding its value", () => {
+				var queueSource = Queue::bounded( 1 );
+				Effect::runSync( queueSource.offer( "first" ) );
+				var waitingFiber = Effect::runFork( queueSource.offer( "never" ) );
+				expect( waitingFiber.isDone() ).toBeFalse();
+
+				waitingFiber.interrupt();
+				var interruptionExit = waitingFiber.await();
+				expect( interruptionExit.isFailure() ).toBeTrue();
+				expect( interruptionExit.cause().kind() ).toBe( "Interrupt" );
+				expect( Effect::runSync( queueSource.take() ) ).toBe( "first" );
+				expect( queueSource.poll().isPresent() ).toBeFalse();
+			} );
+
+			it( "interrupts a blocked take without consuming a later value", () => {
+				var queueSource = Queue::unbounded();
+				var waitingFiber = Effect::runFork( queueSource.take() );
+				expect( waitingFiber.isDone() ).toBeFalse();
+
+				waitingFiber.interrupt();
+				var interruptionExit = waitingFiber.await();
+				expect( interruptionExit.isFailure() ).toBeTrue();
+				expect( interruptionExit.cause().kind() ).toBe( "Interrupt" );
+				Effect::runSync( queueSource.offer( "still available" ) );
+				expect( Effect::runSync( queueSource.take() ) ).toBe( "still available" );
+			} );
+
+			it( "rejects invalid bounded capacities before constructing native state", () => {
+				expect( () => Queue::bounded( 0 ) ).toThrow( type: "BXEffect.InvalidQueueCapacity" );
+				expect( () => Queue::bounded( -1 ) ).toThrow( type: "BXEffect.InvalidQueueCapacity" );
+				expect( () => Queue::bounded( 1.5 ) ).toThrow( type: "BXEffect.InvalidQueueCapacity" );
+			} );
+
+		} );
+	}
+
+}

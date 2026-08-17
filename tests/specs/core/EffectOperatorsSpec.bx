@@ -1,0 +1,130 @@
+import java.lang.LinkageError;
+import models.effect.Effect@bxEffect;
+import models.effect.Result@bxEffect;
+import models.effect.internal.ThrowablePolicy@bxEffect;
+import tests.resources.AnnotatedError;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Effect synchronous operators", () => {
+
+			it( "taps successes while retaining the original value", () => {
+				var observed = [];
+				var program = Effect::succeed( 5 )
+					.tap( ( value ) => Effect::sync( () => observed.append( value ) ) );
+
+				var exit = Effect::runSyncExit( program );
+
+				expect( exit.value() ).toBe( 5 );
+				expect( observed ).toBe( [ 5 ] );
+			} );
+
+			it( "replaces or discards success values", () => {
+				expect( Effect::runSync( Effect::succeed( 1 ).as( "done" ) ) ).toBe( "done" );
+				expect( isNull( Effect::runSync( Effect::succeed( 1 ).asVoid() ) ) ).toBeTrue();
+			} );
+
+			it( "maps, filters, and conditionally recovers expected errors", () => {
+				var mapped = Effect::fail( "bad" ).mapError( ( error ) -> "mapped:#error#" );
+				var recovered = mapped.catchIf(
+					( error ) -> error == "mapped:bad",
+					( error ) -> Effect::succeed( "recovered" )
+				);
+				var untouched = Effect::fail( "other" ).catchIf(
+					( error ) -> false,
+					( error ) -> Effect::succeed( "wrong" )
+				);
+				var filtered = Effect::succeed( 3 ).filterOrFail(
+					( value ) -> value > 5,
+					( value ) -> "too-small:#value#"
+				);
+
+				expect( Effect::runSync( recovered ) ).toBe( "recovered" );
+				expect( Effect::runSyncExit( untouched ).cause().error() ).toBe( "other" );
+				expect( Effect::runSyncExit( filtered ).cause().error() ).toBe( "too-small:3" );
+			} );
+
+			it( "recovers tagged struct and annotated class errors", () => {
+				var structProgram = Effect::fail( { _tag: "NotFound", id: 7 } )
+					.catchTag( "NotFound", ( error ) -> Effect::succeed( error.id ) );
+				var annotationProgram = Effect::fail( new AnnotatedError() )
+					.catchTag( "AnnotatedFailure", ( error ) -> Effect::succeed( "annotated" ) );
+
+				expect( Effect::runSync( structProgram ) ).toBe( 7 );
+				expect( Effect::runSync( annotationProgram ) ).toBe( "annotated" );
+			} );
+
+			it( "runs fallback Effects for expected failures only", () => {
+				var fallbackRuns = 0;
+				var fallback = Effect::sync( () => {
+					fallbackRuns++;
+					return "fallback";
+				} );
+
+				expect( Effect::runSync( Effect::succeed( "primary" ).orElse( fallback ) ) ).toBe( "primary" );
+				expect( fallbackRuns ).toBe( 0 );
+				expect( Effect::runSync( Effect::fail( "no" ).orElse( fallback ) ) ).toBe( "fallback" );
+				expect( fallbackRuns ).toBe( 1 );
+			} );
+
+			it( "converts Result and Attempt values without breaking Effect laziness", () => {
+				var emptyCalls = 0;
+				var fromPresent = Effect::fromAttempt( attempt( 8 ), () => {
+					emptyCalls++;
+					return "empty";
+				} );
+				var fromEmpty = Effect::fromAttempt( attempt(), () => {
+					emptyCalls++;
+					return "empty";
+				} );
+
+				expect( emptyCalls ).toBe( 0 );
+				expect( Effect::runSync( fromPresent ) ).toBe( 8 );
+				expect( emptyCalls ).toBe( 0 );
+				expect( Effect::runSyncExit( fromEmpty ).cause().error() ).toBe( "empty" );
+				expect( emptyCalls ).toBe( 1 );
+				expect( Effect::runSync( Effect::fromResult( Result::success( 9 ) ) ) ).toBe( 9 );
+				expect( Effect::runSyncExit(
+					Effect::fromResult( Result::failure( "result-error" ) )
+				).cause().error() ).toBe( "result-error" );
+			} );
+
+			it( "throws a runSync boundary exception retaining the full Cause", () => {
+				var boundaryError = null;
+				try {
+					Effect::runSync( Effect::fail( "not-found" ) );
+				} catch ( any error ) {
+					boundaryError = error;
+				}
+
+				expect( boundaryError.type ).toBe( "BXEffect.EffectFailure" );
+				expect( boundaryError.extendedInfo.kind() ).toBe( "Fail" );
+				expect( boundaryError.extendedInfo.error() ).toBe( "not-found" );
+			} );
+
+			it( "allows fatal JVM errors to escape normalization and try mapping", () => {
+				var mappedFatal = false;
+				var escapedError = null;
+				var program = Effect::try(
+					try: () => throw( object: new LinkageError( "fatal" ) ),
+					catch: ( error ) => {
+						mappedFatal = true;
+						return "mapped";
+					}
+				);
+
+				try {
+					Effect::runSyncExit( program );
+				} catch ( any error ) {
+					escapedError = error;
+				}
+
+				expect( mappedFatal ).toBeFalse();
+				expect( ThrowablePolicy::isFatal( escapedError ) ).toBeTrue();
+			} );
+
+		} );
+	}
+
+}

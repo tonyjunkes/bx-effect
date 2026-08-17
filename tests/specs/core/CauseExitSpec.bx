@@ -1,0 +1,63 @@
+import models.effect.Cause@bxEffect;
+import models.effect.Exit@bxEffect;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Cause and Exit", () => {
+
+			it( "preserves failure trees and interruption", () => {
+				var effectCause = Cause::sequential(
+					Cause::fail( "first" ),
+					Cause::parallel(
+						Cause::die( { message: "broken" } ),
+						Cause::interrupt( "fiber-1" )
+					)
+				);
+
+				expect( effectCause.failures() ).toBe( [ "first" ] );
+				expect( effectCause.defects().len() ).toBe( 1 );
+				expect( effectCause.isFailure() ).toBeTrue();
+				expect( effectCause.isDefect() ).toBeTrue();
+				expect( effectCause.isInterrupted() ).toBeTrue();
+				expect( effectCause.pretty() ).toInclude( "Expected failure: first" );
+				expect( effectCause.pretty() ).toInclude( "Defect: broken" );
+				expect( effectCause.pretty() ).toInclude( "Interrupted fiber: fiber-1" );
+			} );
+
+			it( "matches Exit success and failure values", () => {
+				var successExit = Exit::success( 12 );
+				var failureExit = Exit::failure( Cause::fail( "no" ) );
+
+				expect( successExit.isSuccess() ).toBeTrue();
+				expect( successExit.match(
+					( value ) -> "success:#value#",
+					( effectCause ) -> "failure:" & effectCause.pretty()
+				) ).toBe( "success:12" );
+				expect( failureExit.isFailure() ).toBeTrue();
+				expect( failureExit.match(
+					( value ) -> "success:#value#",
+					( effectCause ) -> effectCause.error()
+				) ).toBe( "no" );
+			} );
+
+			it( "maps expected failures without erasing defects or interruption", () => {
+				var original = Cause::parallel(
+					Cause::sequential( Cause::fail( "first" ), Cause::die( "broken" ) ),
+					Cause::interrupt( "fiber-1" )
+				);
+				var mapped = original.mapFailures( ( error ) => "mapped:#error#" );
+
+				expect( mapped.kind() ).toBe( "Parallel" );
+				expect( mapped.left().kind() ).toBe( "Sequential" );
+				expect( mapped.left().left().error() ).toBe( "mapped:first" );
+				expect( mapped.left().right().kind() ).toBe( "Die" );
+				expect( mapped.left().right().defect() ).toBe( "broken" );
+				expect( mapped.right().kind() ).toBe( "Interrupt" );
+				expect( mapped.right().fiberId() ).toBe( "fiber-1" );
+			} );
+
+		} );
+	}
+
+}

@@ -1,0 +1,61 @@
+import ModuleConfig;
+import models.effect.Effect@bxEffect;
+import models.effect.EffectRuntime@bxEffect;
+import models.effect.PubSub@bxEffect;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Module descriptor", () => {
+
+			it( "provides the declared module metadata and operational settings", () => {
+				var descriptor = new ModuleConfig();
+				var packageDescriptor = jsonDeserialize(
+					fileRead( getDirectoryFromPath( getCurrentTemplatePath() ) & "../../../box.json" )
+				);
+				descriptor.configure();
+
+				expect( descriptor.mapping ).toBe( packageDescriptor.boxlang.moduleName );
+				expect( descriptor.version ).toBe( packageDescriptor.version );
+				expect( descriptor.enabled ).toBeTrue();
+				expect( descriptor.dependencies ).toBe( [] );
+			} );
+
+			it( "is loaded through the BoxLang module service for module-scoped imports", () => {
+				expect( getBoxRuntime().getModuleService().hasModule( "bxEffect" ) ).toBeTrue();
+			} );
+
+			it( "lets applications use imported public classes through the module resolver", () => {
+				var program = Effect::succeed( "module-value" )
+					.map( ( value ) => value & "!" );
+
+				expect( Effect::runSync( program ) ).toBe( "module-value!" );
+			} );
+
+			it( "lets applications use PubSub through the module resolver", () => {
+				var events = PubSub::bounded( 1 );
+				var subscription = Effect::runSync( events.subscribe() );
+				Effect::runSync( events.publish( "module-event" ) );
+
+				expect( Effect::runSync( subscription.take() ) ).toBe( "module-event" );
+				expect( Effect::runSync( subscription.unsubscribe() ) ).toBeTrue();
+			} );
+
+			it( "uses its configured default executor without owning a pool", () => {
+				var moduleSettings = getBoxRuntime()
+					.getModuleService()
+					.getModuleSettings( "bxEffect" );
+				var defaultRuntime = new EffectRuntime();
+				var runtime = new EffectRuntime( { executor: "cpu-tasks" } );
+
+				expect( defaultRuntime.executor() ).toBe( moduleSettings.defaultExecutor );
+				expect( runtime.executor() ).toBe( "cpu-tasks" );
+				expect( runtime.runFuture( Effect::succeed( "value" ) ).get() ).toBe( "value" );
+				expect( structKeyExists( moduleSettings, "validateContracts" ) ).toBeFalse();
+				expect( structKeyExists( moduleSettings, "observability" ) ).toBeFalse();
+			} );
+
+		} );
+	}
+
+}

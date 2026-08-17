@@ -1,0 +1,183 @@
+import models.effect.Effect@bxEffect;
+import models.effect.EffectRuntime@bxEffect;
+import models.effect.Schedule@bxEffect;
+import models.effect.context.ServiceTag@bxEffect;
+import models.effect.testing.TestClock@bxEffect;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Runtime Clock and TestClock", () => {
+
+			it( "completes TestClock sleepers only when time advances", () => {
+				var clock = new TestClock();
+				var later = clock.sleep( 20 );
+				var earlier = clock.sleep( 1, "seconds" );
+
+				expect( clock.pendingCount() ).toBe( 2 );
+				expect( clock.advance( 20 ) ).toBe( 1 );
+				expect( later.isDone() ).toBeTrue();
+				expect( earlier.isDone() ).toBeFalse();
+				expect( clock.advance( 980 ) ).toBe( 1 );
+				expect( earlier.isDone() ).toBeTrue();
+				expect( clock.now() ).toBe( 1000 );
+			} );
+
+			it( "runs Effect sleep through the configured TestClock", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var fiber = runtime.runFork( Effect::sleep( 10 ).as( "done" ) );
+
+				awaitPending( clock, 1 );
+				clock.advance( 10 );
+				expect( fiber.join() ).toBe( "done" );
+			} );
+
+			it( "distinguishes fixed recurrence starts from spaced completion delays", () => {
+				var fixedClock = new TestClock();
+				var fixedStarts = [];
+				var fixedRuntime = new EffectRuntime( { clock: fixedClock } );
+				var fixedFiber = fixedRuntime.runFork(
+					timedWork( fixedClock, fixedStarts )
+						.repeat( Schedule::fixed( 10 ).and( Schedule::recurs( 1 ) ) )
+				);
+
+				awaitPending( fixedClock, 1 );
+				fixedClock.advance( 8 );
+				awaitPending( fixedClock, 1 );
+				fixedClock.advance( 2 );
+				awaitPending( fixedClock, 1 );
+				fixedClock.advance( 8 );
+				fixedFiber.join();
+
+				var spacedClock = new TestClock();
+				var spacedStarts = [];
+				var spacedRuntime = new EffectRuntime( { clock: spacedClock } );
+				var spacedFiber = spacedRuntime.runFork(
+					timedWork( spacedClock, spacedStarts )
+						.repeat( Schedule::spaced( 10 ).and( Schedule::recurs( 1 ) ) )
+				);
+
+				awaitPending( spacedClock, 1 );
+				spacedClock.advance( 8 );
+				awaitPending( spacedClock, 1 );
+				spacedClock.advance( 10 );
+				awaitPending( spacedClock, 1 );
+				spacedClock.advance( 8 );
+				spacedFiber.join();
+
+				expect( fixedStarts ).toBe( [ 0, 10 ] );
+				expect( spacedStarts ).toBe( [ 0, 18 ] );
+			} );
+
+			it( "drives retry delays through the configured TestClock", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var attempts = 0;
+				var program = Effect::sync( () => {
+					attempts++;
+					return attempts;
+				} ).flatMap( ( attemptNumber ) =>
+					attemptNumber == 1 ? Effect::fail( "retry" ) : Effect::succeed( attemptNumber )
+				).retry( Schedule::spaced( 10 ) );
+				var fiber = runtime.runFork( program );
+
+				awaitPending( clock, 1 );
+				clock.advance( 10 );
+				expect( fiber.join() ).toBe( 2 );
+				expect( attempts ).toBe( 2 );
+			} );
+
+			it( "does not retry after a waiting Fiber is interrupted", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var attempts = 0;
+				var program = Effect::sync( () => {
+					attempts++;
+					return null;
+				} ).flatMap( ( ignored ) => Effect::fail( "retry" ) )
+					.retry( Schedule::spaced( 100 ) );
+				var fiber = runtime.runFork( program );
+
+				awaitPending( clock, 1 );
+				fiber.interrupt();
+				var exit = fiber.await();
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Interrupt" );
+				expect( attempts ).toBe( 1 );
+			} );
+
+			it( "cancels an active TestClock sleep without resuming user work", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var resumed = false;
+				var fiber = runtime.runFork(
+					Effect::sleep( 100 ).tap( ( ignored ) => Effect::sync( () => {
+						resumed = true;
+						return null;
+					} ) )
+				);
+
+				awaitPending( clock, 1 );
+				fiber.interrupt();
+				var exit = fiber.await();
+				clock.advance( 100 );
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Interrupt" );
+				expect( clock.pendingCount() ).toBe( 0 );
+				expect( resumed ).toBeFalse();
+			} );
+
+			it( "drives timeout through the configured TestClock", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var fiber = runtime.runFork( Effect::sleep( 100 ).timeout( 10 ) );
+
+				awaitPending( clock, 2 );
+				clock.advance( 10 );
+				var exit = fiber.await();
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Fail" );
+				expect( exit.cause().error()._tag ).toBe( "TimeoutError" );
+			} );
+
+			it( "restores outer Context after timeout interrupts provided work", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var label = ServiceTag::of( "app/TimeoutContextLabel" );
+				var program = Effect::sleep( 100 )
+					.timeout( 10 )
+					.provideService( label, "inner" )
+					.catchAll( ( timeoutError ) => Effect::service( label ) )
+					.provideService( label, "outer" );
+				var fiber = runtime.runFork( program );
+
+				awaitPending( clock, 2 );
+				clock.advance( 10 );
+				expect( fiber.join() ).toBe( "outer" );
+			} );
+
+		} );
+	}
+
+	private function awaitPending( required TestClock clock, required numeric expectedCount ) {
+		var deadline = getTickCount() + 1000;
+		while ( arguments.clock.pendingCount() < arguments.expectedCount && getTickCount() < deadline ) {
+			sleep( 1 );
+		}
+		expect( arguments.clock.pendingCount() ).toBe( arguments.expectedCount );
+	}
+
+	private function timedWork( required TestClock clock, required array starts ) {
+		var clockToRead = arguments.clock;
+		var startsToRecord = arguments.starts;
+		return Effect::sync( () => {
+			startsToRecord.append( clockToRead.now() );
+			return null;
+		} ).flatMap( ( ignored ) => Effect::sleep( 8 ) );
+	}
+
+}

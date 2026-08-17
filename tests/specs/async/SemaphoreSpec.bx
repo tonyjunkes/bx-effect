@@ -1,0 +1,86 @@
+import models.effect.Effect@bxEffect;
+import models.effect.Deferred@bxEffect;
+import models.effect.Semaphore@bxEffect;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Semaphore", () => {
+
+			it( "acquires lazily and releases a blocked Fiber when a permit becomes available", () => {
+				var permitSource = Semaphore::make( 1 );
+				var acquireProgram = permitSource.acquire();
+				expect( permitSource.availablePermits() ).toBe( 1 );
+				var firstFiber = Effect::runFork( acquireProgram );
+				firstFiber.join();
+				var waitingFiber = Effect::runFork( permitSource.acquire() );
+
+				expect( permitSource.availablePermits() ).toBe( 0 );
+				expect( waitingFiber.isDone() ).toBeFalse();
+				Effect::runSync( permitSource.release() );
+				waitingFiber.join();
+				expect( permitSource.availablePermits() ).toBe( 0 );
+			} );
+
+			it( "releases exactly once after successful, failed, and defective protected work", () => {
+				var permitSource = Semaphore::make( 1 );
+
+				expect( Effect::runSync( permitSource.withPermit( Effect::succeed( "ready" ) ) ) )
+					.toBe( "ready" );
+				expect( permitSource.availablePermits() ).toBe( 1 );
+				expect( Effect::runSyncExit( permitSource.withPermit( Effect::fail( "bad" ) ) ).cause().kind() )
+					.toBe( "Fail" );
+				expect( permitSource.availablePermits() ).toBe( 1 );
+				expect( Effect::runSyncExit( permitSource.withPermit( Effect::sync( () => { throw( type: "BXEffect.Defect", message: "bad" ); } ) ) ).cause().kind() )
+					.toBe( "Die" );
+				expect( permitSource.availablePermits() ).toBe( 1 );
+			} );
+
+			it( "does not release when a blocked acquisition is interrupted", () => {
+				var permitSource = Semaphore::make( 0 );
+				var waitingFiber = Effect::runFork( permitSource.withPermit( Effect::succeed( "never" ) ) );
+				expect( waitingFiber.isDone() ).toBeFalse();
+
+				waitingFiber.interrupt();
+				var interruptionExit = waitingFiber.await();
+
+				expect( interruptionExit.isFailure() ).toBeTrue();
+				expect( interruptionExit.cause().kind() ).toBe( "Interrupt" );
+				expect( permitSource.availablePermits() ).toBe( 0 );
+				Effect::runSync( permitSource.release() );
+				expect( Effect::runSync( permitSource.acquire() ) ).toBeNull();
+			} );
+
+			it( "releases a held permit when protected work is interrupted", () => {
+				var permitSource = Semaphore::make( 1 );
+				var acquiredSignal = Deferred::make();
+				var waitSignal = Deferred::make();
+				var protectedFiber = Effect::runFork( permitSource.withPermit(
+					acquiredSignal.succeed( true ).flatMap( () => waitSignal.await() )
+				) );
+
+				expect( Effect::runSync( acquiredSignal.await() ) ).toBeTrue();
+				expect( permitSource.availablePermits() ).toBe( 0 );
+				protectedFiber.interrupt();
+				expect( protectedFiber.await().cause().kind() ).toBe( "Interrupt" );
+				awaitCondition( () => permitSource.availablePermits() == 1 );
+				expect( permitSource.availablePermits() ).toBe( 1 );
+			} );
+
+			it( "rejects invalid permit counts before constructing the native primitive", () => {
+				expect( () => Semaphore::make( -1 ) ).toThrow( type: "BXEffect.InvalidPermitCount" );
+				expect( () => Semaphore::make( 1.5 ) ).toThrow( type: "BXEffect.InvalidPermitCount" );
+		} );
+
+	} );
+	}
+
+	private function awaitCondition( required function predicate ) {
+		var deadline = getTickCount() + 1000;
+		while ( !arguments.predicate() && getTickCount() < deadline ) {
+			sleep( 1 );
+		}
+		expect( arguments.predicate() ).toBeTrue();
+	}
+
+}

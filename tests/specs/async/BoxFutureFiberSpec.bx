@@ -1,0 +1,409 @@
+import models.effect.Effect@bxEffect;
+import models.effect.Deferred@bxEffect;
+import models.effect.context.ServiceTag@bxEffect;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "BoxFuture and Fiber integration", () => {
+
+			it( "defers BoxFuture construction until the Effect runs", () => {
+				var factoryCalls = 0;
+				var program = Effect::fromBoxFuture( () => {
+					factoryCalls++;
+					return futureNew( "ready" );
+				} );
+
+				expect( factoryCalls ).toBe( 0 );
+				expect( Effect::runSync( program ) ).toBe( "ready" );
+				expect( factoryCalls ).toBe( 1 );
+			} );
+
+			it( "represents failed BoxFutures as defects", () => {
+				var exit = Effect::runSyncExit(
+					Effect::fromBoxFuture( () => futureNew( () => {
+						throw( type: "BXEffect.AsyncDefect", message: "future failed" );
+					} ) )
+				);
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Die" );
+			} );
+
+			it( "returns native BoxFutures for asynchronous runtime boundaries", () => {
+				var successFuture = Effect::runFuture( Effect::succeed( "value" ) );
+				var exitFuture = Effect::runFutureExit( Effect::fail( "bad" ) );
+
+				expect( successFuture.get() ).toBe( "value" );
+				expect( exitFuture.get().cause().error() ).toBe( "bad" );
+			} );
+
+			it( "completes runFuture exceptionally with the Effect failure detail", () => {
+				var failedFuture = Effect::runFuture( Effect::fail( "bad" ) );
+				var boundaryError = null;
+
+				try {
+					failedFuture.get();
+				} catch ( any error ) {
+					boundaryError = error;
+				}
+
+				expect( !isNull( boundaryError ) ).toBeTrue();
+				expect( boundaryError.message ).toInclude( "Expected failure: bad" );
+			} );
+
+			it( "forks logical fibers that await, join, and poll native future results", () => {
+				var fiber = Effect::runFork( Effect::succeed( "value" ) );
+				var completedExit = fiber.await();
+
+				expect( completedExit.isSuccess() ).toBeTrue();
+				expect( completedExit.value() ).toBe( "value" );
+				expect( fiber.join() ).toBe( "value" );
+				expect( fiber.poll().isPresent() ).toBeTrue();
+				expect( fiber.poll().get().value() ).toBe( "value" );
+				expect( fiber.isDone() ).toBeTrue();
+				expect( len( fiber.id() ) > 0 ).toBeTrue();
+			} );
+
+			it( "forks through the Effect instruction without starting work during construction", () => {
+				var runs = 0;
+				var program = Effect::sync( () => {
+					runs++;
+					return "value";
+				} ).fork();
+
+				expect( runs ).toBe( 0 );
+				var fiber = Effect::runSync( program );
+				expect( fiber.join() ).toBe( "value" );
+				expect( runs ).toBe( 1 );
+			} );
+
+			it( "runs all branches through BoxLang asyncAll and preserves result order", () => {
+				var program = Effect::all( [
+					Effect::fromBoxFuture( () => futureNew( "first" ) ),
+					Effect::fromBoxFuture( () => futureNew( "second" ) )
+				] );
+
+				expect( Effect::runSync( program ) ).toBe( [ "first", "second" ] );
+			} );
+
+			it( "succeeds with an empty collection when all has no branches", () => {
+				expect( Effect::runSync( Effect::all( [] ) ) ).toBe( [] );
+			} );
+
+			it( "retains an Effect failure produced by an all branch", () => {
+				var exit = Effect::runSyncExit( Effect::all( [
+					Effect::succeed( "first" ),
+					Effect::fail( "bad" )
+				] ) );
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Fail" );
+				expect( exit.cause().error() ).toBe( "bad" );
+			} );
+
+			it( "fails fast without starting later sequential all branches", () => {
+				var laterBranchesStarted = 0;
+				var program = Effect::all( [
+					Effect::fail( "stop" ),
+					Effect::sync( () => {
+						laterBranchesStarted++;
+						return "should not run";
+					} )
+				], { concurrency: 1 } );
+
+				var exit = Effect::runSyncExit( program );
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().error() ).toBe( "stop" );
+				expect( laterBranchesStarted ).toBe( 0 );
+			} );
+
+			it( "accumulates failures and continues bounded all branches", () => {
+				var started = [];
+				var first = Effect::sync( () => {
+					started.append( "first" );
+					return null;
+				} ).flatMap( ( ignored ) => Effect::fail( "first failure" ) );
+				var second = Effect::sync( () => {
+					started.append( "second" );
+					return null;
+				} ).flatMap( ( ignored ) => Effect::fail( "second failure" ) );
+
+				var exit = Effect::runSyncExit( Effect::all( [ first, second ], {
+					concurrency : 1,
+					mode : "accumulate"
+				} ) );
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Parallel" );
+				expect( exit.cause().failures() ).toBe( [ "first failure", "second failure" ] );
+				expect( started ).toBe( [ "first", "second" ] );
+			} );
+
+			it( "bounds all branch execution without changing result order", () => {
+				var counters = {
+					active : new AtomicInteger( 0 ),
+					peak : new AtomicInteger( 0 )
+				};
+				var programs = [];
+				for ( var index = 1; index <= 4; index++ ) {
+					programs.append( boundedBranch( index, counters ) );
+				}
+
+				expect( Effect::runSync( Effect::all( programs, { concurrency: 2 } ) ) )
+					.toBe( [ 1, 2, 3, 4 ] );
+				expect( counters.peak.get() ).toBe( 2 );
+			} );
+
+			it( "rejects unsupported all options before it can start work", () => {
+				expect( () => Effect::all( [], { concurrency: 0 } ) )
+					.toThrow( type: "BXEffect.InvalidConcurrency" );
+				expect( () => Effect::all( [], { mode: "firstSuccess" } ) )
+					.toThrow( type: "BXEffect.InvalidAllMode" );
+				expect( () => Effect::all( [], { workers: 2 } ) )
+					.toThrow( type: "BXEffect.InvalidAllOption" );
+			} );
+
+			it( "traverses values lazily and preserves mapped result order", () => {
+				var mapped = 0;
+				var program = Effect::forEach( [ 1, 2, 3 ], ( value, index ) => {
+					mapped++;
+					return Effect::succeed( value * index );
+				} );
+
+				expect( mapped ).toBe( 0 );
+				expect( Effect::runSync( program ) ).toBe( [ 1, 4, 9 ] );
+				expect( mapped ).toBe( 3 );
+			} );
+
+			it( "does not invoke skipped sequential forEach mappers after failure", () => {
+				var mapped = 0;
+				var program = Effect::forEach( [ 1, 2, 3 ], ( value, index ) => {
+					mapped++;
+					return value == 1 ? Effect::fail( "stop" ) : Effect::succeed( value );
+				}, { concurrency: 1 } );
+
+				var exit = Effect::runSyncExit( program );
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().error() ).toBe( "stop" );
+				expect( mapped ).toBe( 1 );
+			} );
+
+			it( "can discard forEach results without skipping work", () => {
+				var mapped = 0;
+				var program = Effect::forEach( [ "a", "b" ], ( value, index ) => {
+					mapped++;
+					return Effect::succeed( value & index );
+				}, { discard: true } );
+
+				expect( Effect::runSync( program ) ).toBeNull();
+				expect( mapped ).toBe( 2 );
+			} );
+
+			it( "inherits provided services in concurrent branches", () => {
+				var label = ServiceTag::of( "app/Label" );
+				var program = Effect::all( [
+					Effect::service( label ),
+					Effect::service( label ).map( ( value ) => value & "!" )
+				] ).provideService( label, "shared" );
+
+				expect( Effect::runSync( program ) ).toBe( [ "shared", "shared!" ] );
+			} );
+
+			it( "retains Context across a nested BoxFuture boundary", () => {
+				var label = ServiceTag::of( "app/AsyncLabel" );
+				var program = Effect::fromBoxFuture( () => futureNew( "ready" ) )
+					.flatMap( ( ignored ) => Effect::service( label ) )
+					.provideService( label, "preserved" );
+
+				expect( Effect::runSync( program ) ).toBe( "preserved" );
+			} );
+
+			it( "returns the first completed branch through BoxLang asyncAny", () => {
+				var fast = Effect::fromBoxFuture( () => futureNew( () => {
+					sleep( 20 );
+					return "fast";
+				} ) );
+				var slow = Effect::fromBoxFuture( () => futureNew( () => {
+					sleep( 150 );
+					return "slow";
+				} ) );
+
+				expect( Effect::runSync( Effect::race( [ slow, fast ] ) ) ).toBe( "fast" );
+			} );
+
+			it( "lets the first completed failed race branch win", () => {
+				var slow = Effect::fromBoxFuture( () => futureNew( () => {
+					sleep( 100 );
+					return "late";
+				} ) );
+				var exit = Effect::runSyncExit( Effect::race( [
+					Effect::fail( "winner" ),
+					slow
+				] ) );
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().error() ).toBe( "winner" );
+			} );
+
+			it( "rejects empty races at construction", () => {
+				expect( () => Effect::race( [] ) ).toThrow( type: "BXEffect.EmptyRace" );
+			} );
+
+			it( "waits past failures until firstSuccessOf receives a success", () => {
+				var earlyFailure = Effect::fromBoxFuture( () => futureNew( () => {
+					sleep( 20 );
+					return "ignored";
+				} ) ).flatMap( ( ignored ) => Effect::fail( "bad" ) );
+				var laterSuccess = Effect::fromBoxFuture( () => futureNew( () => {
+					sleep( 80 );
+					return "winner";
+				} ) );
+
+				expect( Effect::runSync( Effect::firstSuccessOf( [ earlyFailure, laterSuccess ] ) ) )
+					.toBe( "winner" );
+			} );
+
+			it( "returns a failure when firstSuccessOf has no successful branch", () => {
+				var exit = Effect::runSyncExit( Effect::firstSuccessOf( [
+					Effect::fail( "first" ),
+					Effect::fail( "second" )
+				] ) );
+
+				expect( exit.isFailure() ).toBeTrue();
+				var errors = exit.cause().failures();
+				expect( exit.cause().kind() ).toBe( "Parallel" );
+				expect( errors.len() ).toBe( 2 );
+				expect( listFindNoCase( "first,second", errors[ 1 ] ) > 0 ).toBeTrue();
+				expect( listFindNoCase( "first,second", errors[ 2 ] ) > 0 ).toBeTrue();
+				expect( () => Effect::firstSuccessOf( [] ) )
+					.toThrow( type: "BXEffect.EmptyFirstSuccess" );
+			} );
+
+			it( "interrupts and finalizes running all siblings after fail-fast failure", () => {
+				var slowStarted = Deferred::make();
+				var slowGate = Deferred::make();
+				var releases = new AtomicInteger( 0 );
+				var slow = Effect::acquireRelease(
+					Effect::succeed( "resource" ),
+					( ignored ) => Effect::sync( () => releases.incrementAndGet() )
+				).flatMap( ( ignored ) => slowStarted.succeed( true )
+					.flatMap( () => slowGate.await() )
+				);
+				var failing = slowStarted.await().flatMap( () => Effect::fail( "stop" ) );
+
+				var exit = Effect::runSyncExit( Effect::all( [ slow, failing ] ) );
+				awaitCondition( () => releases.get() == 1 );
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Fail" );
+				expect( exit.cause().error() ).toBe( "stop" );
+				expect( releases.get() ).toBe( 1 );
+			} );
+
+			it( "interrupts and finalizes firstSuccessOf losers after a success", () => {
+				var slowStarted = Deferred::make();
+				var slowGate = Deferred::make();
+				var releases = new AtomicInteger( 0 );
+				var slow = Effect::acquireRelease(
+					Effect::succeed( "resource" ),
+					( ignored ) => Effect::sync( () => releases.incrementAndGet() )
+				).flatMap( ( ignored ) => slowStarted.succeed( true )
+					.flatMap( () => slowGate.await() )
+				);
+				var winner = slowStarted.await().as( "winner" );
+
+				expect( Effect::runSync( Effect::firstSuccessOf( [ slow, winner ] ) ) )
+					.toBe( "winner" );
+				awaitCondition( () => releases.get() == 1 );
+				expect( releases.get() ).toBe( 1 );
+			} );
+
+			it( "reports interruption when a running Fiber is cancelled", () => {
+				var fiber = Effect::runFork(
+					Effect::fromBoxFuture( () => futureNew( () => {
+						sleep( 500 );
+						return "late";
+					} ) )
+				);
+
+				fiber.interrupt();
+				var exit = fiber.await();
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Interrupt" );
+			} );
+
+			it( "requests cancellation of the active nested BoxFuture and finalizes once", () => {
+				var nestedFuture = futureNew();
+				var factoryStarted = new AtomicBoolean( false );
+				var releases = new AtomicInteger( 0 );
+				var program = Effect::acquireRelease(
+					Effect::succeed( "resource" ),
+					( ignored ) => Effect::sync( () => releases.incrementAndGet() )
+				).flatMap( ( ignored ) => Effect::fromBoxFuture( () => {
+					factoryStarted.set( true );
+					return nestedFuture;
+				} ) );
+				var fiber = Effect::runFork( program );
+
+				awaitCondition( () => factoryStarted.get() );
+				fiber.interrupt();
+				var exit = fiber.await();
+				awaitCondition( () => releases.get() == 1 );
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Interrupt" );
+				expect( nestedFuture.isCancelled() ).toBeTrue();
+				expect( releases.get() ).toBe( 1 );
+			} );
+
+			it( "interrupts unfinished child Fibers when their parent scope closes", () => {
+				var childFiber = null;
+				var child = Effect::fromBoxFuture( () => futureNew( () => {
+					sleep( 500 );
+					return "late";
+				} ) );
+				var parent = child.fork().flatMap( ( forkedFiber ) => Effect::sync( () => {
+					childFiber = forkedFiber;
+					return "parent";
+				} ) );
+
+				expect( Effect::runSync( parent ) ).toBe( "parent" );
+				var childExit = childFiber.await();
+
+				expect( childExit.isFailure() ).toBeTrue();
+				expect( childExit.cause().kind() ).toBe( "Interrupt" );
+			} );
+
+		} );
+	}
+
+	private function boundedBranch( required numeric branchValue, required struct counters ) {
+		var valueToReturn = arguments.branchValue;
+		var sharedCounters = arguments.counters;
+		return Effect::fromBoxFuture( () => futureNew( () => {
+			var activeNow = sharedCounters.active.incrementAndGet();
+			while ( true ) {
+				var previousPeak = sharedCounters.peak.get();
+				if ( activeNow <= previousPeak || sharedCounters.peak.compareAndSet( previousPeak, activeNow ) ) {
+					break;
+				}
+			}
+			sleep( 30 );
+			sharedCounters.active.decrementAndGet();
+			return valueToReturn;
+		} ) );
+	}
+
+	private function awaitCondition( required function predicate ) {
+		var deadline = getTickCount() + 1000;
+		while ( !arguments.predicate() && getTickCount() < deadline ) {
+			sleep( 1 );
+		}
+		expect( arguments.predicate() ).toBeTrue();
+	}
+
+}

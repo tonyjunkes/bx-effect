@@ -1,0 +1,313 @@
+import models.effect.Effect@bxEffect;
+import models.effect.context.Context@bxEffect;
+import models.effect.context.Layer@bxEffect;
+import models.effect.context.ServiceTag@bxEffect;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Context and Layers", () => {
+
+			it( "uses stable service tag identities", () => {
+				var firstTag = ServiceTag::of( "app/Repository" );
+				var sameTag = ServiceTag::of( "app/Repository" );
+				var otherTag = ServiceTag::of( "app/Logger" );
+
+				expect( firstTag.equals( sameTag ) ).toBeTrue();
+				expect( firstTag.equals( otherTag ) ).toBeFalse();
+				expect( firstTag.hashCode() ).toBe( sameTag.hashCode() );
+				expect( firstTag.key() ).toBe( "app/Repository" );
+			} );
+
+			it( "adds and merges Context services without mutating prior contexts", () => {
+				var repository = ServiceTag::of( "app/Repository" );
+				var logger = ServiceTag::of( "app/Logger" );
+				var emptyContext = Context::empty();
+				var repositoryContext = emptyContext.add( repository, "repo-v1" );
+				var loggerContext = Context::empty()
+					.add( logger, "logger" )
+					.add( repository, "repo-v2" );
+				var mergedContext = repositoryContext.merge( loggerContext );
+
+				expect( emptyContext.has( repository ) ).toBeFalse();
+				expect( repositoryContext.get( repository ) ).toBe( "repo-v1" );
+				expect( mergedContext.get( repository ) ).toBe( "repo-v2" );
+				expect( mergedContext.get( logger ) ).toBe( "logger" );
+			} );
+
+			it( "resolves services and restores nested Context provision", () => {
+				var label = ServiceTag::of( "app/Label" );
+				var program = Effect::service( label ).flatMap( ( outerValue ) =>
+					Effect::service( label )
+						.provideService( label, "inner" )
+						.flatMap( ( innerValue ) =>
+							Effect::service( label ).map( ( restoredValue ) => [
+								outerValue,
+								innerValue,
+								restoredValue
+							] )
+						)
+				).provideService( label, "outer" );
+
+				expect( Effect::runSync( program ) ).toBe( [ "outer", "inner", "outer" ] );
+			} );
+
+			it( "restores the outer Context before expected-error recovery", () => {
+				var label = ServiceTag::of( "app/Label" );
+				var program = Effect::fail( "bad" )
+					.provideService( label, "inner" )
+					.catchAll( ( error ) => Effect::service( label ) )
+					.provideService( label, "outer" );
+
+				expect( Effect::runSync( program ) ).toBe( "outer" );
+			} );
+
+			it( "restores the outer Context before defect recovery", () => {
+				var label = ServiceTag::of( "app/DefectLabel" );
+				var program = Effect::sync( () => {
+					throw( type: "BXEffect.TestDefect", message: "bad" );
+				} ).provideService( label, "inner" )
+					.catchCause( ( failureCause ) => Effect::service( label ) )
+					.provideService( label, "outer" );
+
+				expect( Effect::runSync( program ) ).toBe( "outer" );
+			} );
+
+			it( "represents a missing service as a defect", () => {
+				var missingTag = ServiceTag::of( "app/Missing" );
+				var availableContext = Context::empty()
+					.add( ServiceTag::of( "app/Logger" ), "logger" )
+					.add( ServiceTag::of( "app/Repository" ), "repository" );
+				var exit = Effect::runSyncExit( Effect::service( missingTag ) );
+				var detailExit = Effect::runSyncExit(
+					Effect::service( missingTag ).provide( availableContext )
+				);
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Die" );
+				expect( exit.cause().defect().type ).toBe( "BXEffect.MissingService" );
+				expect( detailExit.cause().defect().extendedInfo.requestedTag ).toBe( "app/Missing" );
+				expect( detailExit.cause().defect().extendedInfo.availableTags )
+					.toBe( [ "app/Logger", "app/Repository" ] );
+			} );
+
+			it( "builds and provides succeeding Layers lazily", () => {
+				var repository = ServiceTag::of( "app/Repository" );
+				var builds = 0;
+				var live = Layer::effect(
+					repository,
+					Effect::sync( () => {
+						builds++;
+						return "repository";
+					} )
+				);
+				var program = Effect::service( repository ).provide( live );
+
+				expect( builds ).toBe( 0 );
+				expect( Effect::runSync( program ) ).toBe( "repository" );
+				expect( builds ).toBe( 1 );
+			} );
+
+			it( "merges dependent Layers in build order", () => {
+				var prefix = ServiceTag::of( "app/Prefix" );
+				var formatter = ServiceTag::of( "app/Formatter" );
+				var prefixLayer = Layer::succeed( prefix, "bx" );
+				var formatterLayer = Layer::effect(
+					formatter,
+					Effect::service( prefix ).map( ( configuredPrefix ) => {
+						prefix : configuredPrefix
+					} )
+				);
+				var live = Layer::merge( [ prefixLayer, formatterLayer ] );
+				var program = Effect::service( formatter )
+					.map( ( configuredFormatter ) => configuredFormatter.prefix & "-effect" )
+					.provide( live );
+
+				expect( Effect::runSync( program ) ).toBe( "bx-effect" );
+			} );
+
+			it( "memoizes one shared Layer instance within a runtime execution", () => {
+				var repository = ServiceTag::of( "app/MemoizedRepository" );
+				var builds = 0;
+				var shared = Layer::effect(
+					repository,
+					Effect::sync( () => {
+						builds++;
+						return "repository";
+					} )
+				);
+				var program = Effect::service( repository )
+					.provide( shared )
+					.flatMap( ( firstValue ) => Effect::service( repository )
+						.provide( shared )
+						.map( ( secondValue ) => [ firstValue, secondValue ] )
+					);
+
+				expect( Effect::runSync( program ) ).toBe( [ "repository", "repository" ] );
+				expect( builds ).toBe( 1 );
+			} );
+
+			it( "memoizes a shared Layer reused by Layer.merge", () => {
+				var repository = ServiceTag::of( "app/MergedMemoizedRepository" );
+				var builds = 0;
+				var shared = Layer::effect(
+					repository,
+					Effect::sync( () => {
+						builds++;
+						return "repository";
+					} )
+				);
+				var program = Effect::service( repository ).provide(
+					Layer::merge( [ shared, shared ] )
+				);
+
+				expect( Effect::runSync( program ) ).toBe( "repository" );
+				expect( builds ).toBe( 1 );
+			} );
+
+			it( "does not cache failed Layer construction as a success", () => {
+				var repository = ServiceTag::of( "app/FailedMemoizedRepository" );
+				var builds = 0;
+				var shared = Layer::effect(
+					repository,
+					Effect::sync( () => {
+						builds++;
+						return null;
+					} ).flatMap( ( ignored ) => Effect::fail( "unavailable" ) )
+				);
+				var attempt = Effect::service( repository ).provide( shared );
+				var program = attempt.catchAll( ( firstError ) =>
+					attempt.catchAll( ( secondError ) => Effect::succeed( "recovered" ) )
+				);
+
+				expect( Effect::runSync( program ) ).toBe( "recovered" );
+				expect( builds ).toBe( 2 );
+			} );
+
+			it( "keeps Layer memo entries local to one runtime execution", () => {
+				var repository = ServiceTag::of( "app/RuntimeLocalMemoRepository" );
+				var builds = 0;
+				var shared = Layer::effect(
+					repository,
+					Effect::sync( () => {
+						builds++;
+						return "repository";
+					} )
+				);
+				var program = Effect::service( repository ).provide( shared );
+
+				expect( Effect::runSync( program ) ).toBe( "repository" );
+				expect( Effect::runSync( program ) ).toBe( "repository" );
+				expect( builds ).toBe( 2 );
+			} );
+
+			it( "builds distinct Layer instances independently even for the same tag", () => {
+				var repository = ServiceTag::of( "app/DistinctLayerRepository" );
+				var firstBuilds = 0;
+				var secondBuilds = 0;
+				var firstLayer = Layer::effect(
+					repository,
+					Effect::sync( () => {
+						firstBuilds++;
+						return "first";
+					} )
+				);
+				var secondLayer = Layer::effect(
+					repository,
+					Effect::sync( () => {
+						secondBuilds++;
+						return "second";
+					} )
+				);
+
+				expect( Effect::runSync( Effect::all( [
+					Effect::service( repository ).provide( firstLayer ),
+					Effect::service( repository ).provide( secondLayer )
+				] ) ) ).toBe( [ "first", "second" ] );
+				expect( firstBuilds ).toBe( 1 );
+				expect( secondBuilds ).toBe( 1 );
+			} );
+
+			it( "preserves defects from Layer construction", () => {
+				var repository = ServiceTag::of( "app/DefectiveLayerRepository" );
+				var defectiveLayer = Layer::effect(
+					repository,
+					Effect::sync( () => {
+						throw( type: "BXEffect.LayerDefect", message: "broken" );
+					} )
+				);
+
+				var layerExit = Effect::runSyncExit(
+					Effect::service( repository ).provide( defectiveLayer )
+				);
+				expect( layerExit.isFailure() ).toBeTrue();
+				expect( layerExit.cause().kind() ).toBe( "Die" );
+				expect( layerExit.cause().defect().type ).toBe( "BXEffect.LayerDefect" );
+			} );
+
+			it( "releases a memoized scoped Layer resource once", () => {
+				var connection = ServiceTag::of( "app/MemoizedConnection" );
+				var releases = 0;
+				var shared = Layer::scoped(
+					connection,
+					Effect::acquireRelease(
+						Effect::succeed( "connection" ),
+						( resource ) => Effect::sync( () => releases++ )
+					)
+				);
+				var program = Effect::service( connection )
+					.provide( shared )
+					.flatMap( ( firstValue ) => Effect::service( connection )
+						.provide( shared )
+						.map( ( secondValue ) => [ firstValue, secondValue ] )
+					);
+
+				expect( Effect::runSync( program ) ).toBe( [ "connection", "connection" ] );
+				expect( releases ).toBe( 1 );
+			} );
+
+			it( "shares one in-flight Layer build across concurrent branches", () => {
+				var repository = ServiceTag::of( "app/ConcurrentMemoizedRepository" );
+				var builds = new AtomicInteger( 0 );
+				var shared = Layer::effect(
+					repository,
+					Effect::fromBoxFuture( () => futureNew( () => {
+						builds.incrementAndGet();
+						sleep( 25 );
+						return "repository";
+					} ) )
+				);
+				var branch = Effect::service( repository ).provide( shared );
+
+				expect( Effect::runSync( Effect::all( [ branch, branch ] ) ) )
+					.toBe( [ "repository", "repository" ] );
+				expect( builds.get() ).toBe( 1 );
+			} );
+
+			it( "shares one concurrent scoped Layer acquisition and releases it once", () => {
+				var connection = ServiceTag::of( "app/ConcurrentMemoizedConnection" );
+				var acquires = new AtomicInteger( 0 );
+				var releases = new AtomicInteger( 0 );
+				var shared = Layer::scoped(
+					connection,
+					Effect::acquireRelease(
+						Effect::sync( () => {
+							acquires.incrementAndGet();
+							return "connection";
+						} ),
+						( ignored ) => Effect::sync( () => releases.incrementAndGet() )
+					)
+				);
+				var branch = Effect::service( connection ).provide( shared );
+
+				expect( Effect::runSync( Effect::all( [ branch, branch ] ) ) )
+					.toBe( [ "connection", "connection" ] );
+				expect( acquires.get() ).toBe( 1 );
+				expect( releases.get() ).toBe( 1 );
+			} );
+
+		} );
+	}
+
+}
