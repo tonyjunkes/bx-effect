@@ -6,5 +6,5 @@ testbox/
 *.jar
 *.log
 .DS_Store
-specs/
-!tests/specs
+.engine
+.agents/specs/

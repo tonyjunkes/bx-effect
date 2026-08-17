@@ -1,4 +1,5 @@
 <!-- FOR AI AGENTS | Verify commands and runtime assumptions against README.md and CI. -->
+<!-- Last updated: 2026-08-17 | Last verified: 2026-08-17 -->
 
 # AGENTS.md
 
@@ -7,23 +8,16 @@ overrides it for files in that subtree.
 
 ## Project
 
-BX Effect is a BoxLang 1.16.0+ module that adds lazy, composable Effect
-semantics while reusing BoxLang's runtime facilities. It is Effect-inspired,
-not an API-compatible TypeScript Effect port.
+BX Effect is a BoxLang 1.16.0+ and Java 21+ module that adds lazy, composable
+Effect semantics while reusing BoxLang's runtime facilities. It is
+Effect-inspired, not an API-compatible TypeScript Effect port.
 
-Treat these sources as authoritative, in order:
-
-1. `specs/bx-effect-design-spec.md` for architecture, semantics, and scope.
-2. `specs/next-development-spec.md` for the approved post-baseline delivery
-   order, decisions, and acceptance criteria.
-3. `specs/implementation-status.md` for what is actually implemented.
-4. Focused guides in `docs/` for public behavior and deliberate BoxLang-native
-   differences, especially `docs/effect-alignment.md`.
-5. Tests for executable contracts and `README.md` for the public entry points.
-
-If implementation needs to depart from the design spec, prefer a documented
-BoxLang-native facility and record the semantic difference in the appropriate
-guide. Do not silently broaden the public API.
+Treat implementation and focused tests as the executable contract. Use the
+focused guides in `docs/` for public semantics and deliberate BoxLang-native
+differences, especially `docs/effect-alignment.md`; use `README.md` for supported
+entry points and setup. If these disagree, do not guess: preserve current
+behavior while reconciling the guide and tests. Do not silently broaden the
+public API.
 
 ## Architecture
 
@@ -33,12 +27,13 @@ guide. Do not silently broaden the public API.
 | `models/effect/EffectRuntime.bx` | Iterative interpreter and sync/async execution boundaries |
 | `models/effect/Cause.bx`, `Exit.bx`, `Result.bx` | Failure trees and outcome values |
 | `models/effect/Scope.bx`, `Fiber.bx` | Resource safety and structured concurrency |
-| `models/effect/Schedule.bx`, `Clock.bx`, `testing/TestClock.bx` | Retry, repeat, deterministic delay, and timeout policies |
+| `models/effect/Schedule.bx`, `Clock.bx` | Retry, repeat, live delay, and timeout policies |
+| `models/effect/testing/TestClock.bx` | Published deterministic-clock test support for module consumers |
 | `models/effect/context/` | `Context`, `Layer`, and `ServiceTag` dependency model |
 | `models/effect/internal/` | Central throwable and tagged-error policies |
 | `ModuleConfig.bx`, `box.json` | Module settings, identity, packaging, and version metadata |
 | `tests/specs/` | TestBox contracts grouped by subsystem |
-| `.github/workflows/` | Supported-runtime tests and ForgeBox release gates |
+| `.github/workflows/tests.yml` | Test matrix for BoxLang `1.16.0` and `latest` |
 
 BX Effect is module-first: its BoxLang module must be installed, registered,
 and activated. Public applications import `models.effect.Effect@bxEffect` and
@@ -92,6 +87,10 @@ annotation-scanning requirements.
 - `Schedule::spaced()` delays from completion, whereas `Schedule::fixed()`
   targets recurrence start times and skips missed intervals after an overrun.
   Preserve this distinction through the runtime Clock and TestClock coverage.
+- `models/effect/testing/TestClock.bx` is shipped test support for downstream
+  consumers, not a repository test fixture. Keep it independent of TestBox;
+  repository-only fixtures and specs belong under `tests/`, which packaging
+  excludes.
 - The optional `EffectRuntime` observer is diagnostic-only. Its failures must
   not alter an Exit or prevent cleanup; do not add a module observability
   setting, interceptor bridge, or telemetry dependency without its own focused
@@ -161,21 +160,16 @@ Run commands from the repository root. Install development dependencies with:
 box install
 ```
 
-The canonical local suite when BoxLang is supplied by CommandBox is:
+The canonical local suite is the package script declared in `box.json`:
 
 ```bash
-box boxlang cli --bx-config tests/boxlang.json \
-  testbox/system/runners/BoxLangRunner.bx \
-  --directory=tests.specs \
-  --stream \
-  --write-report=false \
-  --properties-summary=false \
-  --stacktrace=short
+box run-script test
 ```
 
-With a standalone executable, replace `box boxlang cli` with `boxlang`. For a
-narrow iteration, change `--directory` to a package such as
-`tests.specs.core`, `tests.specs.context`, or `tests.specs.schedule`.
+For a narrow iteration, run the underlying command with `box boxlang cli` and
+change `--directory` to a package such as `tests.specs.core`,
+`tests.specs.context`, or `tests.specs.schedule`. In CI or with a standalone
+executable, use `boxlang` in place of `box boxlang cli`.
 
 Additional checks:
 
@@ -205,38 +199,9 @@ for interpreter or composition changes.
 | Futures, Fibers, or concurrency | Native BoxFuture return types, Context inheritance, child ownership, cancellation, and async specs |
 | Schedule or timeout | Laziness, expected-failure-only retry, cleanup, timing semantics, and schedule specs |
 | Module settings | `ModuleConfig.bx`, both test configs, module specs, and executor-override check |
-| Version or release metadata | `box.json`, `ModuleConfig.bx`, `CHANGELOG.md`, release docs, and workflows |
-| Public API | README/guides, module-resolved imports, focused tests, and implementation status |
+| Version or release metadata | `box.json`, `ModuleConfig.bx`, `CHANGELOG.md`, and `docs/releasing.md` |
+| Supported runtime matrix | `box.json`, README requirements, test configs, and `.github/workflows/tests.yml` |
+| Public API | README/guides, module-resolved imports, focused tests, and package contents |
 
 Add focused TestBox coverage with behavior changes. Tests should assert failure
 channel distinctions, not merely that an operation failed.
-
-## Packaging and Release Safety
-
-- `box install` with no package argument is the normal dependency install.
-- Never run `box install /absolute/path/to/this/repository` or install the
-  source tree into a global module directory. A source-folder install has
-  removed the workspace before.
-- For installation smoke tests, use a disposable archive or production-only
-  copy outside the source tree and an explicit BoxLang module configuration.
-  Verify that tests and TestBox are excluded from the packaged module.
-- Do not commit, push, tag, publish, or change CI/release behavior unless the
-  user explicitly requests it. Publishing requires the repository's
-  `FORGEBOX_API_TOKEN` secret.
-- Local tests, package inspection, and smoke tests are not hosted CI evidence.
-  CI must independently pass both BoxLang `1.16.0` and `latest` before claiming
-  the hosted release gate is satisfied.
-
-## Working Practices
-
-1. Read the relevant design section, implementation, guide, and specs before
-   editing.
-2. Check `git status --short` and preserve all user changes. Never reset or
-   rewrite unrelated work.
-3. Make the smallest coherent change. Ask before adding dependencies or
-   intentionally changing a public contract.
-4. Validate proportionally: focused spec first, then the broader checks above.
-5. Report changed files, exact commands run, results, and any checks not run.
-
-Never expose secrets, hand-edit runner output, use destructive Git commands, or
-claim external release verification from local evidence.

@@ -20,7 +20,7 @@
     ],
     "boxlang":{
         "minimumVersion":"1.16.0",
-        "moduleName":"bxEffect"
+        "moduleName":"bxeffect"
     },
     "private":false,
     "license":[
@@ -30,7 +30,10 @@
         }
     ],
     "devDependencies":{
-        "testbox":"^7.0.0"
+        "testbox":"^7.0.0+19"
+    },
+    "scripts":{
+        "test":"boxlang cli --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs --stream --write-report=false --properties-summary=false --stacktrace=short"
     },
     "installPaths":{
         "testbox":"testbox/"
@@ -43,7 +46,10 @@
         "build.gradle",
         "src/**",
         "gradle/**",
-        "**/tests/**",
-        "testbox/**"
+        "tests/**",
+        "testbox/**",
+        "examples/**",
+        "benchmarks/**",
+        "docs/**"
     ]
 }
