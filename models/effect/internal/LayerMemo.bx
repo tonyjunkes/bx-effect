@@ -1,0 +1,32 @@
+import bxModules.bxEffect.models.effect.Exit;
+
+/**
+ * Runtime-private Layer build coordination shared by a root runtime and its
+ * child Fibers. A successful build stays memoized; a failed build is delivered
+ * to current waiters and then removed so a later provision can retry.
+ */
+class {
+
+	variables.outcomes = new java.util.concurrent.ConcurrentHashMap();
+
+	function begin( required string layerId ) {
+		var proposedFuture = futureNew();
+		var existingFuture = variables.outcomes.putIfAbsent( arguments.layerId, proposedFuture );
+		return {
+			owner : isNull( existingFuture ),
+			outcomeFuture : isNull( existingFuture ) ? proposedFuture : existingFuture
+		};
+	}
+
+	function completeSuccess( required string layerId, required any outcomeFuture, required any value ) {
+		arguments.outcomeFuture.complete( Exit::success( arguments.value ) );
+		return this;
+	}
+
+	function completeFailure( required string layerId, required any outcomeFuture, required any failureCause ) {
+		arguments.outcomeFuture.complete( Exit::failure( arguments.failureCause ) );
+		variables.outcomes.remove( arguments.layerId, arguments.outcomeFuture );
+		return this;
+	}
+
+}

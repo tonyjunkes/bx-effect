@@ -1,0 +1,66 @@
+import bxModules.bxEffect.models.effect.context.ServiceTag;
+
+/**
+ * Immutable-by-contract map of ServiceTag to service implementation.
+ */
+class {
+
+	variables.services = {};
+
+	Context function init( struct services = {} ) {
+		variables.services = arguments.services.copy();
+		return this;
+	}
+
+	static function empty() {
+		return new Context();
+	}
+
+	function add( required ServiceTag tag, any service ) {
+		var nextServices = variables.services.copy();
+		nextServices[ arguments.tag.key() ] = {
+			tag : arguments.tag,
+			service : arguments.service
+		};
+		return new Context( nextServices );
+	}
+
+	any function get( required ServiceTag tag ) {
+		var serviceKey = arguments.tag.key();
+		if ( !structKeyExists( variables.services, serviceKey ) ) {
+			var availableTags = [];
+			for ( var providedKey in variables.services ) {
+				availableTags.append( providedKey );
+			}
+			availableTags.sort();
+			throw(
+				type: "BXEffect.MissingService",
+				message: "No service is available for [#serviceKey#]. Available tags: [#availableTags.toList()#]",
+				extendedInfo: {
+					requestedTag : serviceKey,
+					availableTags : availableTags
+				}
+			);
+		}
+		return variables.services[ serviceKey ].service;
+	}
+
+	boolean function has( required ServiceTag tag ) {
+		return structKeyExists( variables.services, arguments.tag.key() );
+	}
+
+	function merge( required Context otherContext ) {
+		var nextServices = variables.services.copy();
+		var otherServices = arguments.otherContext._services();
+		for ( var serviceKey in otherServices ) {
+			nextServices[ serviceKey ] = otherServices[ serviceKey ];
+		}
+		return new Context( nextServices );
+	}
+
+	/** Internal read-only interpreter/layer access. */
+	struct function _services() {
+		return variables.services.copy();
+	}
+
+}

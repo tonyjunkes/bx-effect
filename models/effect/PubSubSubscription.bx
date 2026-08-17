@@ -1,0 +1,63 @@
+import bxModules.bxEffect.models.effect.Effect;
+
+/**
+ * One explicit PubSub consumer. It receives values accepted while it remains
+ * active and delegates coordinated waits to its parent PubSub.
+ */
+class {
+
+	variables.pubSubSource = null;
+	variables.items = new java.util.ArrayDeque();
+	variables.shutdown = false;
+
+	function init( required any pubSubSource ) {
+		variables.pubSubSource = arguments.pubSubSource;
+		return this;
+	}
+
+	function take() {
+		return Effect::_takePubSubSubscription( this );
+	}
+
+	function poll() {
+		return variables.pubSubSource._pollNative( this );
+	}
+
+	function unsubscribe() {
+		var parentPubSub = variables.pubSubSource;
+		var subscriptionSource = this;
+		return Effect::sync( () => parentPubSub._unsubscribeNative( subscriptionSource ) );
+	}
+
+	boolean function isShutdown() {
+		return variables.shutdown || variables.pubSubSource.isShutdown();
+	}
+
+	/** Runtime-private parent-coordinated take. */
+	function _takeNative( any controlState = null ) {
+		return variables.pubSubSource._takeNative( this, arguments.controlState );
+	}
+
+	/** Runtime-private methods called only under the parent PubSub lock. */
+	function _enqueueNative( any value ) {
+		variables.items.addLast( { value: arguments.value } );
+	}
+
+	boolean function _isEmptyNative() {
+		return variables.items.isEmpty();
+	}
+
+	numeric function _sizeNative() {
+		return variables.items.size();
+	}
+
+	function _dequeueNative() {
+		return variables.items.removeFirst();
+	}
+
+	function _shutdownNative() {
+		variables.shutdown = true;
+		variables.items.clear();
+	}
+
+}

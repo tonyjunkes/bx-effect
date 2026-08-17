@@ -1,0 +1,26 @@
+<bx:script>
+import models.effect.Effect@bxEffect;
+import java.lang.System;
+
+iterations = 64;
+delayMs = 25;
+programs = [];
+for ( index = 1; index <= iterations; index++ ) {
+	programs.append( Effect::sleep( delayMs ).as( index ) );
+}
+
+startedAt = System.nanoTime();
+result = Effect::runSync( Effect::all( programs ) );
+elapsedMs = int( ( System.nanoTime() - startedAt ) / 1000000 );
+
+if ( result.len() != iterations ) {
+	throw(
+		type: "BXEffect.BenchmarkFailure",
+		message: "Expected #iterations# concurrent results but received #result.len()#"
+	);
+}
+
+writeOutput(
+	"iterations=#iterations# delayMs=#delayMs# resultCount=#result.len()# elapsedMs=#elapsedMs#"
+);
+</bx:script>

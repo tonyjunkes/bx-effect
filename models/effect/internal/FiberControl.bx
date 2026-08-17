@@ -1,0 +1,60 @@
+/**
+ * Mutable, runtime-private cancellation state for one logical Fiber.
+ *
+ * This is deliberately not part of the public Effect value model. It lets a
+ * Fiber request cancellation of both its outer runtime future and the native
+ * BoxFuture currently awaited by the iterative interpreter.
+ */
+class {
+
+	variables.activeFuture = null;
+	variables.fiberId = "";
+	variables.interrupted = false;
+
+	function init( required string fiberId ) {
+		variables.fiberId = arguments.fiberId;
+		return this;
+	}
+
+	function setActiveFuture( required any future ) {
+		variables.activeFuture = arguments.future;
+		if ( variables.interrupted ) {
+			cancelActiveFuture();
+		}
+		return this;
+	}
+
+	function clearActiveFuture( required any future ) {
+		if ( !isNull( variables.activeFuture ) && variables.activeFuture == arguments.future ) {
+			variables.activeFuture = null;
+		}
+		return this;
+	}
+
+	function interrupt() {
+		variables.interrupted = true;
+		cancelActiveFuture();
+		return this;
+	}
+
+	boolean function isInterrupted() {
+		return variables.interrupted;
+	}
+
+	string function fiberId() {
+		return variables.fiberId;
+	}
+
+	private function cancelActiveFuture() {
+		if ( isNull( variables.activeFuture ) || variables.activeFuture.isDone() ) {
+			return;
+		}
+
+		try {
+			variables.activeFuture.cancel( true );
+		} catch ( any ignored ) {
+			// A BoxFuture implementation may not support cancellation.
+		}
+	}
+
+}

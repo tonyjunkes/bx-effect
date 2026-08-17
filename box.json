@@ -1,0 +1,49 @@
+{
+    "name":"bx-effect",
+    "version":"0.1.0",
+    "location":"",
+    "author":"Tony Junkes",
+    "homepage":"https://github.com/tonyjunkes/bx-effect",
+    "documentation":"https://github.com/tonyjunkes/bx-effect",
+    "repository":{
+        "type":"git",
+        "URL":"https://github.com/tonyjunkes/bx-effect"
+    },
+    "slug":"bx-effect",
+    "shortDescription":"A BoxLang-native structured effect system inspired by Effect.",
+    "type":"boxlang-modules",
+    "keywords":[
+        "boxlang",
+        "effects",
+        "structured-concurrency",
+        "functional-programming"
+    ],
+    "boxlang":{
+        "minimumVersion":"1.16.0",
+        "moduleName":"bxEffect"
+    },
+    "private":false,
+    "license":[
+        {
+            "type":"MIT",
+            "URL":"https://opensource.org/licenses/MIT"
+        }
+    ],
+    "devDependencies":{
+        "testbox":"^7.0.0"
+    },
+    "installPaths":{
+        "testbox":"testbox/"
+    },
+    "ignore":[
+        "**/.*",
+        "settings.gradle",
+        "gradlew.bat",
+        "gradlew",
+        "build.gradle",
+        "src/**",
+        "gradle/**",
+        "**/tests/**",
+        "testbox/**"
+    ]
+}

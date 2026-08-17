@@ -1,0 +1,49 @@
+import bxModules.bxEffect.models.effect.Cause;
+
+/**
+ * The complete result of running an Effect.
+ */
+class {
+
+	variables.exitKind = "";
+	variables.exitValue = null;
+
+	function init( required string exitKind, any exitValue ) {
+		variables.exitKind = arguments.exitKind;
+		if ( structKeyExists( arguments, "exitValue" ) ) {
+			variables.exitValue = arguments.exitValue;
+		}
+		return this;
+	}
+
+	static function success( any value ) {
+		return new Exit( exitKind: "Success", exitValue: arguments.value );
+	}
+
+	static function failure( required Cause failureCause ) {
+		return new Exit( exitKind: "Failure", exitValue: arguments.failureCause );
+	}
+
+	boolean function isSuccess() {
+		return variables.exitKind == "Success";
+	}
+
+	boolean function isFailure() {
+		return variables.exitKind == "Failure";
+	}
+
+	any function value() {
+		return variables.exitValue;
+	}
+
+	function cause() {
+		return variables.exitValue;
+	}
+
+	any function match( required function onSuccess, required function onFailure ) {
+		return isSuccess()
+			? arguments.onSuccess( variables.exitValue )
+			: arguments.onFailure( variables.exitValue );
+	}
+
+}

@@ -1,0 +1,10 @@
+{
+  "modulesDirectory": [
+    "${user-dir}/.."
+  ],
+  "modules": {
+    "bxEffect": {
+      "enabled": true
+    }
+  }
+}

@@ -1,0 +1,158 @@
+import bxModules.bxEffect.models.effect.Effect;
+
+/**
+ * An Effect-aware FIFO queue with explicit shutdown semantics.
+ *
+ * Mutable queue state is guarded by JDK ReentrantLock conditions. Blocking
+ * operations run as interruptible runtime instructions, never worker futures.
+ */
+class {
+
+	variables.capacity = -1;
+	variables.items = new java.util.ArrayDeque();
+	variables.lock = new java.util.concurrent.locks.ReentrantLock();
+	variables.notEmpty = variables.lock.newCondition();
+	variables.notFull = variables.lock.newCondition();
+	variables.shutdown = false;
+
+	function init( numeric capacity = -1 ) {
+		if ( arguments.capacity == 0 || arguments.capacity < -1 || int( arguments.capacity ) != arguments.capacity ) {
+			throw(
+				type: "BXEffect.InvalidQueueCapacity",
+				message: "Queue capacity must be a positive whole number or unbounded"
+			);
+		}
+		variables.capacity = arguments.capacity;
+		return this;
+	}
+
+	static function bounded( required numeric capacity ) {
+		if ( arguments.capacity <= 0 || int( arguments.capacity ) != arguments.capacity ) {
+			throw(
+				type: "BXEffect.InvalidQueueCapacity",
+				message: "Queue capacity must be a positive whole number"
+			);
+		}
+		return new Queue( arguments.capacity );
+	}
+
+	static function unbounded() {
+		return new Queue();
+	}
+
+	function offer( any value ) {
+		return Effect::_offerQueue( this, arguments.value );
+	}
+
+	function take() {
+		return Effect::_takeQueue( this );
+	}
+
+	function poll() {
+		variables.lock.lock();
+		try {
+			if ( variables.items.isEmpty() ) {
+				return attempt();
+			}
+			var entry = variables.items.removeFirst();
+			variables.notFull.signal();
+			return attempt( entry.value );
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	function shutdown() {
+		return Effect::sync( () => shutdownNative() );
+	}
+
+	boolean function isShutdown() {
+		variables.lock.lock();
+		try {
+			return variables.shutdown;
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	numeric function size() {
+		variables.lock.lock();
+		try {
+			return variables.items.size();
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	/** Runtime-private blocking offer. */
+	function _offerNative( any value, any controlState = null ) {
+		variables.lock.lockInterruptibly();
+		try {
+			while ( !variables.shutdown && isFull() ) {
+				if ( wasInterrupted( arguments.controlState ) ) {
+					return { isShutdown: false, isInterrupted: true };
+				}
+				variables.notFull.await();
+			}
+			if ( wasInterrupted( arguments.controlState ) ) {
+				return { isShutdown: false, isInterrupted: true };
+			}
+			if ( variables.shutdown ) {
+				return { isShutdown: true, isInterrupted: false };
+			}
+			variables.items.addLast( { value: arguments.value } );
+			variables.notEmpty.signal();
+			return { isShutdown: false, isInterrupted: false };
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	/** Runtime-private blocking take. Drained values remain available after shutdown. */
+	function _takeNative( any controlState = null ) {
+		variables.lock.lockInterruptibly();
+		try {
+			while ( variables.items.isEmpty() && !variables.shutdown ) {
+				if ( wasInterrupted( arguments.controlState ) ) {
+					return { isShutdown: false, isInterrupted: true };
+				}
+				variables.notEmpty.await();
+			}
+			if ( wasInterrupted( arguments.controlState ) ) {
+				return { isShutdown: false, isInterrupted: true };
+			}
+			if ( variables.items.isEmpty() ) {
+				return { isShutdown: true, isInterrupted: false };
+			}
+			var entry = variables.items.removeFirst();
+			variables.notFull.signal();
+			return { isShutdown: false, isInterrupted: false, value: entry.value };
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	private boolean function isFull() {
+		return variables.capacity > 0 && variables.items.size() >= variables.capacity;
+	}
+
+	private boolean function wasInterrupted( any controlState = null ) {
+		return !isNull( arguments.controlState ) && arguments.controlState.isInterrupted();
+	}
+
+	private boolean function shutdownNative() {
+		variables.lock.lock();
+		try {
+			if ( variables.shutdown ) {
+				return false;
+			}
+			variables.shutdown = true;
+			variables.notEmpty.signalAll();
+			variables.notFull.signalAll();
+			return true;
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+}

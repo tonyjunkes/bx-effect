@@ -1,0 +1,76 @@
+/**
+ * A pure expected success/failure value.
+ *
+ * Result does not execute work and deliberately does not model defects,
+ * interruption, or service requirements. Those belong to Effect/Exit/Cause.
+ */
+class {
+
+	variables.resultKind = "";
+	variables.resultValue = null;
+
+	function init( required string resultKind, any resultValue ) {
+		variables.resultKind = arguments.resultKind;
+		if ( structKeyExists( arguments, "resultValue" ) ) {
+			variables.resultValue = arguments.resultValue;
+		}
+		return this;
+	}
+
+	static function success( any value ) {
+		return new Result( resultKind: "Success", resultValue: arguments.value );
+	}
+
+	static function failure( required any error ) {
+		return new Result( resultKind: "Failure", resultValue: arguments.error );
+	}
+
+	static function fromAttempt( required any valueAttempt, required function onEmpty ) {
+		return arguments.valueAttempt.isPresent()
+			? Result::success( arguments.valueAttempt.get() )
+			: Result::failure( arguments.onEmpty() );
+	}
+
+	boolean function isSuccess() {
+		return variables.resultKind == "Success";
+	}
+
+	boolean function isFailure() {
+		return variables.resultKind == "Failure";
+	}
+
+	any function value() {
+		return isSuccess() ? variables.resultValue : null;
+	}
+
+	any function error() {
+		return isFailure() ? variables.resultValue : null;
+	}
+
+	function map( required function mapper ) {
+		return isFailure()
+			? this
+			: Result::success( arguments.mapper( variables.resultValue ) );
+	}
+
+	function flatMap( required function mapper ) {
+		return isFailure() ? this : arguments.mapper( variables.resultValue );
+	}
+
+	function mapError( required function mapper ) {
+		return isSuccess()
+			? this
+			: Result::failure( arguments.mapper( variables.resultValue ) );
+	}
+
+	any function match( required function onSuccess, required function onFailure ) {
+		return isSuccess()
+			? arguments.onSuccess( variables.resultValue )
+			: arguments.onFailure( variables.resultValue );
+	}
+
+	any function toAttempt() {
+		return isSuccess() ? attempt( variables.resultValue ) : attempt();
+	}
+
+}

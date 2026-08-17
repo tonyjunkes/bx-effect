@@ -1,0 +1,1170 @@
+import bxModules.bxEffect.models.effect.Cause;
+import bxModules.bxEffect.models.effect.Clock;
+import bxModules.bxEffect.models.effect.Effect;
+import bxModules.bxEffect.models.effect.Exit;
+import bxModules.bxEffect.models.effect.Fiber;
+import bxModules.bxEffect.models.effect.context.Context;
+import bxModules.bxEffect.models.effect.internal.FiberControl;
+import bxModules.bxEffect.models.effect.internal.LayerMemo;
+import bxModules.bxEffect.models.effect.internal.ThrowablePolicy;
+import bxModules.bxEffect.models.effect.Scope;
+
+/**
+ * Iterative Effect interpreter. Async waits intentionally occur on BoxLang's
+ * io-tasks virtual-thread executor; runFuture callers remain non-blocking.
+ */
+class {
+
+	variables.executorName = "io-tasks";
+	variables.clock = null;
+	variables.observer = null;
+
+	function init( struct options = {} ) {
+		variables.executorName = structKeyExists( arguments.options, "executor" )
+			? arguments.options.executor
+			: resolveDefaultExecutor();
+		variables.clock = structKeyExists( arguments.options, "clock" )
+			? arguments.options.clock
+			: new Clock();
+		variables.observer = structKeyExists( arguments.options, "observer" )
+			? arguments.options.observer
+			: null;
+		return this;
+	}
+
+	function runSync( required Effect program ) {
+		var effectExit = runSyncExit( arguments.program );
+		if ( effectExit.isSuccess() ) {
+			return effectExit.value();
+		}
+
+		throw(
+			type: "BXEffect.EffectFailure",
+			message: effectExit.cause().pretty(),
+			extendedInfo: effectExit.cause()
+		);
+	}
+
+	function runSyncExit( required Effect program ) {
+		return _runSyncExitWithContext( arguments.program, Context::empty() );
+	}
+
+	function runFuture( required Effect program ) {
+		var programToRun = arguments.program;
+		return futureNew( () => runSync( programToRun ), variables.executorName );
+	}
+
+	function runFutureExit( required Effect program ) {
+		return runFutureExitWithContext( arguments.program, Context::empty() );
+	}
+
+	function runFork( required Effect program ) {
+		return runForkWithContext( arguments.program, Context::empty() );
+	}
+
+	private function runFutureExitWithContext(
+		required Effect program,
+		required Context initialContext,
+		any controlState = null,
+		any sharedScope = null,
+		any sharedLayerMemo = null
+	) {
+		var programToRun = arguments.program;
+		var contextToUse = arguments.initialContext;
+		var controlToUse = arguments.controlState;
+		var scopeToUse = arguments.sharedScope;
+		var layerMemoToUse = arguments.sharedLayerMemo;
+		return futureNew(
+			() => _runSyncExitWithContext(
+				programToRun,
+				contextToUse,
+				controlToUse,
+				scopeToUse,
+				layerMemoToUse
+			),
+			variables.executorName
+		);
+	}
+
+	string function executor() {
+		return variables.executorName;
+	}
+
+	function clock() {
+		return variables.clock;
+	}
+
+	/**
+	 * Uses the activated module setting and retains io-tasks only as a defensive
+	 * fallback when runtime settings are temporarily unavailable.
+	 */
+	private string function resolveDefaultExecutor() {
+		var fallbackExecutor = "io-tasks";
+		try {
+			var moduleService = getBoxRuntime().getModuleService();
+			if ( !moduleService.hasModule( "bxEffect" ) ) {
+				return fallbackExecutor;
+			}
+
+			var moduleSettings = moduleService.getModuleSettings( "bxEffect" );
+			return structKeyExists( moduleSettings, "defaultExecutor" )
+				? moduleSettings.defaultExecutor
+				: fallbackExecutor;
+		} catch ( any error ) {
+			ThrowablePolicy::rethrowIfFatal( error );
+			return fallbackExecutor;
+		}
+	}
+
+	private function runForkWithContext(
+		required Effect program,
+		required Context initialContext,
+		any sharedScope = null,
+		any sharedLayerMemo = null
+	) {
+		var fiberId = createUUID();
+		var controlState = new FiberControl( fiberId );
+		notifyObserver( "fiber:started", { fiberId: fiberId } );
+		return new Fiber(
+			future: runFutureExitWithContext(
+				arguments.program,
+				arguments.initialContext,
+				controlState,
+				arguments.sharedScope,
+				arguments.sharedLayerMemo
+			),
+			fiberId: fiberId,
+			control: controlState
+		);
+	}
+
+	/** Internal nested-runtime entry point used to execute finalizers with context. */
+	function _runSyncExitWithContext(
+		required Effect program,
+		required Context initialContext,
+		any controlState = null,
+		any sharedScope = null,
+		any sharedLayerMemo = null
+	) {
+		notifyObserver( "runtime:started", {} );
+		var current = arguments.program._instruction();
+		var continuations = [];
+		var runtimeContext = arguments.initialContext;
+		var ownsScope = isNull( arguments.sharedScope );
+		var runtimeScope = ownsScope ? new Scope() : arguments.sharedScope;
+		var runtimeLayerMemo = isNull( arguments.sharedLayerMemo )
+			? new LayerMemo()
+			: arguments.sharedLayerMemo;
+
+		while ( true ) {
+			switch ( current.kind ) {
+				case "Succeed":
+					if ( continuations.len() == 0 ) {
+						return finishExit(
+							Exit::success( current.value ),
+							runtimeScope,
+							ownsScope,
+							arguments.controlState
+						);
+					}
+					var successFrame = continuations.pop();
+					if ( successFrame.kind == "RestoreContext" ) {
+						runtimeContext = successFrame.context;
+						break;
+					}
+						if ( successFrame.kind == "RegisterFinalizer" ) {
+							var acquiredResource = current.value;
+							var releaseFunction = successFrame.release;
+						runtimeScope.addRelease(
+							releaseFunction,
+							acquiredResource,
+							runtimeContext
+							);
+							break;
+						}
+						if ( successFrame.kind == "ProvideLayer" ) {
+							continuations.append( {
+								kind : "RestoreContext",
+								context : runtimeContext
+							} );
+							runtimeContext = runtimeContext.merge( current.value );
+							current = successFrame.effect._instruction();
+							break;
+						}
+						if ( successFrame.kind == "CompleteLayerBuild" ) {
+							runtimeLayerMemo.completeSuccess(
+								successFrame.layerId,
+								successFrame.outcomeFuture,
+								current.value
+							);
+							break;
+						}
+						if ( successFrame.kind == "Retry" ) {
+							break;
+						}
+						if ( successFrame.kind == "RetryResume" ) {
+							continuations.append( {
+								kind : "Retry",
+								effect : successFrame.effect,
+								schedule : successFrame.schedule,
+								recurrence : successFrame.recurrence,
+								scheduledAt : isNull( successFrame.scheduledAt )
+									? variables.clock.now()
+									: successFrame.scheduledAt
+							} );
+							current = successFrame.effect._instruction();
+							break;
+						}
+						if ( successFrame.kind == "Repeat" ) {
+							try {
+								var repeatDecision = successFrame.schedule.next(
+									successFrame.recurrence,
+									current.value,
+									successFrame.scheduledAt,
+									variables.clock.now()
+								);
+								if ( repeatDecision.continue ) {
+									continuations.append( {
+										kind : "RepeatResume",
+										effect : successFrame.effect,
+										schedule : successFrame.schedule,
+										recurrence : successFrame.recurrence + 1,
+										scheduledAt : repeatDecision.nextScheduledAt
+									} );
+									current = {
+										kind : "Sleep",
+										duration : repeatDecision.delay,
+										unit : repeatDecision.unit
+									};
+								}
+							} catch ( any error ) {
+								current = defectInstruction( error );
+							}
+							break;
+						}
+						if ( successFrame.kind == "RepeatResume" ) {
+							continuations.append( {
+								kind : "Repeat",
+								effect : successFrame.effect,
+								schedule : successFrame.schedule,
+								recurrence : successFrame.recurrence,
+								scheduledAt : isNull( successFrame.scheduledAt )
+									? variables.clock.now()
+									: successFrame.scheduledAt
+							} );
+							current = successFrame.effect._instruction();
+							break;
+						}
+						if ( successFrame.kind == "Ensuring" ) {
+						var finalizerExit = executeFrameFinalizer(
+							successFrame.handler,
+							Exit::success( current.value ),
+							runtimeContext
+						);
+						if ( finalizerExit.isFailure() ) {
+							current = haltInstruction( finalizerExit.cause() );
+						}
+						break;
+					}
+					try {
+						current = successFrame.kind == "FlatMap"
+							? successFrame.mapper( current.value )._instruction()
+							: successFrame.onSuccess( current.value )._instruction();
+					} catch ( any error ) {
+						current = defectInstruction( error );
+					}
+					break;
+
+				case "Fail":
+					current = haltInstruction( Cause::fail( current.error ) );
+					break;
+
+				case "Halt":
+					var recovered = false;
+					while ( continuations.len() > 0 ) {
+						var failureFrame = continuations.pop();
+						if ( failureFrame.kind == "CompleteLayerBuild" ) {
+							runtimeLayerMemo.completeFailure(
+								failureFrame.layerId,
+								failureFrame.outcomeFuture,
+								current.cause
+							);
+							continue;
+						}
+						if ( failureFrame.kind == "RestoreContext" ) {
+							runtimeContext = failureFrame.context;
+							continue;
+						}
+						if ( failureFrame.kind == "Ensuring" ) {
+							var cleanupExit = executeFrameFinalizer(
+								failureFrame.handler,
+								Exit::failure( current.cause ),
+								runtimeContext
+							);
+							if ( cleanupExit.isFailure() ) {
+								current = haltInstruction(
+									Cause::sequential( current.cause, cleanupExit.cause() )
+								);
+							}
+							continue;
+						}
+						if ( failureFrame.kind == "Retry" ) {
+							if ( current.cause.kind() != "Fail" ) {
+								continue;
+							}
+							try {
+								var retryDecision = failureFrame.schedule.next(
+									failureFrame.recurrence,
+									current.cause.error(),
+									failureFrame.scheduledAt,
+									variables.clock.now()
+								);
+								if ( retryDecision.continue ) {
+									notifyObserver( "retry:scheduled", {
+										recurrence : failureFrame.recurrence,
+										delay : retryDecision.delay,
+										unit : retryDecision.unit
+									} );
+									continuations.append( {
+										kind : "RetryResume",
+										effect : failureFrame.effect,
+										schedule : failureFrame.schedule,
+										recurrence : failureFrame.recurrence + 1,
+										scheduledAt : retryDecision.nextScheduledAt
+									} );
+									current = {
+										kind : "Sleep",
+										duration : retryDecision.delay,
+										unit : retryDecision.unit
+									};
+									recovered = true;
+									break;
+								}
+							} catch ( any error ) {
+								current = defectInstruction( error );
+								recovered = true;
+								break;
+							}
+							continue;
+						}
+						if ( failureFrame.kind == "Repeat" ) {
+							continue;
+						}
+						if ( failureFrame.kind == "FoldCause" ) {
+							try {
+								current = failureFrame.onFailure( current.cause )._instruction();
+							} catch ( any error ) {
+								current = defectInstruction( error );
+							}
+							recovered = true;
+							break;
+						}
+					}
+					if ( !recovered ) {
+						return finishExit(
+							Exit::failure( current.cause ),
+							runtimeScope,
+							ownsScope,
+							arguments.controlState
+						);
+					}
+					break;
+
+				case "Sync":
+					try {
+						current = {
+							kind : "Succeed",
+							value : current.thunk()
+						};
+					} catch ( any error ) {
+						current = defectInstruction( error );
+					}
+					break;
+
+				case "Try":
+					try {
+						current = {
+							kind : "Succeed",
+							value : current.thunk()
+						};
+					} catch ( any error ) {
+						ThrowablePolicy::rethrowIfFatal( error );
+						try {
+							current = {
+								kind : "Fail",
+								error : current.errorMapper( error )
+							};
+						} catch ( any mapperError ) {
+							current = defectInstruction( mapperError );
+						}
+					}
+					break;
+
+				case "Suspend":
+					try {
+						current = current.thunk()._instruction();
+					} catch ( any error ) {
+						current = defectInstruction( error );
+					}
+					break;
+
+				case "AsyncFuture":
+					var nativeFuture = null;
+					try {
+						nativeFuture = current.futureFactory();
+						if ( !isNull( arguments.controlState ) ) {
+							arguments.controlState.setActiveFuture( nativeFuture );
+						}
+						notifyObserver( "effect:suspended", { instruction: "AsyncFuture" } );
+						current = {
+							kind : "Succeed",
+							value : nativeFuture.get()
+						};
+					} catch ( any error ) {
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					} finally {
+						notifyObserver( "effect:resumed", { instruction: "AsyncFuture" } );
+						if ( !isNull( nativeFuture ) && !isNull( arguments.controlState ) ) {
+							arguments.controlState.clearActiveFuture( nativeFuture );
+						}
+					}
+					break;
+
+				case "SemaphoreAcquire":
+					try {
+						current.permitSource._acquireNative();
+						current = {
+							kind : "Succeed",
+							value : null
+						};
+					} catch ( any error ) {
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					}
+					break;
+
+				case "QueueOffer":
+					try {
+						var offerOutcome = current.queueSource._offerNative(
+							current.value,
+							arguments.controlState
+						);
+						current = offerOutcome.isInterrupted
+							? haltInstruction( Cause::interrupt( arguments.controlState.fiberId() ) )
+							: offerOutcome.isShutdown
+							? {
+								kind : "Fail",
+								error : queueShutdownError( "offer" )
+							}
+							: {
+								kind : "Succeed",
+								value : null
+							};
+					} catch ( any error ) {
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					}
+					break;
+
+				case "QueueTake":
+					try {
+						var takeOutcome = current.queueSource._takeNative( arguments.controlState );
+						current = takeOutcome.isInterrupted
+							? haltInstruction( Cause::interrupt( arguments.controlState.fiberId() ) )
+							: takeOutcome.isShutdown
+							? {
+								kind : "Fail",
+								error : queueShutdownError( "take" )
+							}
+							: {
+								kind : "Succeed",
+								value : takeOutcome.value
+							};
+					} catch ( any error ) {
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					}
+					break;
+
+				case "PubSubPublish":
+					try {
+						var publishOutcome = current.pubSubSource._publishNative(
+							current.value,
+							arguments.controlState
+						);
+						current = publishOutcome.isInterrupted
+							? haltInstruction( Cause::interrupt( arguments.controlState.fiberId() ) )
+							: publishOutcome.isShutdown
+								? {
+									kind : "Fail",
+									error : pubSubShutdownError( "publish" )
+								}
+								: {
+									kind : "Succeed",
+									value : null
+								};
+					} catch ( any error ) {
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					}
+					break;
+
+				case "PubSubSubscribe":
+					try {
+						var subscribeOutcome = current.pubSubSource._subscribeNative(
+							arguments.controlState
+						);
+						current = subscribeOutcome.isInterrupted
+							? haltInstruction( Cause::interrupt( arguments.controlState.fiberId() ) )
+							: subscribeOutcome.isShutdown
+								? {
+									kind : "Fail",
+									error : pubSubShutdownError( "subscribe" )
+								}
+								: {
+									kind : "Succeed",
+									value : subscribeOutcome.subscription
+								};
+					} catch ( any error ) {
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					}
+					break;
+
+				case "PubSubTake":
+					try {
+						var subscriptionOutcome = current.subscriptionSource._takeNative(
+							arguments.controlState
+						);
+						current = subscriptionOutcome.isInterrupted
+							? haltInstruction( Cause::interrupt( arguments.controlState.fiberId() ) )
+							: subscriptionOutcome.isPubSubShutdown
+								? {
+									kind : "Fail",
+									error : pubSubShutdownError( "take" )
+								}
+								: subscriptionOutcome.isSubscriptionShutdown
+									? {
+										kind : "Fail",
+										error : subscriptionShutdownError( "take" )
+									}
+									: {
+										kind : "Succeed",
+										value : subscriptionOutcome.value
+									};
+					} catch ( any error ) {
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					}
+					break;
+
+				case "Sleep":
+					var sleepFuture = null;
+					try {
+						sleepFuture = variables.clock.sleep( current.duration, current.unit );
+						if ( !isNull( arguments.controlState ) ) {
+							arguments.controlState.setActiveFuture( sleepFuture );
+						}
+						notifyObserver( "effect:suspended", { instruction: "Sleep" } );
+						current = {
+							kind : "Succeed",
+							value : sleepFuture.get()
+						};
+					} catch ( any error ) {
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					} finally {
+						notifyObserver( "effect:resumed", { instruction: "Sleep" } );
+						if ( !isNull( sleepFuture ) && !isNull( arguments.controlState ) ) {
+							arguments.controlState.clearActiveFuture( sleepFuture );
+						}
+					}
+					break;
+
+				case "Fork":
+					try {
+						var childFiber = runForkWithContext(
+							current.effect,
+							runtimeContext,
+							runtimeScope,
+							runtimeLayerMemo
+						);
+						runtimeScope.addChild( childFiber );
+						current = {
+							kind : "Succeed",
+							value : childFiber
+						};
+					} catch ( any error ) {
+						current = defectInstruction( error );
+					}
+					break;
+
+				case "All":
+					try {
+						var allResult = awaitAll(
+							current.effects,
+							runtimeContext,
+							runtimeScope,
+							runtimeLayerMemo,
+							current.options
+						);
+						current = allResult.isSuccess
+							? { kind: "Succeed", value: allResult.values }
+							: haltInstruction( allResult.cause );
+					} catch ( any error ) {
+						current = defectInstruction( error );
+					}
+					break;
+
+				case "Race":
+					try {
+						var winnerExit = awaitAny(
+							current.effects,
+							runtimeContext,
+							runtimeScope,
+							runtimeLayerMemo
+						);
+						current = winnerExit.isSuccess()
+							? { kind: "Succeed", value: winnerExit.value() }
+							: haltInstruction( winnerExit.cause() );
+					} catch ( any error ) {
+						current = defectInstruction( error );
+					}
+					break;
+
+				case "FirstSuccess":
+					try {
+						var successfulExit = awaitFirstSuccess(
+							current.effects,
+							runtimeContext,
+							runtimeScope,
+							runtimeLayerMemo
+						);
+						current = successfulExit.isSuccess()
+							? { kind: "Succeed", value: successfulExit.value() }
+							: haltInstruction( successfulExit.cause() );
+					} catch ( any error ) {
+						current = defectInstruction( error );
+					}
+					break;
+
+				case "AccessService":
+					try {
+						current = {
+							kind : "Succeed",
+							value : runtimeContext.get( current.tag )
+						};
+					} catch ( any error ) {
+						current = defectInstruction( error );
+					}
+					break;
+
+					case "ProvideContext":
+					continuations.append( {
+						kind : "RestoreContext",
+						context : runtimeContext
+					} );
+					runtimeContext = runtimeContext.merge( current.context );
+						current = current.effect._instruction();
+						break;
+
+					case "ProvideLayer":
+						try {
+							continuations.append( {
+								kind : "ProvideLayer",
+								layer : current.layer,
+								effect : current.effect
+							} );
+							current = Effect::_buildLayer(
+								current.layer,
+								Context::empty()
+							)._instruction();
+						} catch ( any error ) {
+							current = defectInstruction( error );
+						}
+						break;
+
+					case "BuildLayer":
+						try {
+							var layerIdentity = current.layer._identity();
+							var layerBuild = runtimeLayerMemo.begin( layerIdentity );
+							if ( layerBuild.owner ) {
+								continuations.append( {
+									kind : "CompleteLayerBuild",
+									layerId : layerIdentity,
+									outcomeFuture : layerBuild.outcomeFuture
+								} );
+								current = current.layer.build( current.baseContext )._instruction();
+							} else {
+								current = {
+									kind : "AwaitLayerBuild",
+									outcomeFuture : layerBuild.outcomeFuture
+								};
+							}
+						} catch ( any error ) {
+							current = defectInstruction( error );
+						}
+						break;
+
+					case "AwaitLayerBuild":
+						var waiterFuture = null;
+						try {
+							waiterFuture = current.outcomeFuture.then( ( outcome ) => outcome );
+							if ( !isNull( arguments.controlState ) ) {
+								arguments.controlState.setActiveFuture( waiterFuture );
+							}
+							var layerOutcome = waiterFuture.get();
+							current = layerOutcome.isSuccess()
+								? { kind: "Succeed", value: layerOutcome.value() }
+								: haltInstruction( layerOutcome.cause() );
+						} catch ( any error ) {
+							current = interruptionOrDefectInstruction( error, arguments.controlState );
+						} finally {
+							if ( !isNull( waiterFuture ) && !isNull( arguments.controlState ) ) {
+								arguments.controlState.clearActiveFuture( waiterFuture );
+							}
+						}
+						break;
+
+				case "AcquireRelease":
+					continuations.append( {
+						kind : "RegisterFinalizer",
+						release : current.release
+					} );
+					current = current.acquire._instruction();
+					break;
+
+				case "Ensuring":
+					continuations.append( {
+						kind : "Ensuring",
+						handler : current.handler
+					} );
+					current = current.effect._instruction();
+					break;
+
+				case "FlatMap":
+					continuations.append( {
+						kind : "FlatMap",
+						mapper : current.mapper
+					} );
+					current = current.effect._instruction();
+					break;
+
+				case "FoldCause":
+					continuations.append( {
+						kind : "FoldCause",
+						onFailure : current.onFailure,
+						onSuccess : current.onSuccess
+					} );
+					current = current.effect._instruction();
+					break;
+
+				case "Retry":
+					continuations.append( {
+						kind : "Retry",
+						effect : current.effect,
+						schedule : current.schedule,
+						recurrence : 0,
+						scheduledAt : variables.clock.now()
+					} );
+					current = current.effect._instruction();
+					break;
+
+				case "Repeat":
+					continuations.append( {
+						kind : "Repeat",
+						effect : current.effect,
+						schedule : current.schedule,
+						recurrence : 0,
+						scheduledAt : variables.clock.now()
+					} );
+					current = current.effect._instruction();
+					break;
+
+				default:
+					try {
+						throw(
+							type: "BXEffect.UnknownInstruction",
+							message: "Unknown Effect instruction [#current.kind#]"
+						);
+					} catch ( any error ) {
+						current = defectInstruction( error );
+					}
+			}
+		}
+	}
+
+	private struct function haltInstruction( required Cause failureCause ) {
+		return {
+			kind : "Halt",
+			cause : arguments.failureCause
+		};
+	}
+
+	private struct function defectInstruction( required any throwableValue ) {
+		ThrowablePolicy::rethrowIfFatal( arguments.throwableValue );
+		return haltInstruction( Cause::die( arguments.throwableValue ) );
+	}
+
+	/** A canceled native wait is an Effect interruption, never a defect. */
+	private struct function interruptionOrDefectInstruction(
+		required any throwableValue,
+		any controlState = null
+	) {
+		if ( !isNull( arguments.controlState ) && arguments.controlState.isInterrupted() ) {
+			return haltInstruction( Cause::interrupt( arguments.controlState.fiberId() ) );
+		}
+		return defectInstruction( arguments.throwableValue );
+	}
+
+	private struct function queueShutdownError( required string operation ) {
+		return {
+			_tag : "QueueShutdown",
+			operation : arguments.operation,
+			message : "Queue is shut down"
+		};
+	}
+
+	private struct function pubSubShutdownError( required string operation ) {
+		return {
+			_tag : "PubSubShutdown",
+			operation : arguments.operation,
+			message : "PubSub is shut down"
+		};
+	}
+
+	private struct function subscriptionShutdownError( required string operation ) {
+		return {
+			_tag : "SubscriptionShutdown",
+			operation : arguments.operation,
+			message : "PubSub subscription is shut down"
+		};
+	}
+
+	private function finishExit(
+		required any initialExit,
+		required Scope activeScope,
+		boolean closeScope = true,
+		any controlState = null
+	) {
+		var completedExit = arguments.initialExit;
+		if ( !arguments.closeScope ) {
+			notifyTerminalEvents( completedExit, arguments.controlState );
+			notifyObserver( "runtime:completed", { exit: completedExit } );
+			return completedExit;
+		}
+		notifyObserver( "scope:closing", { exit: completedExit } );
+		arguments.activeScope.interruptChildren();
+		for ( var finalizerEntry in arguments.activeScope.close() ) {
+			var finalizerExit = runFinalizerEntry( finalizerEntry );
+			if ( finalizerExit.isFailure() ) {
+				completedExit = completedExit.isSuccess()
+					? Exit::failure( finalizerExit.cause() )
+					: Exit::failure(
+						Cause::sequential( completedExit.cause(), finalizerExit.cause() )
+					);
+			}
+		}
+		notifyObserver( "scope:closed", { exit: completedExit } );
+		notifyTerminalEvents( completedExit, arguments.controlState );
+		notifyObserver( "runtime:completed", { exit: completedExit } );
+		return completedExit;
+	}
+
+	private function notifyTerminalEvents( required any completedExit, any controlState = null ) {
+		if ( !isNull( arguments.controlState ) ) {
+			notifyObserver(
+				arguments.completedExit.isFailure() && arguments.completedExit.cause().isInterrupted()
+					? "fiber:interrupted"
+					: "fiber:completed",
+				{
+					fiberId : arguments.controlState.fiberId(),
+					exit : arguments.completedExit
+				}
+			);
+		}
+		if ( arguments.completedExit.isFailure() && arguments.completedExit.cause().isDefect() ) {
+			notifyObserver( "defect:unhandled", {
+				cause : arguments.completedExit.cause(),
+				defects : arguments.completedExit.cause().defects()
+			} );
+		}
+	}
+
+	/**
+	 * Observer failures are diagnostic-only. They must never mutate an Effect
+	 * outcome, prevent cleanup, or recursively execute the runtime.
+	 */
+	private function notifyObserver( required string eventName, struct details = {} ) {
+		if ( isNull( variables.observer ) ) {
+			return;
+		}
+
+		try {
+			if ( isObject( variables.observer ) && structKeyExists( variables.observer, "onEvent" ) ) {
+				variables.observer.onEvent( arguments.eventName, arguments.details );
+			} else {
+				variables.observer( arguments.eventName, arguments.details );
+			}
+		} catch ( any observerError ) {
+			ThrowablePolicy::rethrowIfFatal( observerError );
+		}
+	}
+
+	private function executeFrameFinalizer(
+		required function handler,
+		required any completedExit,
+		required Context finalizerContext
+	) {
+		var exitHandler = arguments.handler;
+		var exitValue = arguments.completedExit;
+		var contextToUse = arguments.finalizerContext;
+		return runFinalizer(
+			() => exitHandler( exitValue ),
+			contextToUse
+		);
+	}
+
+	private function runFinalizer( required function finalizer, required Context finalizerContext ) {
+		try {
+			return new EffectRuntime( { executor: variables.executorName, clock: variables.clock } )._runSyncExitWithContext(
+				arguments.finalizer(),
+				arguments.finalizerContext
+			);
+		} catch ( any error ) {
+			ThrowablePolicy::rethrowIfFatal( error );
+			return Exit::failure( Cause::die( error ) );
+		}
+	}
+
+	private function runFinalizerEntry( required struct finalizerEntry ) {
+		try {
+			var finalizerProgram = structKeyExists( arguments.finalizerEntry, "kind" )
+				? arguments.finalizerEntry.release( arguments.finalizerEntry.resource )
+				: arguments.finalizerEntry.finalizer();
+			return new EffectRuntime( { executor: variables.executorName, clock: variables.clock } )._runSyncExitWithContext(
+				finalizerProgram,
+				arguments.finalizerEntry.context
+			);
+		} catch ( any error ) {
+			ThrowablePolicy::rethrowIfFatal( error );
+			return Exit::failure( Cause::die( error ) );
+		}
+	}
+
+	private struct function awaitAll(
+		required array programs,
+		required Context inheritedContext,
+		required Scope parentScope,
+		required LayerMemo sharedLayerMemo,
+		required struct options
+	) {
+		if ( arguments.programs.len() == 0 ) {
+			return { isSuccess: true, values: [] };
+		}
+
+		var concurrencyLimit = arguments.options.concurrency == "unbounded"
+			? arguments.programs.len()
+			: arguments.options.concurrency;
+		var nextIndex = 1;
+		var running = [];
+		var exitsByIndex = {};
+
+		while ( nextIndex <= arguments.programs.len() && running.len() < concurrencyLimit ) {
+			running.append( startIndexedChild(
+				arguments.programs[ nextIndex ],
+				nextIndex,
+				arguments.inheritedContext,
+				arguments.parentScope,
+				arguments.sharedLayerMemo
+			) );
+			nextIndex++;
+		}
+
+		while ( running.len() > 0 ) {
+			var completedResult = asyncAny( awaitIndexedFactories( running ) ).get();
+			var completedExit = completedResult.exit;
+			running = removeIndexedFiber( running, completedResult.fiberId );
+
+			if ( completedExit.isFailure() ) {
+				if ( arguments.options.mode == "failFast" ) {
+					interruptIndexedFibers( running );
+					return { isSuccess: false, cause: completedExit.cause() };
+				}
+			}
+
+			exitsByIndex[ completedResult.index ] = completedExit;
+			if ( nextIndex <= arguments.programs.len() ) {
+				running.append( startIndexedChild(
+					arguments.programs[ nextIndex ],
+					nextIndex,
+					arguments.inheritedContext,
+					arguments.parentScope,
+					arguments.sharedLayerMemo
+				) );
+				nextIndex++;
+			}
+		}
+
+		var combinedCause = null;
+		for ( var index = 1; index <= arguments.programs.len(); index++ ) {
+			if ( exitsByIndex[ index ].isFailure() ) {
+				combinedCause = isNull( combinedCause )
+					? exitsByIndex[ index ].cause()
+					: Cause::parallel( combinedCause, exitsByIndex[ index ].cause() );
+			}
+		}
+		if ( !isNull( combinedCause ) ) {
+			return { isSuccess: false, cause: combinedCause };
+		}
+
+		var values = [];
+		for ( var index = 1; index <= arguments.programs.len(); index++ ) {
+			values.append( exitsByIndex[ index ].value() );
+		}
+		return { isSuccess: true, values: values };
+	}
+
+	private function awaitAny(
+		required array programs,
+		required Context inheritedContext,
+		required Scope parentScope,
+		required LayerMemo sharedLayerMemo
+	) {
+		var childFibers = forkChildren(
+			arguments.programs,
+			arguments.inheritedContext,
+			arguments.parentScope,
+			arguments.sharedLayerMemo
+		);
+		var completedResult = asyncAny( awaitFactories( childFibers ) ).get();
+		var winnerExit = completedResult.exit;
+		for ( var childFiber in childFibers ) {
+			if ( !childFiber.isDone() ) {
+				childFiber.interrupt();
+			}
+		}
+		return winnerExit;
+	}
+
+	private function awaitFirstSuccess(
+		required array programs,
+		required Context inheritedContext,
+		required Scope parentScope,
+		required LayerMemo sharedLayerMemo
+	) {
+		var pendingFibers = [];
+		for ( var index = 1; index <= arguments.programs.len(); index++ ) {
+			pendingFibers.append( startIndexedChild(
+				arguments.programs[ index ],
+				index,
+				arguments.inheritedContext,
+				arguments.parentScope,
+				arguments.sharedLayerMemo
+			) );
+		}
+		var failuresByIndex = {};
+
+		while ( pendingFibers.len() > 0 ) {
+			var completedResult = asyncAny( awaitIndexedFactories( pendingFibers ) ).get();
+			var completedExit = completedResult.exit;
+			pendingFibers = removeIndexedFiber( pendingFibers, completedResult.fiberId );
+
+			if ( completedExit.isSuccess() ) {
+				interruptIndexedFibers( pendingFibers );
+				return completedExit;
+			}
+			failuresByIndex[ completedResult.index ] = completedExit.cause();
+		}
+
+		var combinedCause = null;
+		for ( var index = 1; index <= arguments.programs.len(); index++ ) {
+			combinedCause = isNull( combinedCause )
+				? failuresByIndex[ index ]
+				: Cause::parallel( combinedCause, failuresByIndex[ index ] );
+		}
+		return Exit::failure( combinedCause );
+	}
+
+	private struct function startIndexedChild(
+		required Effect program,
+		required numeric index,
+		required Context inheritedContext,
+		required Scope parentScope,
+		required LayerMemo sharedLayerMemo
+	) {
+		var childFiber = runForkWithContext(
+			arguments.program,
+			arguments.inheritedContext,
+			arguments.parentScope,
+			arguments.sharedLayerMemo
+		);
+		arguments.parentScope.addChild( childFiber );
+		return { index: arguments.index, fiber: childFiber };
+	}
+
+	private array function removeIndexedFiber( required array indexedFibers, required string fiberId ) {
+		var remaining = [];
+		for ( var indexedFiber in arguments.indexedFibers ) {
+			if ( indexedFiber.fiber.id() != arguments.fiberId ) {
+				remaining.append( indexedFiber );
+			}
+		}
+		return remaining;
+	}
+
+	private function interruptIndexedFibers( required array indexedFibers ) {
+		for ( var indexedFiber in arguments.indexedFibers ) {
+			if ( !indexedFiber.fiber.isDone() ) {
+				indexedFiber.fiber.interrupt();
+			}
+		}
+	}
+
+	private array function forkChildren(
+		required array programs,
+		required Context inheritedContext,
+		required Scope parentScope,
+		required LayerMemo sharedLayerMemo
+	) {
+		var children = [];
+		for ( var childProgram in arguments.programs ) {
+			var childFiber = runForkWithContext(
+				childProgram,
+				arguments.inheritedContext,
+				arguments.parentScope,
+				arguments.sharedLayerMemo
+			);
+			arguments.parentScope.addChild( childFiber );
+			children.append( childFiber );
+		}
+		return children;
+	}
+
+	private array function awaitFactories( required array childFibers ) {
+		var factories = [];
+		for ( var childFiber in arguments.childFibers ) {
+			factories.append( awaitFactory( childFiber ) );
+		}
+		return factories;
+	}
+
+	private array function awaitIndexedFactories( required array indexedFibers ) {
+		var factories = [];
+		for ( var indexedFiber in arguments.indexedFibers ) {
+			factories.append( awaitIndexedFactory( indexedFiber ) );
+		}
+		return factories;
+	}
+
+	private function awaitFactory( required Fiber childFiber ) {
+		var fiberToAwait = arguments.childFiber;
+		return () => {
+			fiberId : fiberToAwait.id(),
+			exit : fiberToAwait.await()
+		};
+	}
+
+	private function awaitIndexedFactory( required struct indexedFiber ) {
+		var indexedFiberToAwait = arguments.indexedFiber;
+		return () => {
+			index : indexedFiberToAwait.index,
+			fiberId : indexedFiberToAwait.fiber.id(),
+			exit : indexedFiberToAwait.fiber.await()
+		};
+	}
+
+}

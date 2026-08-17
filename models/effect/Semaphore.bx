@@ -1,0 +1,60 @@
+import bxModules.bxEffect.models.effect.Effect;
+
+/**
+ * An Effect-aware permit source backed by java.util.concurrent.Semaphore.
+ *
+ * The permit source is intentionally mutable synchronization state. Its public
+ * operations remain lazy Effects, and withPermit only releases after acquire
+ * has completed successfully.
+ */
+class {
+
+	variables.permits = null;
+
+	function init( required numeric permits ) {
+		validatePermits( arguments.permits );
+		variables.permits = new java.util.concurrent.Semaphore( arguments.permits, true );
+		return this;
+	}
+
+	static function make( required numeric permits ) {
+		return new Semaphore( arguments.permits );
+	}
+
+	function acquire() {
+		return Effect::_acquireSemaphore( this );
+	}
+
+	function release() {
+		var permitSource = variables.permits;
+		return Effect::sync( () => {
+			permitSource.release();
+			return null;
+		} );
+	}
+
+	function withPermit( required Effect program ) {
+		var programToRun = arguments.program;
+		return acquire().flatMap( () => programToRun.ensuring( release() ) );
+	}
+
+	numeric function availablePermits() {
+		return variables.permits.availablePermits();
+	}
+
+	/** Runtime-private blocking call; Fiber cancellation interrupts its runtime thread. */
+	function _acquireNative() {
+		variables.permits.acquire();
+		return null;
+	}
+
+	private static function validatePermits( required numeric permits ) {
+		if ( arguments.permits < 0 || int( arguments.permits ) != arguments.permits ) {
+			throw(
+				type: "BXEffect.InvalidPermitCount",
+				message: "Semaphore permits must be a non-negative whole number"
+			);
+		}
+	}
+
+}

@@ -1,0 +1,55 @@
+/**
+ * Centralized tag convention for expected errors.
+ */
+class {
+
+	static string function resolve( required any errorValue ) {
+		var explicitTag = readExplicitTag( arguments.errorValue );
+		if ( !isNull( explicitTag ) ) {
+			return explicitTag.toString();
+		}
+
+		var metadata = readMetadata( arguments.errorValue );
+		if (
+			!isNull( metadata )
+			&& structKeyExists( metadata, "annotations" )
+			&& structKeyExists( metadata.annotations, "effectError" )
+		) {
+			return metadata.annotations.effectError.toString();
+		}
+
+		if ( isInstanceOf( arguments.errorValue, "java.lang.Throwable" ) ) {
+			try {
+				if ( !isNull( arguments.errorValue.type ) && arguments.errorValue.type.toString().len() > 0 ) {
+					return arguments.errorValue.type.toString();
+				}
+			} catch ( any ignored ) {
+			}
+		}
+
+		if ( !isNull( metadata ) && structKeyExists( metadata, "name" ) ) {
+			return metadata.name.toString();
+		}
+
+		return arguments.errorValue.getClass().getName();
+	}
+
+	private static function readExplicitTag( required any errorValue ) {
+		try {
+			if ( structKeyExists( arguments.errorValue, "_tag" ) ) {
+				return arguments.errorValue._tag;
+			}
+		} catch ( any ignored ) {
+		}
+		return null;
+	}
+
+	private static function readMetadata( required any errorValue ) {
+		try {
+			return getClassMetadata( arguments.errorValue );
+		} catch ( any ignored ) {
+			return null;
+		}
+	}
+
+}

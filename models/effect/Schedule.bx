@@ -1,0 +1,239 @@
+/**
+ * A small in-process retry/repetition policy.
+ *
+ * Schedule is deliberately not an application job scheduler. It decides only
+ * whether another Effect execution should occur and how long to wait first.
+ */
+class {
+
+	variables.scheduleKind = "";
+	variables.limit = null;
+	variables.delay = 0;
+	variables.timeUnit = "milliseconds";
+	variables.decision = null;
+
+	function init(
+		required string scheduleKind,
+		any limit,
+		numeric delay = 0,
+		string timeUnit = "milliseconds",
+		any decision
+	) {
+		variables.scheduleKind = arguments.scheduleKind;
+		if ( structKeyExists( arguments, "limit" ) ) {
+			variables.limit = arguments.limit;
+		}
+		variables.delay = arguments.delay;
+		variables.timeUnit = arguments.timeUnit;
+		if ( structKeyExists( arguments, "decision" ) ) {
+			variables.decision = arguments.decision;
+		}
+		return this;
+	}
+
+	static function recurs( required numeric count ) {
+		if ( arguments.count < 0 ) {
+			throw( type: "BXEffect.InvalidSchedule", message: "Schedule.recurs() requires a non-negative count" );
+		}
+		return new Schedule( scheduleKind: "Recurs", limit: arguments.count );
+	}
+
+	static function spaced( required numeric duration, string unit = "milliseconds" ) {
+		var validatedDelay = validateDelay( arguments.duration );
+		toMillis( validatedDelay, arguments.unit );
+		return new Schedule(
+			scheduleKind: "Spaced",
+			delay: validatedDelay,
+			timeUnit: arguments.unit
+		);
+	}
+
+	static function fixed( required numeric duration, string unit = "milliseconds" ) {
+		var validatedDelay = validateDelay( arguments.duration );
+		toMillis( validatedDelay, arguments.unit );
+		return new Schedule(
+			scheduleKind: "Fixed",
+			delay: validatedDelay,
+			timeUnit: arguments.unit
+		);
+	}
+
+	static function exponential( required numeric baseDuration, string unit = "milliseconds" ) {
+		var validatedDelay = validateDelay( arguments.baseDuration );
+		toMillis( validatedDelay, arguments.unit );
+		return new Schedule(
+			scheduleKind: "Exponential",
+			delay: validatedDelay,
+			timeUnit: arguments.unit
+		);
+	}
+
+	function and( required any other ) {
+		var leftSchedule = this;
+		var rightSchedule = Schedule::coerce( arguments.other );
+		return Schedule::custom( ( recurrence, value, scheduledAt, nowMillis ) => {
+			var leftDecision = leftSchedule.next( recurrence, value, scheduledAt, nowMillis );
+			var rightDecision = rightSchedule.next( recurrence, value, scheduledAt, nowMillis );
+			return {
+				continue : leftDecision.continue && rightDecision.continue,
+				delay : max( toMillis( leftDecision.delay, leftDecision.unit ), toMillis( rightDecision.delay, rightDecision.unit ) ),
+				unit : "milliseconds",
+				nextScheduledAt : firstScheduledAt( leftDecision, rightDecision )
+			};
+		} );
+	}
+
+	function or( required any other ) {
+		var leftSchedule = this;
+		var rightSchedule = Schedule::coerce( arguments.other );
+		return Schedule::custom( ( recurrence, value, scheduledAt, nowMillis ) => {
+			var leftDecision = leftSchedule.next( recurrence, value, scheduledAt, nowMillis );
+			var rightDecision = rightSchedule.next( recurrence, value, scheduledAt, nowMillis );
+			var leftDelay = toMillis( leftDecision.delay, leftDecision.unit );
+			var rightDelay = toMillis( rightDecision.delay, rightDecision.unit );
+			var nextDelay = leftDecision.continue && rightDecision.continue
+				? min( leftDelay, rightDelay )
+				: ( leftDecision.continue ? leftDelay : rightDelay );
+			return {
+				continue : leftDecision.continue || rightDecision.continue,
+				delay : nextDelay,
+				unit : "milliseconds",
+				nextScheduledAt : firstScheduledAt( leftDecision, rightDecision )
+			};
+		} );
+	}
+
+	function whileInput( required function predicate ) {
+		var sourceSchedule = this;
+		var shouldContinue = arguments.predicate;
+		return Schedule::custom( ( recurrence, value, scheduledAt, nowMillis ) => {
+			var decision = sourceSchedule.next( recurrence, value, scheduledAt, nowMillis );
+			decision.continue = decision.continue && shouldContinue( value );
+			return decision;
+		} );
+	}
+
+	function untilInput( required function predicate ) {
+		var sourceSchedule = this;
+		var shouldStop = arguments.predicate;
+		return Schedule::custom( ( recurrence, value, scheduledAt, nowMillis ) => {
+			var decision = sourceSchedule.next( recurrence, value, scheduledAt, nowMillis );
+			decision.continue = decision.continue && !shouldStop( value );
+			return decision;
+		} );
+	}
+
+	function jittered( numeric minimum = 0.8, numeric maximum = 1.2 ) {
+		if ( arguments.minimum < 0 || arguments.maximum < arguments.minimum ) {
+			throw( type: "BXEffect.InvalidSchedule", message: "Schedule.jittered() requires 0 <= minimum <= maximum" );
+		}
+		var sourceSchedule = this;
+		var minimumFactor = arguments.minimum;
+		var maximumFactor = arguments.maximum;
+		return Schedule::custom( ( recurrence, value, scheduledAt, nowMillis ) => {
+			var decision = sourceSchedule.next( recurrence, value, scheduledAt, nowMillis );
+			decision.delay *= minimumFactor + ( rand() * ( maximumFactor - minimumFactor ) );
+			return decision;
+		} );
+	}
+
+	static function coerce( required any policy ) {
+		if ( isObject( arguments.policy ) && structKeyExists( arguments.policy, "next" ) ) {
+			return arguments.policy;
+		}
+		if ( isStruct( arguments.policy ) && structKeyExists( arguments.policy, "times" ) ) {
+			return Schedule::recurs( arguments.policy.times );
+		}
+		throw(
+			type: "BXEffect.InvalidSchedule",
+			message: "Schedule policy must be a Schedule or a { times: number } struct"
+		);
+	}
+
+	struct function next(
+		required numeric recurrence,
+		any value,
+		numeric scheduledAt = 0,
+		numeric nowMillis = 0
+	) {
+		if ( !isNull( variables.decision ) ) {
+			return variables.decision(
+				arguments.recurrence,
+				arguments.value,
+				arguments.scheduledAt,
+				arguments.nowMillis
+			);
+		}
+		var shouldContinue = isNull( variables.limit ) || arguments.recurrence < variables.limit;
+		var nextDelay = variables.delay;
+		if ( variables.scheduleKind == "Exponential" ) {
+			nextDelay = variables.delay * ( 2 ^ arguments.recurrence );
+		}
+		if ( variables.scheduleKind == "Fixed" ) {
+			var intervalMillis = toMillis( variables.delay, variables.timeUnit );
+			var nextScheduledAt = arguments.scheduledAt + intervalMillis;
+			return {
+				continue : shouldContinue,
+				delay : max( 0, nextScheduledAt - arguments.nowMillis ),
+				unit : "milliseconds",
+				nextScheduledAt : nextScheduledAt
+			};
+		}
+		return {
+			continue : shouldContinue,
+			delay : nextDelay,
+			unit : variables.timeUnit,
+			nextScheduledAt : null
+		};
+	}
+
+	private static numeric function validateDelay( required numeric duration ) {
+		if ( arguments.duration < 0 ) {
+			throw( type: "BXEffect.InvalidSchedule", message: "Schedule delays must be non-negative" );
+		}
+		return arguments.duration;
+	}
+
+	private static function custom( required function decision ) {
+		return new Schedule( scheduleKind: "Custom", decision: arguments.decision );
+	}
+
+	private static function firstScheduledAt( required struct leftDecision, required struct rightDecision ) {
+		return structKeyExists( arguments.leftDecision, "nextScheduledAt" )
+			&& !isNull( arguments.leftDecision.nextScheduledAt )
+			? arguments.leftDecision.nextScheduledAt
+			: (
+				structKeyExists( arguments.rightDecision, "nextScheduledAt" )
+					? arguments.rightDecision.nextScheduledAt
+					: null
+			);
+	}
+
+	private static numeric function toMillis( required numeric duration, required string unit ) {
+		switch ( lCase( arguments.unit ) ) {
+			case "millisecond":
+			case "milliseconds":
+			case "ms":
+				return arguments.duration;
+			case "second":
+			case "seconds":
+			case "s":
+				return arguments.duration * 1000;
+			case "minute":
+			case "minutes":
+			case "m":
+				return arguments.duration * 60000;
+			case "hour":
+			case "hours":
+			case "h":
+				return arguments.duration * 3600000;
+			case "day":
+			case "days":
+			case "d":
+				return arguments.duration * 86400000;
+		}
+
+		throw( type: "BXEffect.InvalidTimeUnit", message: "Unsupported Schedule unit [#arguments.unit#]" );
+	}
+
+}

@@ -1,0 +1,77 @@
+import bxModules.bxEffect.models.effect.Cause;
+import bxModules.bxEffect.models.effect.Exit;
+import bxModules.bxEffect.models.effect.internal.FiberControl;
+import bxModules.bxEffect.models.effect.internal.ThrowablePolicy;
+
+/**
+ * A logical handle for a BoxFuture-backed Effect execution.
+ *
+ * Interruption is best effort: BoxFuture cancellation is delegated to the
+ * executor selected by BoxLang and cannot force arbitrary user code to stop.
+ */
+class {
+
+	variables.future = null;
+	variables.fiberId = "";
+	variables.control = null;
+
+	Fiber function init(
+		required any future,
+		required string fiberId,
+		required FiberControl control
+	) {
+		variables.future = arguments.future;
+		variables.fiberId = arguments.fiberId;
+		variables.control = arguments.control;
+		return this;
+	}
+
+	function await() {
+		try {
+			return variables.future.get();
+		} catch ( any error ) {
+			ThrowablePolicy::rethrowIfFatal( error );
+			return variables.control.isInterrupted()
+				? Exit::failure( Cause::interrupt( variables.fiberId ) )
+				: Exit::failure( Cause::die( error ) );
+		}
+	}
+
+	function join() {
+		var completedExit = this.await();
+		if ( completedExit.isSuccess() ) {
+			return completedExit.value();
+		}
+
+		throw(
+			type: "BXEffect.EffectFailure",
+			message: completedExit.cause().pretty(),
+			extendedInfo: completedExit.cause()
+		);
+	}
+
+	function poll() {
+		return isDone() ? attempt( await() ) : attempt();
+	}
+
+	function interrupt() {
+		variables.control.interrupt();
+		if ( !isDone() ) {
+			try {
+				variables.future.cancel( true );
+			} catch ( any ignored ) {
+				// Some executor implementations may not expose cancellation.
+			}
+		}
+		return this;
+	}
+
+	boolean function isDone() {
+		return variables.future.isDone();
+	}
+
+	string function id() {
+		return variables.fiberId;
+	}
+
+}

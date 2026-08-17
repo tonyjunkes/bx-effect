@@ -1,0 +1,178 @@
+/**
+ * Describes why an Effect failed.
+ *
+ * Cause values are immutable by contract. Expected errors, defects, and
+ * interruption remain distinct all the way to an Exit.
+ */
+class {
+
+	variables.causeKind = "";
+	variables.causeValue = null;
+	variables.leftCause = null;
+	variables.rightCause = null;
+
+	Cause function init(
+		required string causeKind,
+		any causeValue,
+		any leftCause,
+		any rightCause
+	) {
+		variables.causeKind = arguments.causeKind;
+		if ( structKeyExists( arguments, "causeValue" ) ) {
+			variables.causeValue = arguments.causeValue;
+		}
+		if ( structKeyExists( arguments, "leftCause" ) ) {
+			variables.leftCause = arguments.leftCause;
+		}
+		if ( structKeyExists( arguments, "rightCause" ) ) {
+			variables.rightCause = arguments.rightCause;
+		}
+		return this;
+	}
+
+	static function fail( required any error ) {
+		return new Cause( causeKind: "Fail", causeValue: arguments.error );
+	}
+
+	static function die( required any defect ) {
+		return new Cause( causeKind: "Die", causeValue: arguments.defect );
+	}
+
+	static function interrupt( required any fiberId ) {
+		return new Cause( causeKind: "Interrupt", causeValue: arguments.fiberId );
+	}
+
+	static function sequential( required Cause left, required Cause right ) {
+		return new Cause(
+			causeKind: "Sequential",
+			leftCause: arguments.left,
+			rightCause: arguments.right
+		);
+	}
+
+	static function parallel( required Cause left, required Cause right ) {
+		return new Cause(
+			causeKind: "Parallel",
+			leftCause: arguments.left,
+			rightCause: arguments.right
+		);
+	}
+
+	string function kind() {
+		return variables.causeKind;
+	}
+
+	any function error() {
+		return variables.causeKind == "Fail" ? variables.causeValue : null;
+	}
+
+	any function defect() {
+		return variables.causeKind == "Die" ? variables.causeValue : null;
+	}
+
+	any function fiberId() {
+		return variables.causeKind == "Interrupt" ? variables.causeValue : null;
+	}
+
+	any function left() {
+		return variables.leftCause;
+	}
+
+	any function right() {
+		return variables.rightCause;
+	}
+
+	boolean function isFailure() {
+		return variables.causeKind == "Fail" || failures().len() > 0;
+	}
+
+	boolean function isDefect() {
+		return variables.causeKind == "Die" || defects().len() > 0;
+	}
+
+	boolean function isInterrupted() {
+		if ( variables.causeKind == "Interrupt" ) {
+			return true;
+		}
+		if ( variables.causeKind == "Sequential" || variables.causeKind == "Parallel" ) {
+			return variables.leftCause.isInterrupted() || variables.rightCause.isInterrupted();
+		}
+		return false;
+	}
+
+	array function failures() {
+		return collectValues( "Fail" );
+	}
+
+	array function defects() {
+		return collectValues( "Die" );
+	}
+
+	/**
+	 * Transforms only expected failures while preserving defect, interruption,
+	 * sequential, and parallel structure.
+	 */
+	Cause function mapFailures( required function mapper ) {
+		switch ( variables.causeKind ) {
+			case "Fail":
+				return Cause::fail( arguments.mapper( variables.causeValue ) );
+			case "Sequential":
+				return Cause::sequential(
+					variables.leftCause.mapFailures( arguments.mapper ),
+					variables.rightCause.mapFailures( arguments.mapper )
+				);
+			case "Parallel":
+				return Cause::parallel(
+					variables.leftCause.mapFailures( arguments.mapper ),
+					variables.rightCause.mapFailures( arguments.mapper )
+				);
+		}
+
+		return this;
+	}
+
+	string function pretty() {
+		switch ( variables.causeKind ) {
+			case "Fail":
+				return "Expected failure: " & renderValue( variables.causeValue );
+			case "Die":
+				return "Defect: " & renderValue( variables.causeValue );
+			case "Interrupt":
+				return "Interrupted fiber: " & renderValue( variables.causeValue );
+			case "Sequential":
+				return "Sequential(" & variables.leftCause.pretty() & ", " & variables.rightCause.pretty() & ")";
+			case "Parallel":
+				return "Parallel(" & variables.leftCause.pretty() & ", " & variables.rightCause.pretty() & ")";
+		}
+		return "Unknown cause";
+	}
+
+	private array function collectValues( required string targetKind ) {
+		var values = [];
+		var pending = [ this ];
+
+		while ( pending.len() > 0 ) {
+			var current = pending.pop();
+			if ( current.kind() == arguments.targetKind ) {
+				values.append( arguments.targetKind == "Fail" ? current.error() : current.defect() );
+			} else if ( current.kind() == "Sequential" || current.kind() == "Parallel" ) {
+				pending.append( current.right() );
+				pending.append( current.left() );
+			}
+		}
+
+		return values;
+	}
+
+	private string function renderValue( required any value ) {
+		if ( isStruct( arguments.value ) && structKeyExists( arguments.value, "message" ) ) {
+			return arguments.value.message;
+		}
+		try {
+			return arguments.value.toString();
+		} catch ( any ignored ) {
+			return JSONSerialize( arguments.value );
+		}
+	}
+
+}

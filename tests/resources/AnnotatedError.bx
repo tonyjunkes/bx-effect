@@ -1,0 +1,3 @@
+@effectError( "AnnotatedFailure" )
+class {
+}

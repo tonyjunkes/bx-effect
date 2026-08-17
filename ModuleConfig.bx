@@ -1,0 +1,37 @@
+/**
+ * BX Effect module descriptor.
+ *
+ * The module is intentionally only an integration shell. Public application
+ * code imports classes through @bxEffect; the kernel itself has no hidden
+ * application lifecycle, interceptor, or annotation-scanning dependency.
+ */
+class {
+
+	property name="moduleRecord";
+	property name="boxRuntime";
+	property name="log";
+
+	this.version = "0.1.0";
+	this.mapping = "bxEffect";
+	this.author = "Tony Junkes";
+	this.description = "A BoxLang-native structured effect system inspired by Effect.";
+	this.webURL = "https://github.com/tonyjunkes/bx-effect";
+	this.enabled = true;
+	this.dependencies = [];
+
+	function configure() {
+		settings = {
+			defaultExecutor : "io-tasks"
+		};
+
+		interceptors = [];
+		customInterceptionPoints = [];
+	}
+
+	function onLoad() {
+	}
+
+	function onUnload() {
+	}
+
+}

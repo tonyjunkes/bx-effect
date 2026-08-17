@@ -1,0 +1,79 @@
+import bxModules.bxEffect.models.effect.Effect;
+import bxModules.bxEffect.models.effect.context.Context;
+import bxModules.bxEffect.models.effect.context.ServiceTag;
+
+/**
+ * A composable recipe for building Context services.
+ *
+ * `scoped()` is a semantic alias for a resource-producing Layer. The supplied
+ * Effect registers its release action with the enclosing runtime Scope.
+ */
+class {
+
+	variables.builder = null;
+	variables.layerId = "";
+
+	Layer function init( required function builder ) {
+		variables.builder = arguments.builder;
+		variables.layerId = createUUID();
+		return this;
+	}
+
+	static function succeed( required ServiceTag tag, any service ) {
+		var providedTag = arguments.tag;
+		var providedService = arguments.service;
+		return new Layer( ( baseContext ) =>
+			Effect::succeed( baseContext.add( providedTag, providedService ) )
+		);
+	}
+
+	static function effect( required ServiceTag tag, required Effect effectProducingService ) {
+		var providedTag = arguments.tag;
+		var serviceProgram = arguments.effectProducingService;
+		return new Layer( ( baseContext ) => serviceProgram
+			.provide( baseContext )
+			.map( ( service ) => baseContext.add( providedTag, service ) )
+		);
+	}
+
+	static function scoped( required ServiceTag tag, required Effect effectProducingService ) {
+		return Layer::effect( arguments.tag, arguments.effectProducingService );
+	}
+
+	static function merge( required array layers ) {
+		var layersToMerge = [];
+		for ( var suppliedLayer in arguments.layers ) {
+			layersToMerge.append( suppliedLayer );
+		}
+		return new Layer( ( baseContext ) => Layer::buildMerged( baseContext, layersToMerge ) );
+	}
+
+	function build( required Context baseContext ) {
+		return variables.builder( arguments.baseContext );
+	}
+
+	function provide( required Effect program ) {
+		return Effect::_provideLayer( arguments.program, this );
+	}
+
+	/** Internal stable identity for runtime-local Layer memoization. */
+	string function _identity() {
+		return variables.layerId;
+	}
+
+	private static function buildMerged( required Context baseContext, required array layers ) {
+		var buildProgram = Effect::succeed( arguments.baseContext );
+		for ( var layerValue in arguments.layers ) {
+			buildProgram = appendLayer( buildProgram, layerValue );
+		}
+		return buildProgram;
+	}
+
+	private static function appendLayer( required Effect accumulated, required Layer nextLayer ) {
+		var layerToBuild = arguments.nextLayer;
+		return arguments.accumulated.flatMap(
+			( buildContext ) => Effect::_buildLayer( layerToBuild, buildContext )
+		);
+	}
+
+}

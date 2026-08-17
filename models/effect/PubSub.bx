@@ -1,0 +1,263 @@
+import bxModules.bxEffect.models.effect.Effect;
+import bxModules.bxEffect.models.effect.PubSubSubscription;
+
+/**
+ * An Effect-aware active-subscriber broadcast hub with explicit shutdown.
+ *
+ * Bounded capacity is governed by the slowest active subscription. The hub is
+ * mutable, application-owned coordination state; it is not a Stream or Scope.
+ */
+class {
+
+	variables.capacity = -1;
+	variables.subscriptions = new java.util.ArrayList();
+	variables.lock = new java.util.concurrent.locks.ReentrantLock();
+	variables.notEmpty = variables.lock.newCondition();
+	variables.notFull = variables.lock.newCondition();
+	variables.shutdown = false;
+
+	function init( numeric capacity = -1 ) {
+		if ( arguments.capacity == 0 || arguments.capacity < -1 || int( arguments.capacity ) != arguments.capacity ) {
+			throw(
+				type: "BXEffect.InvalidPubSubCapacity",
+				message: "PubSub capacity must be a positive whole number or unbounded"
+			);
+		}
+		variables.capacity = arguments.capacity;
+		return this;
+	}
+
+	static function bounded( required numeric capacity ) {
+		if ( arguments.capacity <= 0 || int( arguments.capacity ) != arguments.capacity ) {
+			throw(
+				type: "BXEffect.InvalidPubSubCapacity",
+				message: "PubSub capacity must be a positive whole number"
+			);
+		}
+		return new PubSub( arguments.capacity );
+	}
+
+	static function unbounded() {
+		return new PubSub();
+	}
+
+	function publish( any value ) {
+		return Effect::_publishPubSub( this, arguments.value );
+	}
+
+	function subscribe() {
+		return Effect::_subscribePubSub( this );
+	}
+
+	function withSubscription( required function use ) {
+		var useSubscription = arguments.use;
+		return subscribe().flatMap( ( subscription ) =>
+			useSubscription( subscription ).ensuring( subscription.unsubscribe() )
+		);
+	}
+
+	function shutdown() {
+		return Effect::sync( () => shutdownNative() );
+	}
+
+	boolean function isShutdown() {
+		variables.lock.lock();
+		try {
+			return variables.shutdown;
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	numeric function capacity() {
+		return variables.capacity;
+	}
+
+	numeric function subscriberCount() {
+		variables.lock.lock();
+		try {
+			return variables.subscriptions.size();
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	/** Runtime-private interruptible publication. */
+	function _publishNative( any value, any controlState = null ) {
+		variables.lock.lockInterruptibly();
+		try {
+			while ( !variables.shutdown && isFull() ) {
+				if ( wasInterrupted( arguments.controlState ) ) {
+					return { isInterrupted: true, isShutdown: false };
+				}
+				variables.notFull.await();
+			}
+			if ( wasInterrupted( arguments.controlState ) ) {
+				return { isInterrupted: true, isShutdown: false };
+			}
+			if ( variables.shutdown ) {
+				return { isInterrupted: false, isShutdown: true };
+			}
+			for ( var subscription in variables.subscriptions ) {
+				subscription._enqueueNative( arguments.value );
+			}
+			variables.notEmpty.signalAll();
+			return { isInterrupted: false, isShutdown: false };
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	/** Runtime-private lazy subscription creation. */
+	function _subscribeNative( any controlState = null ) {
+		variables.lock.lockInterruptibly();
+		try {
+			if ( wasInterrupted( arguments.controlState ) ) {
+				return { isInterrupted: true, isShutdown: false };
+			}
+			if ( variables.shutdown ) {
+				return { isInterrupted: false, isShutdown: true };
+			}
+			var subscription = new PubSubSubscription( this );
+			variables.subscriptions.add( subscription );
+			return {
+				isInterrupted: false,
+				isShutdown: false,
+				subscription: subscription
+			};
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	/** Runtime-private interruptible subscription take. */
+	function _takeNative( required any subscription, any controlState = null ) {
+		variables.lock.lockInterruptibly();
+		try {
+			while (
+				!variables.shutdown
+				&& isSubscriptionActive( arguments.subscription )
+				&& arguments.subscription._isEmptyNative()
+			) {
+				if ( wasInterrupted( arguments.controlState ) ) {
+					return interruptionOutcome();
+				}
+				variables.notEmpty.await();
+			}
+			if ( wasInterrupted( arguments.controlState ) ) {
+				return interruptionOutcome();
+			}
+			if ( variables.shutdown ) {
+				return pubSubShutdownOutcome();
+			}
+			if ( !isSubscriptionActive( arguments.subscription ) ) {
+				return subscriptionShutdownOutcome();
+			}
+			var entry = arguments.subscription._dequeueNative();
+			variables.notFull.signalAll();
+			return {
+				isInterrupted: false,
+				isPubSubShutdown: false,
+				isSubscriptionShutdown: false,
+				value: entry.value
+			};
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	/** Runtime-private non-blocking subscription poll. */
+	function _pollNative( required any subscription ) {
+		variables.lock.lock();
+		try {
+			if ( variables.shutdown || !isSubscriptionActive( arguments.subscription ) || arguments.subscription._isEmptyNative() ) {
+				return attempt();
+			}
+			var entry = arguments.subscription._dequeueNative();
+			variables.notFull.signalAll();
+			return attempt( entry.value );
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	/** Runtime-private explicit subscription release. */
+	function _unsubscribeNative( required any subscription ) {
+		variables.lock.lock();
+		try {
+			if ( !variables.subscriptions.remove( arguments.subscription ) ) {
+				return false;
+			}
+			arguments.subscription._shutdownNative();
+			variables.notEmpty.signalAll();
+			variables.notFull.signalAll();
+			return true;
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	private boolean function isFull() {
+		if ( variables.capacity < 0 ) {
+			return false;
+		}
+		for ( var subscription in variables.subscriptions ) {
+			if ( subscription._sizeNative() >= variables.capacity ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean function isSubscriptionActive( required any subscription ) {
+		return variables.subscriptions.contains( arguments.subscription );
+	}
+
+	private boolean function wasInterrupted( any controlState = null ) {
+		return !isNull( arguments.controlState ) && arguments.controlState.isInterrupted();
+	}
+
+	private struct function interruptionOutcome() {
+		return {
+			isInterrupted: true,
+			isPubSubShutdown: false,
+			isSubscriptionShutdown: false
+		};
+	}
+
+	private struct function pubSubShutdownOutcome() {
+		return {
+			isInterrupted: false,
+			isPubSubShutdown: true,
+			isSubscriptionShutdown: false
+		};
+	}
+
+	private struct function subscriptionShutdownOutcome() {
+		return {
+			isInterrupted: false,
+			isPubSubShutdown: false,
+			isSubscriptionShutdown: true
+		};
+	}
+
+	private boolean function shutdownNative() {
+		variables.lock.lock();
+		try {
+			if ( variables.shutdown ) {
+				return false;
+			}
+			variables.shutdown = true;
+			for ( var subscription in variables.subscriptions ) {
+				subscription._shutdownNative();
+			}
+			variables.subscriptions.clear();
+			variables.notEmpty.signalAll();
+			variables.notFull.signalAll();
+			return true;
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+}

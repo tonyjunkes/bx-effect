@@ -1,0 +1,529 @@
+import bxModules.bxEffect.models.effect.EffectRuntime;
+import bxModules.bxEffect.models.effect.Result;
+import bxModules.bxEffect.models.effect.context.Context;
+import bxModules.bxEffect.models.effect.context.ServiceTag;
+import bxModules.bxEffect.models.effect.internal.ErrorTagResolver;
+import bxModules.bxEffect.models.effect.Schedule;
+
+/**
+ * A lazy description of an effectful computation.
+ *
+ * Public constructors and operators only build instruction nodes. User code is
+ * evaluated exclusively by EffectRuntime at an explicit execution boundary.
+ */
+class {
+
+	variables.instruction = {};
+
+	function init( required struct instruction ) {
+		variables.instruction = arguments.instruction;
+		return this;
+	}
+
+	static function succeed( any value ) {
+		return new Effect( {
+			kind : "Succeed",
+			value : arguments.value
+		} );
+	}
+
+	static function fail( required any error ) {
+		return new Effect( {
+			kind : "Fail",
+			error : arguments.error
+		} );
+	}
+
+	static function sync( required function thunk ) {
+		return new Effect( {
+			kind : "Sync",
+			thunk : arguments.thunk
+		} );
+	}
+
+	/**
+	 * Lazily executes throwing code and maps a thrown exception into the
+	 * expected error channel. BoxLang 1.16 accepts `try` as both a static method
+	 * name and a named argument.
+	 */
+	static function try( required function try, function catch = ( error ) -> error ) {
+		return new Effect( {
+			kind : "Try",
+			thunk : arguments.try,
+			errorMapper : arguments.catch
+		} );
+	}
+
+	static function suspend( required function thunk ) {
+		return new Effect( {
+			kind : "Suspend",
+			thunk : arguments.thunk
+		} );
+	}
+
+	static function fromAttempt( required any valueAttempt, required function onEmpty ) {
+		var sourceAttempt = arguments.valueAttempt;
+		var emptyHandler = arguments.onEmpty;
+		return Effect::suspend( () => sourceAttempt.isPresent()
+			? Effect::succeed( sourceAttempt.get() )
+			: Effect::fail( emptyHandler() )
+		);
+	}
+
+	static function fromResult( required Result outcome ) {
+		return arguments.outcome.isSuccess()
+			? Effect::succeed( arguments.outcome.value() )
+			: Effect::fail( arguments.outcome.error() );
+	}
+
+	static function service( required ServiceTag tag ) {
+		return new Effect( {
+			kind : "AccessService",
+			tag : arguments.tag
+		} );
+	}
+
+	static function acquireRelease( required Effect acquire, required function release ) {
+		return new Effect( {
+			kind : "AcquireRelease",
+			acquire : arguments.acquire,
+			release : arguments.release
+		} );
+	}
+
+	static function fromBoxFuture( required function futureFactory ) {
+		return new Effect( {
+			kind : "AsyncFuture",
+			futureFactory : arguments.futureFactory
+		} );
+	}
+
+	/** Internal interruptible permit-acquisition instruction. */
+	static function _acquireSemaphore( required any permitSource ) {
+		return new Effect( {
+			kind : "SemaphoreAcquire",
+			permitSource : arguments.permitSource
+		} );
+	}
+
+	/** Internal interruptible Queue-offer instruction. */
+	static function _offerQueue( required any queueSource, any value ) {
+		return new Effect( {
+			kind : "QueueOffer",
+			queueSource : arguments.queueSource,
+			value : arguments.value
+		} );
+	}
+
+	/** Internal interruptible Queue-take instruction. */
+	static function _takeQueue( required any queueSource ) {
+		return new Effect( {
+			kind : "QueueTake",
+			queueSource : arguments.queueSource
+		} );
+	}
+
+	/** Internal interruptible PubSub-publication instruction. */
+	static function _publishPubSub( required any pubSubSource, any value ) {
+		return new Effect( {
+			kind : "PubSubPublish",
+			pubSubSource : arguments.pubSubSource,
+			value : arguments.value
+		} );
+	}
+
+	/** Internal PubSub-subscription instruction. */
+	static function _subscribePubSub( required any pubSubSource ) {
+		return new Effect( {
+			kind : "PubSubSubscribe",
+			pubSubSource : arguments.pubSubSource
+		} );
+	}
+
+	/** Internal interruptible PubSub-subscription take instruction. */
+	static function _takePubSubSubscription( required any subscriptionSource ) {
+		return new Effect( {
+			kind : "PubSubTake",
+			subscriptionSource : arguments.subscriptionSource
+		} );
+	}
+
+	/** Internal Layer-provisioning instruction. */
+	static function _provideLayer( required Effect program, required any layer ) {
+		return new Effect( {
+			kind : "ProvideLayer",
+			effect : arguments.program,
+			layer : arguments.layer
+		} );
+	}
+
+	/** Internal Layer-build instruction used by Layer.merge and the runtime. */
+	static function _buildLayer( required any layer, required Context baseContext ) {
+		return new Effect( {
+			kind : "BuildLayer",
+			layer : arguments.layer,
+			baseContext : arguments.baseContext
+		} );
+	}
+
+	static function all( required array effects, struct options = {} ) {
+		return new Effect( {
+			kind : "All",
+			effects : copyEffects( arguments.effects ),
+			options : normalizeAllOptions( arguments.options )
+		} );
+	}
+
+	static function forEach( required array values, required function mapper, struct options = {} ) {
+		var allOptions = { concurrency: 1 };
+		var discardResults = false;
+		for ( var optionName in arguments.options ) {
+			if ( listFindNoCase( "concurrency,discard", optionName ) == 0 ) {
+				throw(
+					type: "BXEffect.InvalidForEachOption",
+					message: "Effect.forEach() does not support option [#optionName#]"
+				);
+			}
+		}
+		if ( structKeyExists( arguments.options, "concurrency" ) ) {
+			allOptions.concurrency = arguments.options.concurrency;
+		}
+		if ( structKeyExists( arguments.options, "discard" ) ) {
+			if ( !isBoolean( arguments.options.discard ) ) {
+				throw(
+					type: "BXEffect.InvalidForEachOption",
+					message: "Effect.forEach() discard must be boolean"
+				);
+			}
+			discardResults = arguments.options.discard;
+		}
+
+		var programs = [];
+		for ( var index = 1; index <= arguments.values.len(); index++ ) {
+			programs.append( forEachProgram(
+				arguments.values[ index ],
+				index,
+				arguments.mapper
+			) );
+		}
+
+		var collected = Effect::all( programs, allOptions );
+		return discardResults ? collected.asVoid() : collected;
+	}
+
+	static function race( required array effects ) {
+		if ( arguments.effects.len() == 0 ) {
+			throw(
+				type: "BXEffect.EmptyRace",
+				message: "Effect.race() requires at least one Effect"
+			);
+		}
+		return new Effect( {
+			kind : "Race",
+			effects : copyEffects( arguments.effects )
+		} );
+	}
+
+	static function firstSuccessOf( required array effects ) {
+		if ( arguments.effects.len() == 0 ) {
+			throw(
+				type: "BXEffect.EmptyFirstSuccess",
+				message: "Effect.firstSuccessOf() requires at least one Effect"
+			);
+		}
+		return new Effect( {
+			kind : "FirstSuccess",
+			effects : copyEffects( arguments.effects )
+		} );
+	}
+
+	static function sleep( required numeric duration, string unit = "milliseconds" ) {
+		if ( arguments.duration < 0 ) {
+			throw( type: "BXEffect.InvalidDuration", message: "Effect.sleep() requires a non-negative duration" );
+		}
+		return new Effect( {
+			kind : "Sleep",
+			duration : arguments.duration,
+			unit : arguments.unit
+		} );
+	}
+
+	/** Internal runtime constructor used to preserve an existing Cause. */
+	static function _halt( required any cause ) {
+		return new Effect( {
+			kind : "Halt",
+			cause : arguments.cause
+		} );
+	}
+
+	function map( required function mapper ) {
+		var mapFunction = arguments.mapper;
+		return flatMap( ( value ) => Effect::succeed( mapFunction( value ) ) );
+	}
+
+	function flatMap( required function mapper ) {
+		return new Effect( {
+			kind : "FlatMap",
+			effect : this,
+			mapper : arguments.mapper
+		} );
+	}
+
+	function tap( required function observer ) {
+		var effectfulObserver = arguments.observer;
+		return flatMap( ( value ) => effectfulObserver( value ).as( value ) );
+	}
+
+	function as( any value ) {
+		var replacement = arguments.value;
+		return map( ( ignored ) => replacement );
+	}
+
+	function asVoid() {
+		return as( null );
+	}
+
+	function foldCause( required function onFailure, required function onSuccess ) {
+		return new Effect( {
+			kind : "FoldCause",
+			effect : this,
+			onFailure : arguments.onFailure,
+			onSuccess : arguments.onSuccess
+		} );
+	}
+
+	function catchCause( required function handler ) {
+		var causeHandler = arguments.handler;
+		return foldCause(
+			( effectCause ) => causeHandler( effectCause ),
+			( value ) => Effect::succeed( value )
+		);
+	}
+
+	function catchAll( required function handler ) {
+		var errorHandler = arguments.handler;
+		return foldCause(
+			( effectCause ) => effectCause.kind() == "Fail"
+				? errorHandler( effectCause.error() )
+				: Effect::_halt( effectCause ),
+			( value ) => Effect::succeed( value )
+		);
+	}
+
+	function mapError( required function mapper ) {
+		var errorMapper = arguments.mapper;
+		return catchAll( ( error ) => Effect::fail( errorMapper( error ) ) );
+	}
+
+	function catchIf( required function predicate, required function handler ) {
+		var shouldCatch = arguments.predicate;
+		var errorHandler = arguments.handler;
+		return catchAll( ( error ) => shouldCatch( error )
+			? errorHandler( error )
+			: Effect::fail( error )
+		);
+	}
+
+	function catchTag( required string tag, required function handler ) {
+		var expectedTag = arguments.tag;
+		var taggedHandler = arguments.handler;
+		return catchIf(
+			( error ) => ErrorTagResolver::resolve( error ) == expectedTag,
+			( error ) => taggedHandler( error )
+		);
+	}
+
+	function orElse( required Effect fallback ) {
+		var fallbackEffect = arguments.fallback;
+		return catchAll( ( ignored ) => fallbackEffect );
+	}
+
+	function filterOrFail( required function predicate, required function onFalse ) {
+		var filterPredicate = arguments.predicate;
+		var failureFactory = arguments.onFalse;
+		return flatMap( ( value ) => filterPredicate( value )
+			? Effect::succeed( value )
+			: Effect::fail( failureFactory( value ) )
+		);
+	}
+
+	function ensuring( required Effect finalizer ) {
+		var finalizerEffect = arguments.finalizer;
+		return onExit( ( ignoredExit ) => finalizerEffect );
+	}
+
+	function onExit( required function handler ) {
+		return new Effect( {
+			kind : "Ensuring",
+			effect : this,
+			handler : arguments.handler
+		} );
+	}
+
+	function fork() {
+		return new Effect( {
+			kind : "Fork",
+			effect : this
+		} );
+	}
+
+	function retry( required any policy ) {
+		return new Effect( {
+			kind : "Retry",
+			effect : this,
+			schedule : Schedule::coerce( arguments.policy )
+		} );
+	}
+
+	function repeat( required any policy ) {
+		return new Effect( {
+			kind : "Repeat",
+			effect : this,
+			schedule : Schedule::coerce( arguments.policy )
+		} );
+	}
+
+	function timeout( required numeric duration, string unit = "milliseconds" ) {
+		var sourceProgram = this;
+		var timeoutDuration = arguments.duration;
+		var timeoutUnit = arguments.unit;
+		return Effect::race( [
+			sourceProgram,
+			Effect::sleep( timeoutDuration, timeoutUnit ).flatMap( () => Effect::fail( {
+				_tag : "TimeoutError",
+				duration : timeoutDuration,
+				unit : timeoutUnit
+			} ) )
+		] );
+	}
+
+	function provide( required any provisioning ) {
+		if ( isContext( arguments.provisioning ) ) {
+			return provideContext( arguments.provisioning );
+		}
+		if ( isLayer( arguments.provisioning ) ) {
+			return arguments.provisioning.provide( this );
+		}
+
+		throw(
+			type: "BXEffect.InvalidProvision",
+			message: "Effect.provide() accepts a Context or Layer"
+		);
+	}
+
+	function provideService( required ServiceTag tag, any service ) {
+		return provideContext( Context::empty().add( arguments.tag, arguments.service ) );
+	}
+
+	private function provideContext( required Context providedContext ) {
+		return new Effect( {
+			kind : "ProvideContext",
+			effect : this,
+			context : arguments.providedContext
+		} );
+	}
+
+	private static array function copyEffects( required array effects ) {
+		var copiedEffects = [];
+		for ( var suppliedEffect in arguments.effects ) {
+			copiedEffects.append( suppliedEffect );
+		}
+		return copiedEffects;
+	}
+
+	private static struct function normalizeAllOptions( required struct options ) {
+		var normalized = {
+			concurrency : "unbounded",
+			mode : "failFast"
+		};
+		for ( var optionName in arguments.options ) {
+			if ( listFindNoCase( "concurrency,mode", optionName ) == 0 ) {
+				throw(
+					type: "BXEffect.InvalidAllOption",
+					message: "Effect.all() does not support option [#optionName#]"
+				);
+			}
+		}
+
+		if ( structKeyExists( arguments.options, "concurrency" ) ) {
+			var requestedConcurrency = arguments.options.concurrency;
+			if ( requestedConcurrency != "unbounded" ) {
+				if (
+					!isNumeric( requestedConcurrency )
+					|| requestedConcurrency <= 0
+					|| requestedConcurrency != round( requestedConcurrency )
+				) {
+					throw(
+						type: "BXEffect.InvalidConcurrency",
+						message: "Effect.all() concurrency must be a positive integer or unbounded"
+					);
+				}
+			}
+			normalized.concurrency = requestedConcurrency;
+		}
+
+		if ( structKeyExists( arguments.options, "mode" ) ) {
+			if ( !listFindNoCase( "failFast,accumulate", arguments.options.mode ) ) {
+				throw(
+					type: "BXEffect.InvalidAllMode",
+					message: "Effect.all() mode must be failFast or accumulate"
+				);
+			}
+			normalized.mode = arguments.options.mode;
+		}
+
+		return normalized;
+	}
+
+	private static function forEachProgram(
+		required any value,
+		required numeric index,
+		required function mapper
+	) {
+		var valueToMap = arguments.value;
+		var indexToMap = arguments.index;
+		var mapperToRun = arguments.mapper;
+		return Effect::suspend( () => mapperToRun( valueToMap, indexToMap ) );
+	}
+
+	private static boolean function isContext( required any candidate ) {
+		return isObject( arguments.candidate )
+			&& structKeyExists( arguments.candidate, "add" )
+			&& structKeyExists( arguments.candidate, "merge" )
+			&& structKeyExists( arguments.candidate, "get" );
+	}
+
+	private static boolean function isLayer( required any candidate ) {
+		return isObject( arguments.candidate )
+			&& structKeyExists( arguments.candidate, "build" )
+			&& structKeyExists( arguments.candidate, "provide" );
+	}
+
+	/**
+	 * Internal interpreter access. This is not part of the supported public API.
+	 */
+	struct function _instruction() {
+		return variables.instruction;
+	}
+
+	static function runSyncExit( required Effect effect ) {
+		return new EffectRuntime().runSyncExit( arguments.effect );
+	}
+
+	static function runFuture( required Effect effect ) {
+		return new EffectRuntime().runFuture( arguments.effect );
+	}
+
+	static function runFutureExit( required Effect effect ) {
+		return new EffectRuntime().runFutureExit( arguments.effect );
+	}
+
+	static function runFork( required Effect effect ) {
+		return new EffectRuntime().runFork( arguments.effect );
+	}
+
+	static function runSync( required Effect effect ) {
+		return new EffectRuntime().runSync( arguments.effect );
+	}
+
+}

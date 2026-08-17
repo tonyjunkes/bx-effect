@@ -1,0 +1,22 @@
+import ortus.boxlang.runtime.async.BoxFuture;
+
+/**
+ * Live runtime clock backed by BoxFuture's delayed executor.
+ */
+class {
+
+	numeric function now() {
+		return getTickCount();
+	}
+
+	function sleep( required numeric duration, string unit = "milliseconds" ) {
+		if ( arguments.duration < 0 ) {
+			throw( type: "BXEffect.InvalidDuration", message: "Clock sleep requires a non-negative duration" );
+		}
+		return futureNew(
+			() => null,
+			BoxFuture::delayedExecutor( arguments.duration, arguments.unit )
+		);
+	}
+
+}

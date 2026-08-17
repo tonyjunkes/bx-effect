@@ -1,0 +1,37 @@
+<bx:script>
+import models.effect.Effect@bxEffect;
+import models.effect.context.Layer@bxEffect;
+import models.effect.context.ServiceTag@bxEffect;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.lang.System;
+
+branches = 128;
+repository = ServiceTag::of( "benchmark/Repository" );
+builds = new AtomicInteger( 0 );
+shared = Layer::effect(
+	repository,
+	Effect::sync( () => {
+		builds.incrementAndGet();
+		return "repository";
+	} )
+);
+programs = [];
+for ( index = 1; index <= branches; index++ ) {
+	programs.append( Effect::service( repository ).provide( shared ) );
+}
+
+startedAt = System.nanoTime();
+result = Effect::runSync( Effect::all( programs ) );
+elapsedMs = int( ( System.nanoTime() - startedAt ) / 1000000 );
+
+if ( result.len() != branches || builds.get() != 1 ) {
+	throw(
+		type: "BXEffect.BenchmarkFailure",
+		message: "Expected #branches# results and one shared build; got #result.len()# results and #builds.get()# builds"
+	);
+}
+
+writeOutput(
+	"executor=io-tasks branches=#branches# builds=#builds.get()# elapsedMs=#elapsedMs#"
+);
+</bx:script>

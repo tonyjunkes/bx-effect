@@ -1,0 +1,35 @@
+/**
+ * Central policy for JVM conditions that must escape Effect normalization.
+ */
+class {
+
+	static boolean function isFatal( required any throwableValue ) {
+		var candidate = arguments.throwableValue;
+
+		while ( !isNull( candidate ) ) {
+			if (
+				isInstanceOf( candidate, "java.lang.VirtualMachineError" )
+				|| isInstanceOf( candidate, "java.lang.ThreadDeath" )
+				|| isInstanceOf( candidate, "java.lang.LinkageError" )
+				|| isInstanceOf( candidate, "java.lang.InterruptedException" )
+			) {
+				return true;
+			}
+
+			if ( !isInstanceOf( candidate, "java.lang.Throwable" ) ) {
+				break;
+			}
+
+			candidate = candidate.getCause();
+		}
+
+		return false;
+	}
+
+	static function rethrowIfFatal( required any throwableValue ) {
+		if ( isFatal( arguments.throwableValue ) ) {
+			throw( object: arguments.throwableValue );
+		}
+	}
+
+}

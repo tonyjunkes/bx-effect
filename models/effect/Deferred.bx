@@ -1,0 +1,83 @@
+import bxModules.bxEffect.models.effect.Cause;
+import bxModules.bxEffect.models.effect.Effect;
+import bxModules.bxEffect.models.effect.Exit;
+
+/**
+ * A single-assignment coordination value backed by one native BoxFuture.
+ *
+ * Completion operations are lazy Effects. Each awaiter receives a dependent
+ * future so Fiber cancellation cannot cancel this Deferred's shared outcome.
+ */
+class {
+
+	variables.outcomeFuture = null;
+
+	function init() {
+		variables.outcomeFuture = futureNew();
+		return this;
+	}
+
+	static function make() {
+		return new Deferred();
+	}
+
+	function await() {
+		var sourceFuture = variables.outcomeFuture;
+		return Effect::fromBoxFuture(
+			() => sourceFuture.then( ( outcome ) => outcome )
+		).flatMap( ( outcome ) => exitToEffect( outcome ) );
+	}
+
+	function complete( required any outcome ) {
+		var outcomeToComplete = arguments.outcome;
+		return Effect::sync( () => {
+			validateExit( outcomeToComplete );
+			return variables.outcomeFuture.complete( outcomeToComplete );
+		} );
+	}
+
+	function succeed( any value ) {
+		return complete( Exit::success( arguments.value ) );
+	}
+
+	function fail( required any error ) {
+		return complete( Exit::failure( Cause::fail( arguments.error ) ) );
+	}
+
+	function die( required any defect ) {
+		return complete( Exit::failure( Cause::die( arguments.defect ) ) );
+	}
+
+	function interrupt( required any fiberId ) {
+		return complete( Exit::failure( Cause::interrupt( arguments.fiberId ) ) );
+	}
+
+	function poll() {
+		return isDone() ? attempt( variables.outcomeFuture.get() ) : attempt();
+	}
+
+	boolean function isDone() {
+		return variables.outcomeFuture.isDone();
+	}
+
+	private static function exitToEffect( required any outcome ) {
+		validateExit( arguments.outcome );
+		return arguments.outcome.isSuccess()
+			? Effect::succeed( arguments.outcome.value() )
+			: Effect::_halt( arguments.outcome.cause() );
+	}
+
+	private static function validateExit( required any outcome ) {
+		if (
+			!isObject( arguments.outcome )
+			|| !structKeyExists( arguments.outcome, "isSuccess" )
+			|| !structKeyExists( arguments.outcome, "isFailure" )
+		) {
+			throw(
+				type: "BXEffect.InvalidDeferredOutcome",
+				message: "Deferred completion requires an Exit"
+			);
+		}
+	}
+
+}

@@ -1,0 +1,97 @@
+import bxModules.bxEffect.models.effect.context.Context;
+
+/**
+ * Owns Effect finalizers for one runtime execution.
+ *
+ * Finalizers are returned in LIFO order on close. A closed Scope rejects new
+ * finalizers so resource acquisition cannot silently leak after completion.
+ */
+class {
+
+	variables.finalizers = new java.util.concurrent.ConcurrentLinkedDeque();
+	variables.children = new java.util.concurrent.ConcurrentLinkedDeque();
+	variables.closed = new java.util.concurrent.atomic.AtomicBoolean( false );
+	variables.lock = new java.util.concurrent.locks.ReentrantLock();
+
+	function addFinalizer( required function finalizer, required Context finalizerContext ) {
+		var finalizerToAdd = arguments.finalizer;
+		var contextToAdd = arguments.finalizerContext;
+		withOpenScope( () => variables.finalizers.push( {
+			finalizer : finalizerToAdd,
+			context : contextToAdd
+		} ) );
+		return this;
+	}
+
+	function addRelease(
+		required function release,
+		any resource,
+		required Context finalizerContext
+	) {
+		var releaseToAdd = arguments.release;
+		var resourceToAdd = arguments.resource;
+		var contextToAdd = arguments.finalizerContext;
+		withOpenScope( () => variables.finalizers.push( {
+			kind : "Release",
+			release : releaseToAdd,
+			resource : resourceToAdd,
+			context : contextToAdd
+		} ) );
+		return this;
+	}
+
+	function addChild( required any fiber ) {
+		var childToAdd = arguments.fiber;
+		withOpenScope( () => variables.children.add( childToAdd ) );
+		return this;
+	}
+
+	function interruptChildren() {
+		for ( var childFiber in variables.children ) {
+			if ( !childFiber.isDone() ) {
+				childFiber.interrupt();
+			}
+		}
+		return this;
+	}
+
+	array function close() {
+		variables.lock.lock();
+		try {
+			if ( variables.closed.get() ) {
+				return [];
+			}
+
+			variables.closed.set( true );
+			var finalizersToRun = [];
+			var nextFinalizer = variables.finalizers.poll();
+			while ( !isNull( nextFinalizer ) ) {
+				finalizersToRun.append( nextFinalizer );
+				nextFinalizer = variables.finalizers.poll();
+			}
+			return finalizersToRun;
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	boolean function isClosed() {
+		return variables.closed.get();
+	}
+
+	private function withOpenScope( required function operation ) {
+		variables.lock.lock();
+		try {
+			if ( variables.closed.get() ) {
+				throw(
+					type: "BXEffect.ScopeClosed",
+					message: "Cannot add work to a closed Scope"
+				);
+			}
+			return arguments.operation();
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+}

@@ -1,0 +1,42 @@
+/**
+ * A stable, namespaced identity for a Context service.
+ */
+class {
+
+	variables.tagKey = "";
+
+	function init( required string tagKey ) {
+		if ( arguments.tagKey.trim().len() == 0 ) {
+			throw(
+				type: "BXEffect.InvalidServiceTag",
+				message: "A ServiceTag key must not be blank"
+			);
+		}
+		variables.tagKey = arguments.tagKey;
+		return this;
+	}
+
+	static function of( required string key ) {
+		return new ServiceTag( arguments.key );
+	}
+
+	string function key() {
+		return variables.tagKey;
+	}
+
+	boolean function equals( required any other ) {
+		return isObject( arguments.other )
+			&& structKeyExists( arguments.other, "key" )
+			&& structKeyExists( arguments.other, "hashCode" )
+			&& variables.tagKey == arguments.other.key();
+	}
+
+	numeric function hashCode() {
+		return variables.tagKey.hashCode();
+	}
+
+	string function toString() {
+		return "ServiceTag(" & variables.tagKey & ")";
+	}
+
+}

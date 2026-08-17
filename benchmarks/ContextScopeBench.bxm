@@ -1,0 +1,55 @@
+<bx:script>
+import models.effect.Effect@bxEffect;
+import models.effect.context.Context@bxEffect;
+import models.effect.context.ServiceTag@bxEffect;
+import java.lang.System;
+
+lookupIterations = 100000;
+scopeIterations = 10000;
+label = ServiceTag::of( "benchmark/Label" );
+benchmarkContext = Context::empty().add( label, "value" );
+
+lookupStartedAt = System.nanoTime();
+lookupValue = null;
+for ( index = 1; index <= lookupIterations; index++ ) {
+	lookupValue = benchmarkContext.get( label );
+}
+lookupElapsedMs = int( ( System.nanoTime() - lookupStartedAt ) / 1000000 );
+
+provisionProgram = Effect::service( label ).provideService( label, "value" );
+provisionStartedAt = System.nanoTime();
+provisionValue = null;
+for ( index = 1; index <= scopeIterations; index++ ) {
+	provisionValue = Effect::runSync( provisionProgram );
+}
+provisionElapsedMs = int( ( System.nanoTime() - provisionStartedAt ) / 1000000 );
+
+releases = 0;
+scopeProgram = Effect::succeed( null );
+resourceProgram = Effect::acquireRelease(
+	Effect::succeed( "resource" ),
+	( ignored ) => Effect::sync( () => releases++ )
+).asVoid();
+for ( index = 1; index <= scopeIterations; index++ ) {
+	scopeProgram = scopeProgram.flatMap( ( ignored ) => resourceProgram );
+}
+
+scopeStartedAt = System.nanoTime();
+Effect::runSync( scopeProgram );
+scopeElapsedMs = int( ( System.nanoTime() - scopeStartedAt ) / 1000000 );
+
+if (
+	lookupValue != "value"
+	|| provisionValue != "value"
+	|| releases != scopeIterations
+) {
+	throw(
+		type: "BXEffect.BenchmarkFailure",
+		message: "Expected Context lookups, provisions, and Scope releases to complete correctly"
+	);
+}
+
+writeOutput(
+	"lookupIterations=#lookupIterations# lookupMs=#lookupElapsedMs# provisionIterations=#scopeIterations# provisionMs=#provisionElapsedMs# scopeIterations=#scopeIterations# scopeMs=#scopeElapsedMs#"
+);
+</bx:script>

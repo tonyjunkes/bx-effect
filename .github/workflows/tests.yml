@@ -1,0 +1,47 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: BoxLang ${{ matrix.boxlang-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        boxlang-version:
+          - "1.16.0"
+          - latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up BoxLang
+        uses: ortus-boxlang/setup-boxlang@main
+        with:
+          version: ${{ matrix.boxlang-version }}
+          with-commandbox: true
+
+      - name: Install development dependencies
+        run: box install
+
+      - name: Run TestBox
+        run: >-
+          boxlang --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx
+          --directory=tests.specs
+          --stream
+          --write-report=false
+          --properties-summary=false
+          --stacktrace=short
+
+      - name: Verify module setting override
+        run: >-
+          boxlang --bx-config tests/boxlang.executor-override.json testbox/system/runners/BoxLangRunner.bx
+          --directory=tests.specs.module
+          --stream
+          --write-report=false
+          --properties-summary=false
+          --stacktrace=short
