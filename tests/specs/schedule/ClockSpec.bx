@@ -3,6 +3,7 @@ import models.effect.EffectRuntime@bxEffect;
 import models.effect.Schedule@bxEffect;
 import models.effect.context.ServiceTag@bxEffect;
 import models.effect.testing.TestClock@bxEffect;
+import tests.resources.AsyncTestSupport;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -21,6 +22,22 @@ class extends="testbox.system.BaseSpec" {
 				expect( clock.advance( 980 ) ).toBe( 1 );
 				expect( earlier.isDone() ).toBeTrue();
 				expect( clock.now() ).toBe( 1000 );
+			} );
+
+			it( "coordinates concurrent sleeper registration and advancement", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var fibers = [];
+				for ( var index = 1; index <= 32; index++ ) {
+					fibers.append( runtime.runFork( Effect::sleep( 100 ).as( index ) ) );
+				}
+
+				awaitPending( clock, 32 );
+				expect( clock.advance( 100 ) ).toBe( 32 );
+				for ( var index = 1; index <= fibers.len(); index++ ) {
+					expect( fibers[ index ].join() ).toBe( index );
+				}
+				expect( clock.pendingCount() ).toBe( 0 );
 			} );
 
 			it( "runs Effect sleep through the configured TestClock", () => {
@@ -164,11 +181,12 @@ class extends="testbox.system.BaseSpec" {
 	}
 
 	private function awaitPending( required TestClock clock, required numeric expectedCount ) {
-		var deadline = getTickCount() + 1000;
-		while ( arguments.clock.pendingCount() < arguments.expectedCount && getTickCount() < deadline ) {
-			sleep( 1 );
-		}
-		expect( arguments.clock.pendingCount() ).toBe( arguments.expectedCount );
+		var clockToCheck = arguments.clock;
+		var countToAwait = arguments.expectedCount;
+		AsyncTestSupport::awaitCondition(
+			() => clockToCheck.pendingCount() >= countToAwait
+		);
+		expect( clockToCheck.pendingCount() ).toBe( countToAwait );
 	}
 
 	private function timedWork( required TestClock clock, required array starts ) {

@@ -1,0 +1,18 @@
+/** Shared bounded polling for asynchronous TestBox specifications. */
+class {
+
+	static function awaitCondition( required function predicate, numeric timeoutMillis = 1000 ) {
+		var deadline = getTickCount() + arguments.timeoutMillis;
+		while ( !arguments.predicate() && getTickCount() < deadline ) {
+			sleep( 1 );
+		}
+		if ( !arguments.predicate() ) {
+			throw(
+				type: "BXEffect.TestTimeout",
+				message: "Timed out waiting for an asynchronous test condition"
+			);
+		}
+		return true;
+	}
+
+}

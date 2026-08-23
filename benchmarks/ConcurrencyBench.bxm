@@ -1,6 +1,6 @@
 <bx:script>
 import models.effect.Effect@bxEffect;
-import java.lang.System;
+import benchmarks.BenchmarkSupport;
 
 delayMs = 20;
 sizes = [ 1, 8, 64, 256 ];
@@ -11,15 +11,16 @@ for ( size in sizes ) {
 		programs.append( Effect::sleep( delayMs ).as( index ) );
 	}
 
-	startedAt = System.nanoTime();
-	result = Effect::runSync( Effect::all( programs, { concurrency: "unbounded" } ) );
-	elapsedMs = int( ( System.nanoTime() - startedAt ) / 1000000 );
+	measurement = BenchmarkSupport::measure(
+		() => Effect::runSync( Effect::all( programs, { concurrency: "unbounded" } ) )
+	);
+	result = measurement.value;
 	if ( result.len() != size ) {
 		throw(
 			type: "BXEffect.BenchmarkFailure",
 			message: "Expected #size# concurrent results but received #result.len()#"
 		);
 	}
-	writeOutput( "size=#size# delayMs=#delayMs# elapsedMs=#elapsedMs# " );
+	writeOutput( "size=#size# delayMs=#delayMs# samples=5 minimumMs=#measurement.minimumMs# medianMs=#measurement.medianMs# " );
 }
 </bx:script>

@@ -3,7 +3,7 @@ import models.effect.Effect@bxEffect;
 import models.effect.context.Layer@bxEffect;
 import models.effect.context.ServiceTag@bxEffect;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.lang.System;
+import benchmarks.BenchmarkSupport;
 
 branches = 128;
 repository = ServiceTag::of( "benchmark/Repository" );
@@ -20,18 +20,17 @@ for ( index = 1; index <= branches; index++ ) {
 	programs.append( Effect::service( repository ).provide( shared ) );
 }
 
-startedAt = System.nanoTime();
-result = Effect::runSync( Effect::all( programs ) );
-elapsedMs = int( ( System.nanoTime() - startedAt ) / 1000000 );
+measurement = BenchmarkSupport::measure( () => Effect::runSync( Effect::all( programs ) ) );
+result = measurement.value;
 
-if ( result.len() != branches || builds.get() != 1 ) {
+if ( result.len() != branches || builds.get() != 6 ) {
 	throw(
 		type: "BXEffect.BenchmarkFailure",
-		message: "Expected #branches# results and one shared build; got #result.len()# results and #builds.get()# builds"
+		message: "Expected #branches# results and one shared build per run; got #result.len()# results and #builds.get()# builds"
 	);
 }
 
 writeOutput(
-	"executor=io-tasks branches=#branches# builds=#builds.get()# elapsedMs=#elapsedMs#"
+	"executor=io-tasks branches=#branches# runs=6 samples=5 minimumMs=#measurement.minimumMs# medianMs=#measurement.medianMs#"
 );
 </bx:script>

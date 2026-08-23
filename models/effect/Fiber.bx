@@ -74,4 +74,9 @@ class {
 		return variables.fiberId;
 	}
 
+	/** Internal dependent completion used by runtime concurrency operators. */
+	function _completionFuture() {
+		return variables.future.then( ( completedExit ) => completedExit );
+	}
+
 }

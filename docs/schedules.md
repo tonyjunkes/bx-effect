@@ -46,5 +46,6 @@ clock.advance( 5, "seconds" );
 fiber.join();
 ```
 
-`TestClock` is a test-only timing service. It does not replace BoxLang Scheduled
-Tasks or create an application scheduler.
+`TestClock` is published deterministic test support for downstream module
+consumers. It does not depend on TestBox, replace BoxLang Scheduled Tasks, or
+create an application scheduler.

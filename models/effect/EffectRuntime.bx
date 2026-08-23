@@ -15,14 +15,14 @@ import bxModules.bxEffect.models.effect.Scope;
  */
 class {
 
-	variables.executorName = "io-tasks";
+	variables.executorName = null;
 	variables.clock = null;
 	variables.observer = null;
 
 	function init( struct options = {} ) {
 		variables.executorName = structKeyExists( arguments.options, "executor" )
 			? arguments.options.executor
-			: resolveDefaultExecutor();
+			: null;
 		variables.clock = structKeyExists( arguments.options, "clock" )
 			? arguments.options.clock
 			: new Clock();
@@ -51,7 +51,7 @@ class {
 
 	function runFuture( required Effect program ) {
 		var programToRun = arguments.program;
-		return futureNew( () => runSync( programToRun ), variables.executorName );
+		return futureNew( () => runSync( programToRun ), executor() );
 	}
 
 	function runFutureExit( required Effect program ) {
@@ -82,11 +82,14 @@ class {
 				scopeToUse,
 				layerMemoToUse
 			),
-			variables.executorName
+			executor()
 		);
 	}
 
 	string function executor() {
+		if ( isNull( variables.executorName ) ) {
+			variables.executorName = resolveDefaultExecutor();
+		}
 		return variables.executorName;
 	}
 
@@ -267,9 +270,11 @@ class {
 						break;
 					}
 					try {
-						current = successFrame.kind == "FlatMap"
-							? successFrame.mapper( current.value )._instruction()
-							: successFrame.onSuccess( current.value )._instruction();
+						current = successFrame.kind == "Map"
+							? { kind: "Succeed", value: successFrame.mapper( current.value ) }
+							: successFrame.kind == "FlatMap"
+								? successFrame.mapper( current.value )._instruction()
+								: successFrame.onSuccess( current.value )._instruction();
 					} catch ( any error ) {
 						current = defectInstruction( error );
 					}
@@ -599,13 +604,14 @@ class {
 							runtimeContext,
 							runtimeScope,
 							runtimeLayerMemo,
-							current.options
+							current.options,
+							arguments.controlState
 						);
 						current = allResult.isSuccess
 							? { kind: "Succeed", value: allResult.values }
 							: haltInstruction( allResult.cause );
 					} catch ( any error ) {
-						current = defectInstruction( error );
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
 					break;
 
@@ -615,13 +621,14 @@ class {
 							current.effects,
 							runtimeContext,
 							runtimeScope,
-							runtimeLayerMemo
+							runtimeLayerMemo,
+							arguments.controlState
 						);
 						current = winnerExit.isSuccess()
 							? { kind: "Succeed", value: winnerExit.value() }
 							: haltInstruction( winnerExit.cause() );
 					} catch ( any error ) {
-						current = defectInstruction( error );
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
 					break;
 
@@ -631,13 +638,14 @@ class {
 							current.effects,
 							runtimeContext,
 							runtimeScope,
-							runtimeLayerMemo
+							runtimeLayerMemo,
+							arguments.controlState
 						);
 						current = successfulExit.isSuccess()
 							? { kind: "Succeed", value: successfulExit.value() }
 							: haltInstruction( successfulExit.cause() );
 					} catch ( any error ) {
-						current = defectInstruction( error );
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
 					break;
 
@@ -738,6 +746,14 @@ class {
 				case "FlatMap":
 					continuations.append( {
 						kind : "FlatMap",
+						mapper : current.mapper
+					} );
+					current = current.effect._instruction();
+					break;
+
+				case "Map":
+					continuations.append( {
+						kind : "Map",
 						mapper : current.mapper
 					} );
 					current = current.effect._instruction();
@@ -920,7 +936,7 @@ class {
 
 	private function runFinalizer( required function finalizer, required Context finalizerContext ) {
 		try {
-			return new EffectRuntime( { executor: variables.executorName, clock: variables.clock } )._runSyncExitWithContext(
+			return new EffectRuntime( { executor: executor(), clock: variables.clock } )._runSyncExitWithContext(
 				arguments.finalizer(),
 				arguments.finalizerContext
 			);
@@ -935,7 +951,7 @@ class {
 			var finalizerProgram = structKeyExists( arguments.finalizerEntry, "kind" )
 				? arguments.finalizerEntry.release( arguments.finalizerEntry.resource )
 				: arguments.finalizerEntry.finalizer();
-			return new EffectRuntime( { executor: variables.executorName, clock: variables.clock } )._runSyncExitWithContext(
+			return new EffectRuntime( { executor: executor(), clock: variables.clock } )._runSyncExitWithContext(
 				finalizerProgram,
 				arguments.finalizerEntry.context
 			);
@@ -950,7 +966,8 @@ class {
 		required Context inheritedContext,
 		required Scope parentScope,
 		required LayerMemo sharedLayerMemo,
-		required struct options
+		required struct options,
+		any controlState = null
 	) {
 		if ( arguments.programs.len() == 0 ) {
 			return { isSuccess: true, values: [] };
@@ -975,7 +992,7 @@ class {
 		}
 
 		while ( running.len() > 0 ) {
-			var completedResult = asyncAny( awaitIndexedFactories( running ) ).get();
+			var completedResult = awaitOne( awaitIndexedFactories( running ), arguments.controlState );
 			var completedExit = completedResult.exit;
 			running = removeIndexedFiber( running, completedResult.fiberId );
 
@@ -1022,7 +1039,8 @@ class {
 		required array programs,
 		required Context inheritedContext,
 		required Scope parentScope,
-		required LayerMemo sharedLayerMemo
+		required LayerMemo sharedLayerMemo,
+		any controlState = null
 	) {
 		var childFibers = forkChildren(
 			arguments.programs,
@@ -1030,7 +1048,7 @@ class {
 			arguments.parentScope,
 			arguments.sharedLayerMemo
 		);
-		var completedResult = asyncAny( awaitFactories( childFibers ) ).get();
+		var completedResult = awaitOne( awaitFactories( childFibers ), arguments.controlState );
 		var winnerExit = completedResult.exit;
 		for ( var childFiber in childFibers ) {
 			if ( !childFiber.isDone() ) {
@@ -1044,7 +1062,8 @@ class {
 		required array programs,
 		required Context inheritedContext,
 		required Scope parentScope,
-		required LayerMemo sharedLayerMemo
+		required LayerMemo sharedLayerMemo,
+		any controlState = null
 	) {
 		var pendingFibers = [];
 		for ( var index = 1; index <= arguments.programs.len(); index++ ) {
@@ -1059,7 +1078,7 @@ class {
 		var failuresByIndex = {};
 
 		while ( pendingFibers.len() > 0 ) {
-			var completedResult = asyncAny( awaitIndexedFactories( pendingFibers ) ).get();
+			var completedResult = awaitOne( awaitIndexedFactories( pendingFibers ), arguments.controlState );
 			var completedExit = completedResult.exit;
 			pendingFibers = removeIndexedFiber( pendingFibers, completedResult.fiberId );
 
@@ -1093,7 +1112,17 @@ class {
 			arguments.sharedLayerMemo
 		);
 		arguments.parentScope.addChild( childFiber );
-		return { index: arguments.index, fiber: childFiber };
+		var childIndex = arguments.index;
+		var childId = childFiber.id();
+		return {
+			index : childIndex,
+			fiber : childFiber,
+			completion : childFiber._completionFuture().then( ( completedExit ) => {
+				index : childIndex,
+				fiberId : childId,
+				exit : completedExit
+			} )
+		};
 	}
 
 	private array function removeIndexedFiber( required array indexedFibers, required string fiberId ) {
@@ -1137,34 +1166,40 @@ class {
 	private array function awaitFactories( required array childFibers ) {
 		var factories = [];
 		for ( var childFiber in arguments.childFibers ) {
-			factories.append( awaitFactory( childFiber ) );
+			factories.append( completionForFiber( childFiber ) );
 		}
 		return factories;
+	}
+
+	private function completionForFiber( required Fiber childFiber ) {
+		var fiberToAwait = arguments.childFiber;
+		var fiberId = fiberToAwait.id();
+		return fiberToAwait._completionFuture().then( ( completedExit ) => {
+			fiberId : fiberId,
+			exit : completedExit
+		} );
 	}
 
 	private array function awaitIndexedFactories( required array indexedFibers ) {
 		var factories = [];
 		for ( var indexedFiber in arguments.indexedFibers ) {
-			factories.append( awaitIndexedFactory( indexedFiber ) );
+			factories.append( indexedFiber.completion );
 		}
 		return factories;
 	}
 
-	private function awaitFactory( required Fiber childFiber ) {
-		var fiberToAwait = arguments.childFiber;
-		return () => {
-			fiberId : fiberToAwait.id(),
-			exit : fiberToAwait.await()
-		};
-	}
-
-	private function awaitIndexedFactory( required struct indexedFiber ) {
-		var indexedFiberToAwait = arguments.indexedFiber;
-		return () => {
-			index : indexedFiberToAwait.index,
-			fiberId : indexedFiberToAwait.fiber.id(),
-			exit : indexedFiberToAwait.fiber.await()
-		};
+	private function awaitOne( required array completions, any controlState = null ) {
+		var completionFuture = asyncAny( arguments.completions );
+		if ( !isNull( arguments.controlState ) ) {
+			arguments.controlState.setActiveFuture( completionFuture );
+		}
+		try {
+			return completionFuture.get();
+		} finally {
+			if ( !isNull( arguments.controlState ) ) {
+				arguments.controlState.clearActiveFuture( completionFuture );
+			}
+		}
 	}
 
 }

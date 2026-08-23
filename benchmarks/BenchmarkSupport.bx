@@ -1,0 +1,36 @@
+import java.lang.System;
+
+/** Warmup and sample collection shared by the repository benchmarks. */
+class {
+
+	static struct function measure(
+		required function operation,
+		numeric warmups = 1,
+		numeric sampleCount = 5
+	) {
+		var operationToRun = arguments.operation;
+		for ( var index = 1; index <= arguments.warmups; index++ ) {
+			operationToRun();
+		}
+
+		var samples = [];
+		var measuredValue = null;
+		for ( var index = 1; index <= arguments.sampleCount; index++ ) {
+			var startedAt = System.nanoTime();
+			measuredValue = operationToRun();
+			samples.append( int( ( System.nanoTime() - startedAt ) / 1000000 ) );
+		}
+		var ordered = [];
+		for ( var sample in samples ) {
+			ordered.append( sample );
+		}
+		ordered.sort( "numeric" );
+		return {
+			value : measuredValue,
+			samples : samples,
+			minimumMs : ordered[ 1 ],
+			medianMs : ordered[ ceiling( ordered.len() / 2 ) ]
+		};
+	}
+
+}

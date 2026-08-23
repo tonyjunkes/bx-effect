@@ -24,8 +24,8 @@ class {
 	}
 
 	function completeFailure( required string layerId, required any outcomeFuture, required any failureCause ) {
-		arguments.outcomeFuture.complete( Exit::failure( arguments.failureCause ) );
 		variables.outcomes.remove( arguments.layerId, arguments.outcomeFuture );
+		arguments.outcomeFuture.complete( Exit::failure( arguments.failureCause ) );
 		return this;
 	}
 

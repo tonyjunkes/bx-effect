@@ -1,6 +1,7 @@
 import models.effect.Effect@bxEffect;
 import models.effect.Deferred@bxEffect;
 import models.effect.Semaphore@bxEffect;
+import tests.resources.AsyncTestSupport;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -63,7 +64,7 @@ class extends="testbox.system.BaseSpec" {
 				expect( permitSource.availablePermits() ).toBe( 0 );
 				protectedFiber.interrupt();
 				expect( protectedFiber.await().cause().kind() ).toBe( "Interrupt" );
-				awaitCondition( () => permitSource.availablePermits() == 1 );
+				AsyncTestSupport::awaitCondition( () => permitSource.availablePermits() == 1 );
 				expect( permitSource.availablePermits() ).toBe( 1 );
 			} );
 
@@ -73,14 +74,6 @@ class extends="testbox.system.BaseSpec" {
 		} );
 
 	} );
-	}
-
-	private function awaitCondition( required function predicate ) {
-		var deadline = getTickCount() + 1000;
-		while ( !arguments.predicate() && getTickCount() < deadline ) {
-			sleep( 1 );
-		}
-		expect( arguments.predicate() ).toBeTrue();
 	}
 
 }

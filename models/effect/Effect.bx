@@ -257,8 +257,11 @@ class {
 	}
 
 	function map( required function mapper ) {
-		var mapFunction = arguments.mapper;
-		return flatMap( ( value ) => Effect::succeed( mapFunction( value ) ) );
+		return new Effect( {
+			kind : "Map",
+			effect : this,
+			mapper : arguments.mapper
+		} );
 	}
 
 	function flatMap( required function mapper ) {

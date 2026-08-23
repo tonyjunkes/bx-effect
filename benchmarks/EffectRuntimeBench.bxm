@@ -1,38 +1,35 @@
 <bx:script>
 import models.effect.Effect@bxEffect;
-import java.lang.System;
+import benchmarks.BenchmarkSupport;
 
 iterations = 100000;
 
-directStartedAt = System.nanoTime();
-directResult = 0;
-for ( index = 1; index <= iterations; index++ ) {
-	directResult++;
-}
-directElapsedMs = int( ( System.nanoTime() - directStartedAt ) / 1000000 );
+directMeasurement = BenchmarkSupport::measure( () => {
+	var result = 0;
+	for ( var directIndex = 1; directIndex <= iterations; directIndex++ ) {
+		result++;
+	}
+	return result;
+} );
 
 mapProgram = Effect::succeed( 0 );
 for ( index = 1; index <= iterations; index++ ) {
 	mapProgram = mapProgram.map( value => value + 1 );
 }
 
-mapStartedAt = System.nanoTime();
-mapResult = Effect::runSync( mapProgram );
-mapElapsedMs = int( ( System.nanoTime() - mapStartedAt ) / 1000000 );
+mapMeasurement = BenchmarkSupport::measure( () => Effect::runSync( mapProgram ) );
 
 flatMapProgram = Effect::succeed( 0 );
 for ( index = 1; index <= iterations; index++ ) {
 	flatMapProgram = flatMapProgram.flatMap( value => Effect::succeed( value + 1 ) );
 }
 
-flatMapStartedAt = System.nanoTime();
-flatMapResult = Effect::runSync( flatMapProgram );
-flatMapElapsedMs = int( ( System.nanoTime() - flatMapStartedAt ) / 1000000 );
+flatMapMeasurement = BenchmarkSupport::measure( () => Effect::runSync( flatMapProgram ) );
 
 if (
-	directResult != iterations
-	|| mapResult != iterations
-	|| flatMapResult != iterations
+	directMeasurement.value != iterations
+	|| mapMeasurement.value != iterations
+	|| flatMapMeasurement.value != iterations
 ) {
 	throw(
 		type: "BXEffect.BenchmarkFailure",
@@ -41,6 +38,6 @@ if (
 }
 
 writeOutput(
-	"iterations=#iterations# directMs=#directElapsedMs# mapMs=#mapElapsedMs# flatMapMs=#flatMapElapsedMs#"
+	"iterations=#iterations# samples=5 directMinMs=#directMeasurement.minimumMs# directMedianMs=#directMeasurement.medianMs# mapMinMs=#mapMeasurement.minimumMs# mapMedianMs=#mapMeasurement.medianMs# flatMapMinMs=#flatMapMeasurement.minimumMs# flatMapMedianMs=#flatMapMeasurement.medianMs#"
 );
 </bx:script>

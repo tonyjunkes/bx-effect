@@ -2,6 +2,7 @@ import models.effect.Effect@bxEffect;
 import models.effect.EffectRuntime@bxEffect;
 import models.effect.Schedule@bxEffect;
 import java.util.concurrent.atomic.AtomicBoolean;
+import tests.resources.AsyncTestSupport;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -67,10 +68,10 @@ class extends="testbox.system.BaseSpec" {
 					nestedStarted.set( true );
 					return nestedFuture;
 				} ) );
-				awaitCondition( () => nestedStarted.get() );
+				AsyncTestSupport::awaitCondition( () => nestedStarted.get() );
 				interruptedFiber.interrupt();
 				interruptedFiber.await();
-				awaitCondition( () => countEvents( events, "fiber:interrupted" ) == 1 );
+				AsyncTestSupport::awaitCondition( () => countEvents( events, "fiber:interrupted" ) == 1 );
 
 				var defectExit = runtime.runSyncExit( Effect::sync( () => {
 					throw( type: "BXEffect.ObserverTestDefect", message: "broken" );
@@ -98,14 +99,6 @@ class extends="testbox.system.BaseSpec" {
 			}
 		}
 		return count;
-	}
-
-	private function awaitCondition( required function predicate ) {
-		var deadline = getTickCount() + 1000;
-		while ( !arguments.predicate() && getTickCount() < deadline ) {
-			sleep( 1 );
-		}
-		expect( arguments.predicate() ).toBeTrue();
 	}
 
 }

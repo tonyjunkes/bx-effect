@@ -83,21 +83,15 @@ class {
 	}
 
 	boolean function isFailure() {
-		return variables.causeKind == "Fail" || failures().len() > 0;
+		return containsKind( "Fail" );
 	}
 
 	boolean function isDefect() {
-		return variables.causeKind == "Die" || defects().len() > 0;
+		return containsKind( "Die" );
 	}
 
 	boolean function isInterrupted() {
-		if ( variables.causeKind == "Interrupt" ) {
-			return true;
-		}
-		if ( variables.causeKind == "Sequential" || variables.causeKind == "Parallel" ) {
-			return variables.leftCause.isInterrupted() || variables.rightCause.isInterrupted();
-		}
-		return false;
+		return containsKind( "Interrupt" );
 	}
 
 	array function failures() {
@@ -113,38 +107,69 @@ class {
 	 * sequential, and parallel structure.
 	 */
 	Cause function mapFailures( required function mapper ) {
-		switch ( variables.causeKind ) {
-			case "Fail":
-				return Cause::fail( arguments.mapper( variables.causeValue ) );
-			case "Sequential":
-				return Cause::sequential(
-					variables.leftCause.mapFailures( arguments.mapper ),
-					variables.rightCause.mapFailures( arguments.mapper )
+		var pending = [ { node: this, visited: false } ];
+		var mapped = [];
+		while ( pending.len() > 0 ) {
+			var frame = pending.pop();
+			var currentCause = frame.node;
+			if ( frame.visited ) {
+				var mappedRight = mapped.pop();
+				var mappedLeft = mapped.pop();
+				mapped.append( currentCause.kind() == "Sequential"
+					? Cause::sequential( mappedLeft, mappedRight )
+					: Cause::parallel( mappedLeft, mappedRight )
 				);
-			case "Parallel":
-				return Cause::parallel(
-					variables.leftCause.mapFailures( arguments.mapper ),
-					variables.rightCause.mapFailures( arguments.mapper )
-				);
-		}
+				continue;
+			}
 
-		return this;
+			if ( currentCause.kind() == "Sequential" || currentCause.kind() == "Parallel" ) {
+				pending.append( { node: currentCause, visited: true } );
+				pending.append( { node: currentCause.right(), visited: false } );
+				pending.append( { node: currentCause.left(), visited: false } );
+			} else {
+				mapped.append( currentCause.kind() == "Fail"
+					? Cause::fail( arguments.mapper( currentCause.error() ) )
+					: currentCause
+				);
+			}
+		}
+		return mapped[ 1 ];
 	}
 
 	string function pretty() {
-		switch ( variables.causeKind ) {
-			case "Fail":
-				return "Expected failure: " & renderValue( variables.causeValue );
-			case "Die":
-				return "Defect: " & renderValue( variables.causeValue );
-			case "Interrupt":
-				return "Interrupted fiber: " & renderValue( variables.causeValue );
-			case "Sequential":
-				return "Sequential(" & variables.leftCause.pretty() & ", " & variables.rightCause.pretty() & ")";
-			case "Parallel":
-				return "Parallel(" & variables.leftCause.pretty() & ", " & variables.rightCause.pretty() & ")";
+		var rendered = new java.lang.StringBuilder();
+		var pending = [ { kind: "Cause", value: this } ];
+		while ( pending.len() > 0 ) {
+			var frame = pending.pop();
+			if ( frame.kind == "Text" ) {
+				rendered.append( frame.value );
+				continue;
+			}
+
+			var currentCause = frame.value;
+			switch ( currentCause.kind() ) {
+				case "Fail":
+					rendered.append( "Expected failure: " & renderValue( currentCause.error() ) );
+					break;
+				case "Die":
+					rendered.append( "Defect: " & renderValue( currentCause.defect() ) );
+					break;
+				case "Interrupt":
+					rendered.append( "Interrupted fiber: " & renderValue( currentCause.fiberId() ) );
+					break;
+				case "Sequential":
+				case "Parallel":
+					rendered.append( currentCause.kind() & "(" );
+					pending.append( { kind: "Text", value: ")" } );
+					pending.append( { kind: "Cause", value: currentCause.right() } );
+					pending.append( { kind: "Text", value: ", " } );
+					pending.append( { kind: "Cause", value: currentCause.left() } );
+					break;
+				default:
+					rendered.append( "Unknown cause" );
+			}
 		}
-		return "Unknown cause";
+		return rendered.toString();
 	}
 
 	private array function collectValues( required string targetKind ) {
@@ -162,6 +187,21 @@ class {
 		}
 
 		return values;
+	}
+
+	private boolean function containsKind( required string targetKind ) {
+		var pending = [ this ];
+		while ( pending.len() > 0 ) {
+			var currentCause = pending.pop();
+			if ( currentCause.kind() == arguments.targetKind ) {
+				return true;
+			}
+			if ( currentCause.kind() == "Sequential" || currentCause.kind() == "Parallel" ) {
+				pending.append( currentCause.right() );
+				pending.append( currentCause.left() );
+			}
+		}
+		return false;
 	}
 
 	private string function renderValue( required any value ) {

@@ -49,9 +49,10 @@ code. An interrupted Fiber requests cancellation of both its outer runtime
 future and the native BoxFuture currently awaited by the interpreter. Scope
 finalizers still follow their normal lifecycle path.
 
-If cancellation causes an async, sleep, semaphore, or Queue wait to throw, the runtime
-normalizes that boundary to the Fiber's interruption Cause. It never exposes a
-native canceled-wait wrapper as a defect.
+If cancellation causes an async, sleep, semaphore, Queue, or concurrent
+collection wait to throw, the runtime normalizes that boundary to the Fiber's
+interruption Cause. It never exposes a native canceled-wait wrapper as a
+defect.
 
 `Effect::all` accepts an optional policy struct:
 

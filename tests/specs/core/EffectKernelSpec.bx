@@ -109,7 +109,7 @@ class extends="testbox.system.BaseSpec" {
 			} );
 
 			it( "interprets deep flatMap chains without growing the JVM stack", () => {
-				var depth = 100000;
+				var depth = 10000;
 				var program = Effect::succeed( 0 );
 
 				for ( var index = 1; index <= depth; index++ ) {

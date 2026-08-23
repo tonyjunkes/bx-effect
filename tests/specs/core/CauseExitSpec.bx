@@ -57,6 +57,23 @@ class extends="testbox.system.BaseSpec" {
 				expect( mapped.right().fiberId() ).toBe( "fiber-1" );
 			} );
 
+			it( "inspects and maps deep Cause trees without growing the JVM stack", () => {
+				var depth = 2000;
+				var effectCause = Cause::fail( 0 );
+				for ( var index = 1; index <= depth; index++ ) {
+					effectCause = Cause::sequential( effectCause, Cause::fail( index ) );
+				}
+
+				expect( effectCause.isFailure() ).toBeTrue();
+				expect( effectCause.isDefect() ).toBeFalse();
+				expect( effectCause.isInterrupted() ).toBeFalse();
+				var mapped = effectCause.mapFailures( ( value ) => value + 1 );
+				expect( mapped.failures().len() ).toBe( depth + 1 );
+				expect( mapped.failures()[ 1 ] ).toBe( 1 );
+				expect( mapped.failures()[ depth + 1 ] ).toBe( depth + 1 );
+				expect( mapped.pretty() ).toInclude( "Expected failure: " & ( depth + 1 ) );
+			} );
+
 		} );
 	}
 

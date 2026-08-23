@@ -5,6 +5,7 @@ class {
 
 	variables.currentMillis = 0;
 	variables.pending = [];
+	variables.lock = new java.util.concurrent.locks.ReentrantLock();
 
 	function sleep( required numeric duration, string unit = "milliseconds" ) {
 		var delayMillis = toMillis( arguments.duration, arguments.unit );
@@ -12,43 +13,65 @@ class {
 			return futureNew( null );
 		}
 		var delayed = futureNew();
-		variables.pending.append( {
-			dueAt : variables.currentMillis + delayMillis,
-			future : delayed
-		} );
+		variables.lock.lock();
+		try {
+			variables.pending.append( {
+				dueAt : variables.currentMillis + delayMillis,
+				future : delayed
+			} );
+		} finally {
+			variables.lock.unlock();
+		}
 		return delayed;
 	}
 
 	function advance( required numeric duration, string unit = "milliseconds" ) {
-		variables.currentMillis += toMillis( arguments.duration, arguments.unit );
-		var remaining = [];
-		var completed = 0;
-		for ( var pendingSleep in variables.pending ) {
-			if ( pendingSleep.dueAt <= variables.currentMillis ) {
-				if ( !pendingSleep.future.isDone() && !pendingSleep.future.isCancelled() ) {
-					pendingSleep.future.complete( null );
-					completed++;
+		var futuresToComplete = [];
+		variables.lock.lock();
+		try {
+			variables.currentMillis += toMillis( arguments.duration, arguments.unit );
+			var remaining = [];
+			for ( var pendingSleep in variables.pending ) {
+				if ( pendingSleep.dueAt <= variables.currentMillis ) {
+					if ( !pendingSleep.future.isDone() && !pendingSleep.future.isCancelled() ) {
+						futuresToComplete.append( pendingSleep.future );
+					}
+				} else {
+					remaining.append( pendingSleep );
 				}
-			} else {
-				remaining.append( pendingSleep );
 			}
+			variables.pending = remaining;
+		} finally {
+			variables.lock.unlock();
 		}
-		variables.pending = remaining;
-		return completed;
+		for ( var pendingFuture in futuresToComplete ) {
+			pendingFuture.complete( null );
+		}
+		return futuresToComplete.len();
 	}
 
 	numeric function now() {
-		return variables.currentMillis;
+		variables.lock.lock();
+		try {
+			return variables.currentMillis;
+		} finally {
+			variables.lock.unlock();
+		}
 	}
 
 	numeric function pendingCount() {
-		var count = 0;
-		for ( var pendingSleep in variables.pending ) {
-			if ( !pendingSleep.future.isDone() && !pendingSleep.future.isCancelled() ) {
-				count++;
+		variables.lock.lock();
+		try {
+			var count = 0;
+			for ( var pendingSleep in variables.pending ) {
+				if ( !pendingSleep.future.isDone() && !pendingSleep.future.isCancelled() ) {
+					count++;
+				}
 			}
+			return count;
+		} finally {
+			variables.lock.unlock();
 		}
-		return count;
 	}
 
 	private numeric function toMillis( required numeric duration, required string unit ) {

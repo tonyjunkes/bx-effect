@@ -6,6 +6,7 @@ import models.effect.context.Layer@bxEffect;
 import models.effect.context.ServiceTag@bxEffect;
 import models.effect.testing.TestClock@bxEffect;
 import java.util.concurrent.atomic.AtomicInteger;
+import tests.resources.AsyncTestSupport;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -48,6 +49,23 @@ class extends="testbox.system.BaseSpec" {
 				);
 
 				expect( events ).toBe( [ "cleanup", "cleanup", "cleanup" ] );
+			} );
+
+			it( "continues outer cleanup when an onExit handler throws", () => {
+				var cleaned = false;
+				var program = Effect::succeed( "value" )
+					.onExit( ( ignoredExit ) => {
+						throw( type: "BXEffect.ThrowingFinalizer", message: "broken cleanup" );
+					} )
+					.ensuring( Effect::sync( () => {
+						cleaned = true;
+						return null;
+					} ) );
+
+				var exit = Effect::runSyncExit( program );
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().isDefect() ).toBeTrue();
+				expect( cleaned ).toBeTrue();
 			} );
 
 			it( "passes the completed Exit to onExit", () => {
@@ -170,7 +188,7 @@ class extends="testbox.system.BaseSpec" {
 				awaitClockPending( clock, 2 );
 				clock.advance( 10 );
 				var exit = fiber.await();
-				awaitCondition( () => events.len() == 2 );
+				AsyncTestSupport::awaitCondition( () => events.len() == 2 );
 
 				expect( exit.isFailure() ).toBeTrue();
 				expect( exit.cause().error()._tag ).toBe( "TimeoutError" );
@@ -192,7 +210,7 @@ class extends="testbox.system.BaseSpec" {
 				awaitClockPending( clock, 1 );
 				fiber.interrupt();
 				fiber.await();
-				awaitCondition( () => events.len() == 2 );
+				AsyncTestSupport::awaitCondition( () => events.len() == 2 );
 
 				expect( events ).toBe( [ "acquire", "release" ] );
 			} );
@@ -211,7 +229,7 @@ class extends="testbox.system.BaseSpec" {
 				awaitClockPending( clock, 2 );
 				clock.advance( 10 );
 				expect( fiber.join() ).toBe( "winner" );
-				awaitCondition( () => releases.get() == 1 );
+				AsyncTestSupport::awaitCondition( () => releases.get() == 1 );
 
 				expect( releases.get() ).toBe( 1 );
 				expect( clock.pendingCount() ).toBe( 0 );
@@ -223,15 +241,7 @@ class extends="testbox.system.BaseSpec" {
 	private function awaitClockPending( required TestClock clock, required numeric expectedCount ) {
 		var clockToCheck = arguments.clock;
 		var expectedPending = arguments.expectedCount;
-		awaitCondition( () => clockToCheck.pendingCount() == expectedPending );
-	}
-
-	private function awaitCondition( required function predicate ) {
-		var deadline = getTickCount() + 1000;
-		while ( !arguments.predicate() && getTickCount() < deadline ) {
-			sleep( 1 );
-		}
-		expect( arguments.predicate() ).toBeTrue();
+		AsyncTestSupport::awaitCondition( () => clockToCheck.pendingCount() == expectedPending );
 	}
 
 }

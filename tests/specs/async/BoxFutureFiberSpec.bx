@@ -1,6 +1,8 @@
 import models.effect.Effect@bxEffect;
+import models.effect.Cause@bxEffect;
 import models.effect.Deferred@bxEffect;
 import models.effect.context.ServiceTag@bxEffect;
+import tests.resources.AsyncTestSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -80,7 +82,7 @@ class extends="testbox.system.BaseSpec" {
 				expect( runs ).toBe( 1 );
 			} );
 
-			it( "runs all branches through BoxLang asyncAll and preserves result order", () => {
+			it( "runs all branches through BoxLang futures and preserves result order", () => {
 				var program = Effect::all( [
 					Effect::fromBoxFuture( () => futureNew( "first" ) ),
 					Effect::fromBoxFuture( () => futureNew( "second" ) )
@@ -140,6 +142,23 @@ class extends="testbox.system.BaseSpec" {
 				expect( exit.cause().kind() ).toBe( "Parallel" );
 				expect( exit.cause().failures() ).toBe( [ "first failure", "second failure" ] );
 				expect( started ).toBe( [ "first", "second" ] );
+			} );
+
+			it( "accumulates mixed Causes in input order", () => {
+				var exit = Effect::runSyncExit( Effect::all( [
+					Effect::fail( "expected" ),
+					Effect::sync( () => {
+						throw( type: "BXEffect.AccumulatedDefect", message: "broken" );
+					} ),
+					Effect::_halt( Cause::interrupt( "fiber-input" ) )
+				], { mode: "accumulate" } ) );
+
+				expect( exit.isFailure() ).toBeTrue();
+				expect( exit.cause().kind() ).toBe( "Parallel" );
+				expect( exit.cause().left().kind() ).toBe( "Parallel" );
+				expect( exit.cause().left().left().error() ).toBe( "expected" );
+				expect( exit.cause().left().right().kind() ).toBe( "Die" );
+				expect( exit.cause().right().fiberId() ).toBe( "fiber-input" );
 			} );
 
 			it( "bounds all branch execution without changing result order", () => {
@@ -295,7 +314,7 @@ class extends="testbox.system.BaseSpec" {
 				var failing = slowStarted.await().flatMap( () => Effect::fail( "stop" ) );
 
 				var exit = Effect::runSyncExit( Effect::all( [ slow, failing ] ) );
-				awaitCondition( () => releases.get() == 1 );
+				AsyncTestSupport::awaitCondition( () => releases.get() == 1 );
 
 				expect( exit.isFailure() ).toBeTrue();
 				expect( exit.cause().kind() ).toBe( "Fail" );
@@ -317,8 +336,19 @@ class extends="testbox.system.BaseSpec" {
 
 				expect( Effect::runSync( Effect::firstSuccessOf( [ slow, winner ] ) ) )
 					.toBe( "winner" );
-				awaitCondition( () => releases.get() == 1 );
+				AsyncTestSupport::awaitCondition( () => releases.get() == 1 );
 				expect( releases.get() ).toBe( 1 );
+			} );
+
+			it( "preserves parent interruption and cleanup across concurrency operators", () => {
+				var operators = [
+					( programs ) => Effect::all( programs ),
+					( programs ) => Effect::race( programs ),
+					( programs ) => Effect::firstSuccessOf( programs )
+				];
+				for ( var compose in operators ) {
+					assertConcurrentInterruption( compose );
+				}
 			} );
 
 			it( "reports interruption when a running Fiber is cancelled", () => {
@@ -349,10 +379,10 @@ class extends="testbox.system.BaseSpec" {
 				} ) );
 				var fiber = Effect::runFork( program );
 
-				awaitCondition( () => factoryStarted.get() );
+				AsyncTestSupport::awaitCondition( () => factoryStarted.get() );
 				fiber.interrupt();
 				var exit = fiber.await();
-				awaitCondition( () => releases.get() == 1 );
+				AsyncTestSupport::awaitCondition( () => releases.get() == 1 );
 
 				expect( exit.isFailure() ).toBeTrue();
 				expect( exit.cause().kind() ).toBe( "Interrupt" );
@@ -398,12 +428,39 @@ class extends="testbox.system.BaseSpec" {
 		} ) );
 	}
 
-	private function awaitCondition( required function predicate ) {
-		var deadline = getTickCount() + 1000;
-		while ( !arguments.predicate() && getTickCount() < deadline ) {
-			sleep( 1 );
-		}
-		expect( arguments.predicate() ).toBeTrue();
+	private function assertConcurrentInterruption( required function compose ) {
+		var gate = Deferred::make();
+		var started = new AtomicInteger( 0 );
+		var releases = new AtomicInteger( 0 );
+		var first = interruptibleBranch( gate, started, releases );
+		var second = interruptibleBranch( gate, started, releases );
+		var fiber = Effect::runFork( arguments.compose( [ first, second ] ) );
+
+		AsyncTestSupport::awaitCondition( () => started.get() == 2 );
+		fiber.interrupt();
+		var interruptedExit = fiber.await();
+		AsyncTestSupport::awaitCondition( () => releases.get() == 2 );
+
+		expect( interruptedExit.isFailure() ).toBeTrue();
+		expect( interruptedExit.cause().kind() ).toBe( "Interrupt" );
+		expect( releases.get() ).toBe( 2 );
+	}
+
+	private function interruptibleBranch(
+		required Deferred gate,
+		required AtomicInteger started,
+		required AtomicInteger releases
+	) {
+		var sharedGate = arguments.gate;
+		var sharedStarted = arguments.started;
+		var sharedReleases = arguments.releases;
+		return Effect::acquireRelease(
+			Effect::sync( () => {
+				sharedStarted.incrementAndGet();
+				return "resource";
+			} ),
+			( ignored ) => Effect::sync( () => sharedReleases.incrementAndGet() )
+		).flatMap( ( ignored ) => sharedGate.await() );
 	}
 
 }

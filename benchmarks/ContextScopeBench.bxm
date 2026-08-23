@@ -2,27 +2,29 @@
 import models.effect.Effect@bxEffect;
 import models.effect.context.Context@bxEffect;
 import models.effect.context.ServiceTag@bxEffect;
-import java.lang.System;
+import benchmarks.BenchmarkSupport;
 
 lookupIterations = 100000;
 scopeIterations = 10000;
 label = ServiceTag::of( "benchmark/Label" );
 benchmarkContext = Context::empty().add( label, "value" );
 
-lookupStartedAt = System.nanoTime();
-lookupValue = null;
-for ( index = 1; index <= lookupIterations; index++ ) {
-	lookupValue = benchmarkContext.get( label );
-}
-lookupElapsedMs = int( ( System.nanoTime() - lookupStartedAt ) / 1000000 );
+lookupMeasurement = BenchmarkSupport::measure( () => {
+	var lookupValue = null;
+	for ( var lookupIndex = 1; lookupIndex <= lookupIterations; lookupIndex++ ) {
+		lookupValue = benchmarkContext.get( label );
+	}
+	return lookupValue;
+} );
 
 provisionProgram = Effect::service( label ).provideService( label, "value" );
-provisionStartedAt = System.nanoTime();
-provisionValue = null;
-for ( index = 1; index <= scopeIterations; index++ ) {
-	provisionValue = Effect::runSync( provisionProgram );
-}
-provisionElapsedMs = int( ( System.nanoTime() - provisionStartedAt ) / 1000000 );
+provisionMeasurement = BenchmarkSupport::measure( () => {
+	var provisionValue = null;
+	for ( var provisionIndex = 1; provisionIndex <= scopeIterations; provisionIndex++ ) {
+		provisionValue = Effect::runSync( provisionProgram );
+	}
+	return provisionValue;
+} );
 
 releases = 0;
 scopeProgram = Effect::succeed( null );
@@ -34,14 +36,12 @@ for ( index = 1; index <= scopeIterations; index++ ) {
 	scopeProgram = scopeProgram.flatMap( ( ignored ) => resourceProgram );
 }
 
-scopeStartedAt = System.nanoTime();
-Effect::runSync( scopeProgram );
-scopeElapsedMs = int( ( System.nanoTime() - scopeStartedAt ) / 1000000 );
+scopeMeasurement = BenchmarkSupport::measure( () => Effect::runSync( scopeProgram ) );
 
 if (
-	lookupValue != "value"
-	|| provisionValue != "value"
-	|| releases != scopeIterations
+	lookupMeasurement.value != "value"
+	|| provisionMeasurement.value != "value"
+	|| releases != scopeIterations * 6
 ) {
 	throw(
 		type: "BXEffect.BenchmarkFailure",
@@ -50,6 +50,6 @@ if (
 }
 
 writeOutput(
-	"lookupIterations=#lookupIterations# lookupMs=#lookupElapsedMs# provisionIterations=#scopeIterations# provisionMs=#provisionElapsedMs# scopeIterations=#scopeIterations# scopeMs=#scopeElapsedMs#"
+	"samples=5 lookupIterations=#lookupIterations# lookupMinMs=#lookupMeasurement.minimumMs# lookupMedianMs=#lookupMeasurement.medianMs# provisionIterations=#scopeIterations# provisionMinMs=#provisionMeasurement.minimumMs# provisionMedianMs=#provisionMeasurement.medianMs# scopeIterations=#scopeIterations# scopeMinMs=#scopeMeasurement.minimumMs# scopeMedianMs=#scopeMeasurement.medianMs#"
 );
 </bx:script>

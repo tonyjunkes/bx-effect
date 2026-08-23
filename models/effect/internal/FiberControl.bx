@@ -7,9 +7,9 @@
  */
 class {
 
-	variables.activeFuture = null;
+	variables.activeFuture = new java.util.concurrent.atomic.AtomicReference();
 	variables.fiberId = "";
-	variables.interrupted = false;
+	variables.interrupted = new java.util.concurrent.atomic.AtomicBoolean( false );
 
 	function init( required string fiberId ) {
 		variables.fiberId = arguments.fiberId;
@@ -17,28 +17,26 @@ class {
 	}
 
 	function setActiveFuture( required any future ) {
-		variables.activeFuture = arguments.future;
-		if ( variables.interrupted ) {
+		variables.activeFuture.set( arguments.future );
+		if ( variables.interrupted.get() ) {
 			cancelActiveFuture();
 		}
 		return this;
 	}
 
 	function clearActiveFuture( required any future ) {
-		if ( !isNull( variables.activeFuture ) && variables.activeFuture == arguments.future ) {
-			variables.activeFuture = null;
-		}
+		variables.activeFuture.compareAndSet( arguments.future, null );
 		return this;
 	}
 
 	function interrupt() {
-		variables.interrupted = true;
+		variables.interrupted.set( true );
 		cancelActiveFuture();
 		return this;
 	}
 
 	boolean function isInterrupted() {
-		return variables.interrupted;
+		return variables.interrupted.get();
 	}
 
 	string function fiberId() {
@@ -46,12 +44,13 @@ class {
 	}
 
 	private function cancelActiveFuture() {
-		if ( isNull( variables.activeFuture ) || variables.activeFuture.isDone() ) {
+		var currentFuture = variables.activeFuture.get();
+		if ( isNull( currentFuture ) || currentFuture.isDone() ) {
 			return;
 		}
 
 		try {
-			variables.activeFuture.cancel( true );
+			currentFuture.cancel( true );
 		} catch ( any ignored ) {
 			// A BoxFuture implementation may not support cancellation.
 		}
