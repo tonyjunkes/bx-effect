@@ -8,7 +8,7 @@ class {
 
 	variables.pubSubSource = null;
 	variables.items = new java.util.ArrayDeque();
-	variables.shutdown = false;
+	variables.shutdown = new java.util.concurrent.atomic.AtomicBoolean( false );
 
 	function init( required any pubSubSource ) {
 		variables.pubSubSource = arguments.pubSubSource;
@@ -30,7 +30,7 @@ class {
 	}
 
 	boolean function isShutdown() {
-		return variables.shutdown || variables.pubSubSource.isShutdown();
+		return variables.shutdown.get() || variables.pubSubSource.isShutdown();
 	}
 
 	/** Runtime-private parent-coordinated take. */
@@ -56,7 +56,7 @@ class {
 	}
 
 	function _shutdownNative() {
-		variables.shutdown = true;
+		variables.shutdown.set( true );
 		variables.items.clear();
 	}
 

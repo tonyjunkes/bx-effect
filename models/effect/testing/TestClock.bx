@@ -32,10 +32,11 @@ class {
 			variables.currentMillis += toMillis( arguments.duration, arguments.unit );
 			var remaining = [];
 			for ( var pendingSleep in variables.pending ) {
+				if ( pendingSleep.future.isDone() || pendingSleep.future.isCancelled() ) {
+					continue;
+				}
 				if ( pendingSleep.dueAt <= variables.currentMillis ) {
-					if ( !pendingSleep.future.isDone() && !pendingSleep.future.isCancelled() ) {
-						futuresToComplete.append( pendingSleep.future );
-					}
+					futuresToComplete.append( pendingSleep.future );
 				} else {
 					remaining.append( pendingSleep );
 				}
@@ -62,13 +63,14 @@ class {
 	numeric function pendingCount() {
 		variables.lock.lock();
 		try {
-			var count = 0;
+			var remaining = [];
 			for ( var pendingSleep in variables.pending ) {
 				if ( !pendingSleep.future.isDone() && !pendingSleep.future.isCancelled() ) {
-					count++;
+					remaining.append( pendingSleep );
 				}
 			}
-			return count;
+			variables.pending = remaining;
+			return remaining.len();
 		} finally {
 			variables.lock.unlock();
 		}

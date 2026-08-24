@@ -53,6 +53,7 @@ jobs:
         shell: bash
         run: |
           consumer_dir="${RUNNER_TEMP}/bx-effect-consumer"
+          export BOXLANG_HOME="${consumer_dir}/.boxlang"
           mkdir -p "${consumer_dir}/boxlang_modules"
           cp tests/consumer/Smoke.bxm tests/consumer/boxlang.json "${consumer_dir}/"
           cd "${consumer_dir}"

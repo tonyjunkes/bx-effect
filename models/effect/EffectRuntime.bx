@@ -179,8 +179,19 @@ class {
 		var runtimeLayerMemo = isNull( arguments.sharedLayerMemo )
 			? new LayerMemo()
 			: arguments.sharedLayerMemo;
+		var interruptionObserved = false;
 
 		while ( true ) {
+			if (
+				!interruptionObserved
+				&& !isNull( arguments.controlState )
+				&& arguments.controlState.isInterrupted()
+			) {
+				interruptionObserved = true;
+				if ( current.kind != "Halt" || !current.cause.isInterrupted() ) {
+					current = haltInstruction( Cause::interrupt( arguments.controlState.fiberId() ) );
+				}
+			}
 			switch ( current.kind ) {
 				case "Succeed":
 					if ( continuations.len() == 0 ) {
@@ -262,7 +273,7 @@ class {
 									};
 								}
 							} catch ( any error ) {
-								current = defectInstruction( error );
+								current = interruptionOrDefectInstruction( error, arguments.controlState );
 							}
 							break;
 						}
@@ -297,7 +308,7 @@ class {
 								? successFrame.mapper( current.value )._instruction()
 								: successFrame.onSuccess( current.value )._instruction();
 					} catch ( any error ) {
-						current = defectInstruction( error );
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
 					break;
 
@@ -367,7 +378,7 @@ class {
 									break;
 								}
 							} catch ( any error ) {
-								current = defectInstruction( error );
+								current = interruptionOrDefectInstruction( error, arguments.controlState );
 								recovered = true;
 								break;
 							}
@@ -380,7 +391,7 @@ class {
 							try {
 								current = failureFrame.onFailure( current.cause )._instruction();
 							} catch ( any error ) {
-								current = defectInstruction( error );
+								current = interruptionOrDefectInstruction( error, arguments.controlState );
 							}
 							recovered = true;
 							break;
@@ -403,7 +414,7 @@ class {
 							value : current.thunk()
 						};
 					} catch ( any error ) {
-						current = defectInstruction( error );
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
 					break;
 
@@ -414,6 +425,10 @@ class {
 							value : current.thunk()
 						};
 					} catch ( any error ) {
+						if ( !isNull( arguments.controlState ) && arguments.controlState.isInterrupted() ) {
+							current = interruptionOrDefectInstruction( error, arguments.controlState );
+							break;
+						}
 						ThrowablePolicy::rethrowIfFatal( error );
 						try {
 							current = {
@@ -421,7 +436,7 @@ class {
 								error : current.errorMapper( error )
 							};
 						} catch ( any mapperError ) {
-							current = defectInstruction( mapperError );
+							current = interruptionOrDefectInstruction( mapperError, arguments.controlState );
 						}
 					}
 					break;
@@ -430,7 +445,7 @@ class {
 					try {
 						current = current.thunk()._instruction();
 					} catch ( any error ) {
-						current = defectInstruction( error );
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
 					break;
 
@@ -620,19 +635,22 @@ class {
 
 				case "Fork":
 					try {
-						var childFiber = _runForkWithContext(
-							current.effect,
-							runtimeContext,
-							runtimeScope,
-							runtimeLayerMemo
-						);
-						runtimeScope.addChild( childFiber );
+						var childProgram = current.effect;
+						var childContext = runtimeContext;
+						var childScope = runtimeScope;
+						var childLayerMemo = runtimeLayerMemo;
+						var childFiber = runtimeScope._forkChild( () => _runForkWithContext(
+							childProgram,
+							childContext,
+							childScope,
+							childLayerMemo
+						) );
 						current = {
 							kind : "Succeed",
 							value : childFiber
 						};
 					} catch ( any error ) {
-						current = defectInstruction( error );
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
 					break;
 
@@ -695,7 +713,7 @@ class {
 							value : runtimeContext.get( current.tag )
 						};
 					} catch ( any error ) {
-						current = defectInstruction( error );
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
 					break;
 
@@ -720,7 +738,7 @@ class {
 								Context::empty()
 							)._instruction();
 						} catch ( any error ) {
-							current = defectInstruction( error );
+							current = interruptionOrDefectInstruction( error, arguments.controlState );
 						}
 						break;
 
@@ -742,7 +760,7 @@ class {
 								};
 							}
 						} catch ( any error ) {
-							current = defectInstruction( error );
+							current = interruptionOrDefectInstruction( error, arguments.controlState );
 						}
 						break;
 
@@ -836,7 +854,7 @@ class {
 							message: "Unknown Effect instruction [#current.kind#]"
 						);
 					} catch ( any error ) {
-						current = defectInstruction( error );
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
 			}
 		}
@@ -917,7 +935,7 @@ class {
 			return completedExit;
 		}
 		notifyObserver( "scope:closing", { exit: completedExit } );
-		arguments.activeScope.interruptChildren();
+		arguments.activeScope._shutdownChildren();
 		for ( var finalizerEntry in arguments.activeScope.close() ) {
 			var finalizerExit = runFinalizerEntry( finalizerEntry );
 			if ( finalizerExit.isFailure() ) {
@@ -1109,11 +1127,7 @@ class {
 		);
 		var completedResult = awaitOne( awaitFactories( childFibers ), arguments.controlState );
 		var winnerExit = completedResult.exit;
-		for ( var childFiber in childFibers ) {
-			if ( !childFiber.isDone() ) {
-				childFiber.interrupt();
-			}
-		}
+		interruptFibers( childFibers );
 		return winnerExit;
 	}
 
@@ -1164,13 +1178,16 @@ class {
 		required Scope parentScope,
 		required LayerMemo sharedLayerMemo
 	) {
-		var childFiber = _runForkWithContext(
-			arguments.program,
-			arguments.inheritedContext,
-			arguments.parentScope,
-			arguments.sharedLayerMemo
-		);
-		arguments.parentScope.addChild( childFiber );
+		var programToRun = arguments.program;
+		var contextToUse = arguments.inheritedContext;
+		var scopeToUse = arguments.parentScope;
+		var layerMemoToUse = arguments.sharedLayerMemo;
+		var childFiber = arguments.parentScope._forkChild( () => _runForkWithContext(
+			programToRun,
+			contextToUse,
+			scopeToUse,
+			layerMemoToUse
+		) );
 		var childIndex = arguments.index;
 		var childId = childFiber.id();
 		return {
@@ -1200,6 +1217,20 @@ class {
 				indexedFiber.fiber.interrupt();
 			}
 		}
+		for ( var indexedFiber in arguments.indexedFibers ) {
+			indexedFiber.fiber._awaitTermination();
+		}
+	}
+
+	private function interruptFibers( required array childFibers ) {
+		for ( var childFiber in arguments.childFibers ) {
+			if ( !childFiber.isDone() ) {
+				childFiber.interrupt();
+			}
+		}
+		for ( var childFiber in arguments.childFibers ) {
+			childFiber._awaitTermination();
+		}
 	}
 
 	private array function forkChildren(
@@ -1210,13 +1241,16 @@ class {
 	) {
 		var children = [];
 		for ( var childProgram in arguments.programs ) {
-			var childFiber = _runForkWithContext(
-				childProgram,
-				arguments.inheritedContext,
-				arguments.parentScope,
-				arguments.sharedLayerMemo
-			);
-			arguments.parentScope.addChild( childFiber );
+			var programToRun = childProgram;
+			var contextToUse = arguments.inheritedContext;
+			var scopeToUse = arguments.parentScope;
+			var layerMemoToUse = arguments.sharedLayerMemo;
+			var childFiber = arguments.parentScope._forkChild( () => _runForkWithContext(
+				programToRun,
+				contextToUse,
+				scopeToUse,
+				layerMemoToUse
+			) );
 			children.append( childFiber );
 		}
 		return children;

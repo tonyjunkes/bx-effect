@@ -11,7 +11,7 @@ TestBox contracts, BoxLang 1.16.0 compatibility rules, and the invariants in
 | Focused operators | Laziness, ordering, expected failure, defect, interruption, handler failure, and Cause preservation | Core and async specs cover `forEach` accumulation, `tapError`, `tapCause`, `exit`, `zip`, and `zipWith`. |
 | Managed runtime | Lazy and shared Layer build, failed-build retry, private Context, per-run Scope, close races, interruption, LIFO cleanup, native futures, and observer containment | Fifteen focused specs cover successful, expected-failure, defective, blocking, and concurrent lifecycles. |
 | Stream | Fresh cursors, pull demand, all Cause channels, Context, cleanup, Queue/PubSub ownership, deterministic Clock use, stack safety, and bounded finite processing | Twenty-one focused specs cover every constructor/operator family and all source exit modes. Deep concat descriptions are normalized to avoid quadratic left-chain traversal. |
-| Runtime cancellation | Active future cancellation and interruptible native condition waits | Fiber control tracks an executor thread only while the interpreter is inside Semaphore, Queue, or PubSub instructions; cleanup completes before managed release. |
+| Runtime cancellation | Active future cancellation, between-instruction observation, child termination ordering, and interruptible native condition waits | Fiber control tracks an executor thread only while the interpreter is inside Semaphore, Queue, or PubSub instructions; focused regressions prove loser termination before recovery and child termination before root resource release. |
 | Native integration | Existing logger, BoxCache, HTTP, JDBC, Scheduler, and file ownership | `LoggingObserver` has focused containment coverage. The other facilities remain documented recipes over native APIs rather than duplicate subsystems. |
 | Module and packaging | Activated imports, executor override, supported runtime matrix, package exclusions, and installed use | Module specs and the isolated consumer import every supported public class through `@bxEffect`. CI performs package inspection and the clean install on minimum/latest BoxLang. |
 
@@ -22,13 +22,16 @@ TestBox contracts, BoxLang 1.16.0 compatibility rules, and the invariants in
 | Missing lifecycle boundary | Per-run `EffectRuntime` could not safely retain one scoped application Layer. | High | Added explicit, lazy `ManagedRuntime` ownership with retryable build state and idempotent close. |
 | Missing multi-value abstraction | Native collections did not combine lazy async demand, Cause, Context, and Scope cleanup. | High | Added the approved pull-based Stream MVP using native arrays and `Attempt`. |
 | Correctness/cancellation | Canceling a Fiber blocked in a native Queue/PubSub/Semaphore condition could complete the public future before the worker finalized. | High | Track and interrupt only the known blocking worker section, plus retain a separate internal termination future. |
+| Correctness/resource safety | Parent Scope cleanup and fail-fast recovery could proceed after requesting child cancellation but before the child interpreter terminated. | High | Make child creation/admission atomic, stop admission at the parent boundary, and await internal child termination before recovery or root resource release. |
+| Correctness/cancellation | A cancellation request between interpreter instructions could allow the next user continuation to run. | High | Observe each Fiber cancellation once in the iterative interpreter and unwind it through `Cause::interrupt`. |
+| Retention/concurrency visibility | Completed child Fibers, canceled TestClock sleepers, and lock-free subscription shutdown reads could retain state or observe stale state. | Medium | Remove children on internal termination, compact canceled sleepers, and publish subscription shutdown with `AtomicBoolean`. |
 | Performance | Left-associated Stream concat repeatedly traversed prior cursors. | High | Normalize concat leaves into one sequential cursor; the 2,000-source stack-safety spec now completes linearly. |
 | Release confidence | Workspace-mapped tests did not prove installed module imports or package exclusions. | High | Added an isolated consumer fixture and minimum/latest CI install check. |
 | Platform duplication risk | Cache, HTTP, JDBC, Scheduler, files, and logging already have BoxLang ownership models. | Medium | Added native integration recipes and only one thin diagnostic logger adapter. |
 
 ## Verification outcome
 
-The canonical suite contains 176 passing specs across 17 bundles, with no
+The canonical suite contains 179 passing specs across 17 bundles, with no
 failures or errors. Focused runtime, stream, async, module, and observability
 suites also pass independently. The executor override, package inspection, and
 isolated installed-consumer checks are part of the handoff contract.

@@ -5,6 +5,7 @@ import models.effect.context.Context@bxEffect;
 import models.effect.context.Layer@bxEffect;
 import models.effect.context.ServiceTag@bxEffect;
 import models.effect.testing.TestClock@bxEffect;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import tests.resources.AsyncTestSupport;
 
@@ -233,6 +234,57 @@ class extends="testbox.system.BaseSpec" {
 
 				expect( releases.get() ).toBe( 1 );
 				expect( clock.pendingCount() ).toBe( 0 );
+			} );
+
+			it( "waits for forked children to terminate before releasing root resources", () => {
+				var childStarted = new AtomicBoolean( false );
+				var childFinished = new AtomicBoolean( false );
+				var releaseSawFinished = new AtomicBoolean( false );
+				var child = Effect::sync( () => childStarted.set( true ) )
+					.flatMap( () => Effect::sleep( 1000 ) )
+					.ensuring( Effect::fromBoxFuture( () => futureNew( () => {
+						sleep( 50 );
+						childFinished.set( true );
+						return null;
+					} ) ) );
+				var resource = Effect::acquireRelease(
+					Effect::succeed( "resource" ),
+					( ignored ) => Effect::sync( () => releaseSawFinished.set( childFinished.get() ) )
+				);
+				var parent = resource.flatMap( ( ignored ) =>
+					child.fork().flatMap( ( ignoredFiber ) => Effect::sync( () => {
+						AsyncTestSupport::awaitCondition( () => childStarted.get() );
+						return "parent";
+					} ) )
+				);
+
+				expect( Effect::runSync( parent ) ).toBe( "parent" );
+				expect( releaseSawFinished.get() ).toBeTrue();
+			} );
+
+			it( "observes cancellation after synchronous user work and unwinds root resources", () => {
+				var started = new AtomicBoolean( false );
+				var continued = new AtomicBoolean( false );
+				var releases = new AtomicInteger( 0 );
+				var program = Effect::acquireRelease(
+					Effect::succeed( "resource" ),
+					( ignored ) => Effect::sync( () => releases.incrementAndGet() )
+				).flatMap( ( ignored ) => Effect::sync( () => {
+					started.set( true );
+					sleep( 100 );
+					return null;
+				} ) ).flatMap( ( ignored ) => Effect::sync( () => continued.set( true ) ) );
+				var fiber = Effect::runFork( program );
+
+				AsyncTestSupport::awaitCondition( () => started.get() );
+				fiber.interrupt();
+				var interruptedExit = fiber.await();
+				AsyncTestSupport::awaitCondition( () => releases.get() == 1 );
+
+				expect( interruptedExit.isFailure() ).toBeTrue();
+				expect( interruptedExit.cause().kind() ).toBe( "Interrupt" );
+				expect( continued.get() ).toBeFalse();
+				expect( releases.get() ).toBe( 1 );
 			} );
 
 		} );

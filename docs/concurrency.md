@@ -49,6 +49,14 @@ code. An interrupted Fiber requests cancellation of both its outer runtime
 future and the native BoxFuture currently awaited by the interpreter. Scope
 finalizers still follow their normal lifecycle path.
 
+The interpreter also observes a cancellation request between instructions, so
+work after the canceled instruction does not resume merely because no native
+wait was active at that instant. Parent Scope shutdown stops child admission,
+requests interruption for every admitted child, and waits for each child's
+internal termination before releasing shared scoped resources. Arbitrary user
+code that cannot be interrupted may therefore delay the parent boundary until
+it returns; this is the resource-safe consequence of best-effort cancellation.
+
 If cancellation causes an async, sleep, semaphore, Queue, or concurrent
 collection wait to throw, the runtime normalizes that boundary to the Fiber's
 interruption Cause. It never exposes a native canceled-wait wrapper as a
@@ -62,8 +70,8 @@ Effect::all( programs, { concurrency: 4, mode: "failFast" } );
 
 `concurrency` is a positive integer or `"unbounded"` (the default). `all`
 preserves success-value order. Its default `"failFast"` mode requests
-interruption for unfinished started branches after the first failure, and
-branches not yet started are skipped.
+interruption for unfinished started branches after the first failure, waits for
+their interpreters to terminate, and skips branches not yet started.
 
 Use `mode: "accumulate"` when every branch must be attempted. It continues
 starting bounded work after failures, waits for all started branches, and
@@ -72,11 +80,13 @@ Accumulation does not request sibling interruption merely because one branch
 fails.
 
 Both fail-fast `all` and a successful `firstSuccessOf` request interruption of
-running losers. A losing branch's Scope still runs its finalizers exactly once;
-interruption remains best effort for arbitrary user code.
+running losers and wait for their interpreters to terminate before returning.
+A losing branch's Scope still runs its finalizers exactly once; interruption
+remains best effort for arbitrary user code.
 
-`race` returns the first completed success or failure and requests interruption
-for unfinished losers. `firstSuccessOf` keeps waiting after failures and
+`race` returns the first completed success or failure, requests interruption
+for unfinished losers, and waits for their interpreters to terminate.
+`firstSuccessOf` keeps waiting after failures and
 returns the first success; if every branch fails, it returns a parallel Cause
 containing all branch failures in input order.
 

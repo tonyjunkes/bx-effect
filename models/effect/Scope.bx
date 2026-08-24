@@ -11,6 +11,7 @@ class {
 	variables.finalizers = new java.util.concurrent.ConcurrentLinkedDeque();
 	variables.children = new java.util.concurrent.ConcurrentLinkedDeque();
 	variables.closed = new java.util.concurrent.atomic.AtomicBoolean( false );
+	variables.acceptingChildren = new java.util.concurrent.atomic.AtomicBoolean( true );
 	variables.lock = new java.util.concurrent.locks.ReentrantLock();
 
 	function addFinalizer( required function finalizer, required Context finalizerContext ) {
@@ -42,8 +43,23 @@ class {
 
 	function addChild( required any fiber ) {
 		var childToAdd = arguments.fiber;
-		withOpenScope( () => variables.children.add( childToAdd ) );
+		withChildAdmission( () => variables.children.add( childToAdd ) );
 		return this;
+	}
+
+	/** Runtime-private atomic child creation and admission. */
+	function _forkChild( required function factory ) {
+		var childFactory = arguments.factory;
+		return withChildAdmission( () => {
+			var childFiber = childFactory();
+			variables.children.add( childFiber );
+			var childToRemove = childFiber;
+			childFiber._terminationFuture().then( ( ignored ) => {
+				variables.children.remove( childToRemove );
+				return null;
+			} );
+			return childFiber;
+		} );
 	}
 
 	function interruptChildren() {
@@ -51,6 +67,34 @@ class {
 			if ( !childFiber.isDone() ) {
 				childFiber.interrupt();
 			}
+		}
+		return this;
+	}
+
+	/**
+	 * Runtime-private structured-concurrency boundary. New children are rejected,
+	 * admitted children are interrupted together, and resource cleanup waits for
+	 * their interpreters and ensuring handlers to terminate.
+	 */
+	function _shutdownChildren() {
+		variables.lock.lock();
+		try {
+			variables.acceptingChildren.set( false );
+			var childrenToStop = [];
+			for ( var childFiber in variables.children ) {
+				childrenToStop.append( childFiber );
+			}
+		} finally {
+			variables.lock.unlock();
+		}
+
+		for ( var childFiber in childrenToStop ) {
+			if ( !childFiber.isDone() ) {
+				childFiber.interrupt();
+			}
+		}
+		for ( var childFiber in childrenToStop ) {
+			childFiber._awaitTermination();
 		}
 		return this;
 	}
@@ -63,12 +107,14 @@ class {
 			}
 
 			variables.closed.set( true );
+			variables.acceptingChildren.set( false );
 			var finalizersToRun = [];
 			var nextFinalizer = variables.finalizers.poll();
 			while ( !isNull( nextFinalizer ) ) {
 				finalizersToRun.append( nextFinalizer );
 				nextFinalizer = variables.finalizers.poll();
 			}
+			variables.children.clear();
 			return finalizersToRun;
 		} finally {
 			variables.lock.unlock();
@@ -86,6 +132,21 @@ class {
 				throw(
 					type: "BXEffect.ScopeClosed",
 					message: "Cannot add work to a closed Scope"
+				);
+			}
+			return arguments.operation();
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	private function withChildAdmission( required function operation ) {
+		variables.lock.lock();
+		try {
+			if ( variables.closed.get() || !variables.acceptingChildren.get() ) {
+				throw(
+					type: "BXEffect.ScopeClosed",
+					message: "Cannot add work to a closing or closed Scope"
 				);
 			}
 			return arguments.operation();

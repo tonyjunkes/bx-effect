@@ -16,6 +16,8 @@ needs the complete `Exit`. If cleanup fails, BX Effect retains that failure: it
 replaces a prior success or is appended sequentially to the program Cause.
 
 `Layer::scoped` uses the same Scope mechanism for resource-producing services.
-Once Scope closure begins, it rejects newly registered finalizers and child
-Fibers. This prevents late work from escaping the lifetime that owns its
-cleanup.
+At a root boundary, the runtime first stops child-Fiber admission, interrupts
+and awaits every admitted child, and then begins Scope cleanup. Once cleanup
+begins, the Scope rejects newly registered finalizers and child Fibers. This
+prevents late work from escaping the lifetime that owns its cleanup or using a
+resource after its release.

@@ -429,6 +429,29 @@ class extends="testbox.system.BaseSpec" {
 				expect( childExit.cause().kind() ).toBe( "Interrupt" );
 			} );
 
+			it( "waits for fail-fast losers to terminate before recovery continues", () => {
+				var loserStarted = new AtomicBoolean( false );
+				var loserFinished = new AtomicBoolean( false );
+				var recoverySawFinished = new AtomicBoolean( false );
+				var loser = Effect::sync( () => loserStarted.set( true ) )
+					.flatMap( () => Effect::sleep( 1000 ).as( "late" ) )
+					.ensuring( Effect::fromBoxFuture( () => futureNew( () => {
+						sleep( 50 );
+						loserFinished.set( true );
+						return null;
+					} ) ) );
+				var failure = Effect::sync( () => AsyncTestSupport::awaitCondition(
+					() => loserStarted.get()
+				) ).flatMap( () => Effect::fail( "failed" ) );
+
+				var recovered = Effect::all( [ loser, failure ] )
+					.catchAll( ( ignored ) => Effect::succeed( "recovered" ) )
+					.tap( ( ignored ) => Effect::sync( () => recoverySawFinished.set( loserFinished.get() ) ) );
+
+				expect( Effect::runSync( recovered ) ).toBe( "recovered" );
+				expect( recoverySawFinished.get() ).toBeTrue();
+			} );
+
 		} );
 	}
 
