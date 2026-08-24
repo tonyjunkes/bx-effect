@@ -1,64 +1,51 @@
 # Quality and Performance Audit
 
-Audited 2026-08-22 against the public guides, focused TestBox contracts,
-BoxLang 1.16.0 compatibility rules, and the semantic invariants in
-`AGENTS.md`. The starting point was 127 passing specs on a clean `main` branch.
+Audited 2026-08-23 against the roadmap specification, public guides, focused
+TestBox contracts, BoxLang 1.16.0 compatibility rules, and the invariants in
+`AGENTS.md`. The implementation started from 132 passing specs.
 
 ## Behavior matrix
 
 | Area | Contract checked | Coverage and result |
 | --- | --- | --- |
-| Construction and operators | Laziness; success, expected failure, and defect separation; stack safety | Focused core specs cover constructors and operators. `map` now has a direct iterative instruction; stack-safety work remains in the default suite at 10,000 nodes and at 100,000 nodes in benchmarks. |
-| Cause, Exit, and Result | Channel preservation, ordered trees, transformations, diagnostics | Added deep iterative Cause predicate and mapping coverage. Existing specs cover value conversion and matching. |
-| Context and Layer | Isolation, restoration, deterministic missing-service diagnostics, runtime-local memoization | Existing context specs cover nested success/failure restoration and concurrent sharing. Failed memo entries are now removed before waiters are completed so a later caller cannot observe a stale failed entry. |
-| Scope and finalizers | LIFO, idempotence, all exit modes, closed-Scope rejection, sequential cleanup Causes | Existing tests already covered closed-Scope rejection. Added coverage proving an outer cleanup continues when an `onExit` handler throws. |
-| Futures and Fibers | Native BoxFuture boundaries, Context inheritance, cancellation, child ownership | Cancellation state is atomic. Added parent-interruption coverage for `all`, `race`, and `firstSuccessOf`, including finalization. |
-| Concurrent collection | Ordering, bounded execution, fail-fast, deterministic accumulation | Added mixed expected-failure/defect/interruption accumulation coverage. Completion waits reuse dependent BoxFutures instead of launching new blocking wrapper tasks on every selection round. |
-| Schedule and Clock | Retry channel, fixed/spaced timing, timeout, deterministic downstream testing | Existing specs cover recurrence semantics. `TestClock` now locks shared time and sleeper state and has concurrent registration/advancement coverage. |
-| Deferred, Semaphore, Queue, PubSub | Laziness, interruption, backpressure, shutdown, ownership | Focused specs cover each documented state transition and failure tag. No public behavior changes were needed. |
-| Observer | Diagnostic isolation and terminal-event rules | Existing specs cover observer failure containment and recovered versus unhandled defects. |
-| Module and packaging | Activated imports, setting override, supported runtime metadata, excluded development assets | Module specs, executor-override suite, and `box package show` remain the verification contract. |
+| Focused operators | Laziness, ordering, expected failure, defect, interruption, handler failure, and Cause preservation | Core and async specs cover `forEach` accumulation, `tapError`, `tapCause`, `exit`, `zip`, and `zipWith`. |
+| Managed runtime | Lazy and shared Layer build, failed-build retry, private Context, per-run Scope, close races, interruption, LIFO cleanup, native futures, and observer containment | Fifteen focused specs cover successful, expected-failure, defective, blocking, and concurrent lifecycles. |
+| Stream | Fresh cursors, pull demand, all Cause channels, Context, cleanup, Queue/PubSub ownership, deterministic Clock use, stack safety, and bounded finite processing | Twenty-one focused specs cover every constructor/operator family and all source exit modes. Deep concat descriptions are normalized to avoid quadratic left-chain traversal. |
+| Runtime cancellation | Active future cancellation and interruptible native condition waits | Fiber control tracks an executor thread only while the interpreter is inside Semaphore, Queue, or PubSub instructions; cleanup completes before managed release. |
+| Native integration | Existing logger, BoxCache, HTTP, JDBC, Scheduler, and file ownership | `LoggingObserver` has focused containment coverage. The other facilities remain documented recipes over native APIs rather than duplicate subsystems. |
+| Module and packaging | Activated imports, executor override, supported runtime matrix, package exclusions, and installed use | Module specs and the isolated consumer import every supported public class through `@bxEffect`. CI performs package inspection and the clean install on minimum/latest BoxLang. |
 
 ## Findings and disposition
 
 | Classification | Finding | Impact | Disposition |
 | --- | --- | --- | --- |
-| Correctness/concurrency | Fiber interruption and active-future references lacked explicit cross-thread memory semantics. | High | Replaced with JDK atomics. |
-| Correctness/concurrency | Concurrent operators did not expose their active `asyncAny` wait to Fiber cancellation. | High | Register and clear the native wait through `FiberControl`; normalize cancellation through `Cause::interrupt`. |
-| Correctness/concurrency | `TestClock` mutated published test-support state from runtime and test threads without synchronization. | High | Added a lock and complete due futures after releasing it. |
-| Correctness/concurrency | Failed Layer memo completion preceded removal, leaving a small stale-failure window. | Medium | Remove conditionally before completing existing waiters. |
-| Performance | `map` allocated a succeeding Effect for every mapped value at interpretation time. | High | Added a dedicated `Map` instruction and frame. |
-| Performance | Synchronous boundaries resolved an executor they never use. | Medium | Default executor resolution is now cached and lazy. |
-| Performance | Cause predicates collected arrays and deep Cause mapping was recursive. | Medium | Use iterative traversal without predicate allocations. |
-| Performance | Repeated completion selection created fresh blocking wrapper tasks. | Medium | Attach one dependent completion future per child and reuse it. |
-| Missing coverage | Parent cancellation, mixed accumulation, deep Cause mapping, throwing finalizers, and concurrent TestClock use were not explicit. | High | Added focused regression specs. |
-| Low-value duplication | Four specs carried equivalent polling loops. | Low | Consolidated under `tests/resources/AsyncTestSupport.bx`. |
-| Test runtime | The default suite used the same 100,000-node scale as the benchmark. | Medium | Default correctness depth is 10,000; benchmark coverage remains 100,000. |
-
-## Feature-gap review
-
-No public API addition is justified by this pass. Stream/Sink integration,
-Layer dependency graphs, replay or dropping PubSub policies, and additional
-coordination primitives all require separate contracts. They remain explicitly
-out of scope rather than being inferred from upstream Effect APIs.
+| Missing lifecycle boundary | Per-run `EffectRuntime` could not safely retain one scoped application Layer. | High | Added explicit, lazy `ManagedRuntime` ownership with retryable build state and idempotent close. |
+| Missing multi-value abstraction | Native collections did not combine lazy async demand, Cause, Context, and Scope cleanup. | High | Added the approved pull-based Stream MVP using native arrays and `Attempt`. |
+| Correctness/cancellation | Canceling a Fiber blocked in a native Queue/PubSub/Semaphore condition could complete the public future before the worker finalized. | High | Track and interrupt only the known blocking worker section, plus retain a separate internal termination future. |
+| Performance | Left-associated Stream concat repeatedly traversed prior cursors. | High | Normalize concat leaves into one sequential cursor; the 2,000-source stack-safety spec now completes linearly. |
+| Release confidence | Workspace-mapped tests did not prove installed module imports or package exclusions. | High | Added an isolated consumer fixture and minimum/latest CI install check. |
+| Platform duplication risk | Cache, HTTP, JDBC, Scheduler, files, and logging already have BoxLang ownership models. | Medium | Added native integration recipes and only one thin diagnostic logger adapter. |
 
 ## Verification outcome
 
-The completed suite contains 132 passing specs and runs in approximately
-3.8 seconds on the audit machine, down from the 13.8-second starting run. The
-executor-override module suite and package metadata inspection also pass.
+The canonical suite contains 176 passing specs across 17 bundles, with no
+failures or errors. Focused runtime, stream, async, module, and observability
+suites also pass independently. The executor override, package inspection, and
+isolated installed-consumer checks are part of the handoff contract.
 
-The original one-shot benchmark readings and the new warmup/five-sample
-medians are not identical methodologies, so they should be treated as a strong
-directional comparison rather than a published absolute ratio:
+Benchmarks are local correctness-checked comparison tools, not CI gates. This
+machine's roadmap-specific readings used one warmup and five samples:
 
-| Scenario | Starting reading | Current repeated median |
-| --- | ---: | ---: |
-| 100,000 maps | 9,600 ms | 4,108–4,125 ms across three invocations |
-| 100,000 flatMaps | 8,292 ms | 7,903–7,959 ms across three invocations |
-| 10,000 Context provisions | 5,247 ms | 2,654–2,675 ms across three invocations |
-| 256 delayed concurrent branches | 747 ms | 117–131 ms across three invocations |
-| 128 branches sharing one Layer | 823 ms | 90 ms median |
+| Scenario | Result |
+| --- | ---: |
+| 128 repeated ManagedRuntime boundaries | 352 ms median; one build and one release across all samples |
+| 100,000 mapped Stream values | 494 ms median |
+| 10,000 single-value pulls | 4,369 ms median |
+| 1,000 Queue-backed values | 1,059 ms median |
+| Blocked Stream interruption | 8 ms median |
+| Indicative retained allocation for collecting 100,000 mapped values | 123,027,760 bytes |
 
-Future comparisons should use the repeatable methodology in
-`benchmarks/README.md` on both sides of a change.
+Retained allocation is JVM-state-sensitive and should be compared only on the
+same runtime and machine. Future performance work should use the repeatable
+methodology in `benchmarks/README.md` and preserve EffectRuntime, Scope, Cause,
+and Context semantics.

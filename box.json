@@ -50,6 +50,7 @@
         "testbox/**",
         "examples/**",
         "benchmarks/**",
-        "docs/**"
+        "docs/**",
+        "AGENTS.md"
     ]
 }

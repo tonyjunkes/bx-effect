@@ -40,5 +40,15 @@ inside the program prevents the event because no defect reached the boundary.
 
 Observer exceptions are ignored after the normal fatal-throwable policy is
 applied. They therefore cannot change an Effect result or prevent finalizers.
-This keeps observability diagnostic-only. BoxLang interceptor bridges,
-structured logging, metrics, and OpenTelemetry remain optional future adapters.
+This keeps observability diagnostic-only.
+
+## Native logger adapter
+
+`models.effect.observability.LoggingObserver@bxEffect` maps events to either an
+existing logger object (`trace`, `debug`, `info`, `warn`, and `error` methods)
+or a named BoxLang `writeLog` target. `LoggingObserver::make(target, levels)`
+accepts per-event levels plus `"*"` for the default. It configures no appenders
+or interceptors and contains formatting/logger failures.
+
+Metrics, interceptor bridges, and OpenTelemetry remain separate opt-in adapter
+work rather than module settings or kernel dependencies.

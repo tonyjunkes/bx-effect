@@ -26,7 +26,9 @@ concerns in one lazy, fluent program:
 - **Structured concurrency** — run, bound, race, and interrupt work with BoxLang-native futures.
 - **Resilience policies** — retry, repeat, delay, and time out operations with reusable schedules.
 - **Explicit dependencies** — provide services through isolated `Context` and `Layer` values.
+- **Application-lived Layers** — reuse scoped services through an explicitly closed `ManagedRuntime`.
 - **Coordination primitives** — use `Deferred`, `Semaphore`, `Queue`, and `PubSub` in Effect programs.
+- **Pull-based streams** — consume effectful values with demand, resource safety, and bounded backpressure.
 - **Stack-safe interpretation** — compose deeply without growing the JVM call stack.
 
 ## Requirements
@@ -143,6 +145,11 @@ request = Effect::fromBoxFuture(
 );
 ```
 
+`forEach` accepts the same `mode: "failFast" | "accumulate"` policy as
+`all`. Sequential composition also includes `zip`/`zipWith`; `tapError` observes
+pure expected failures, `tapCause` observes complete Causes, and `exit()`
+captures any outcome as a successful `Exit` value.
+
 ## Retry, repeat, and timeout
 
 Schedules are reusable policies for in-process recurrence:
@@ -207,6 +214,42 @@ Provisioned contexts are isolated and restored after the nested program
 finishes. Layers can be merged into ordered service recipes and scoped when a
 service owns resources.
 
+For application-lived services, build the Layer lazily once and close it at an
+explicit lifecycle boundary:
+
+```boxlang
+import models.effect.ManagedRuntime@bxEffect;
+
+runtime = ManagedRuntime::make( ApplicationLive );
+try {
+	result = runtime.runSync( program );
+} finally {
+	runtime.close();
+}
+```
+
+Each run still receives its own Scope; only the Layer services remain live
+until close.
+
+## Pull-based streams
+
+Streams are reusable descriptions whose consumers return Effects:
+
+```boxlang
+import models.effect.Stream@bxEffect;
+
+saved = Effect::runSync(
+	Stream::fromArray( users )
+		.filter( user -> user.active )
+		.mapEffect( user -> saveUser( user ) )
+		.take( 100 )
+		.runCollect()
+);
+```
+
+The consumer controls demand. Source acquisition and cleanup are Scope-safe,
+and Queue/PubSub bridges retain native backpressure and interruption behavior.
+
 ## Runtime boundaries
 
 | Boundary | Result |
@@ -222,10 +265,14 @@ service owns resources.
 - [Getting started](docs/getting-started.md)
 - [Expected errors, defects, and Exit](docs/error-model.md)
 - [Services and Layers](docs/services-and-layers.md)
+- [Managed Runtime](docs/managed-runtime.md)
 - [Resource safety](docs/resources.md)
 - [BoxFutures, Fibers, and coordination](docs/concurrency.md)
+- [Pull-based Streams](docs/streams.md)
 - [Schedules, retry, repeat, and timeout](docs/schedules.md)
 - [Runtime observability](docs/observability.md)
+- [Native BoxLang integration recipes](docs/native-integrations.md)
+- [Public API inventory and compatibility policy](docs/public-api.md)
 - [Incremental migration](docs/migration-from-imperative-code.md)
 
 ## Contributing

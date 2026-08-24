@@ -55,14 +55,15 @@ class {
 	}
 
 	function runFutureExit( required Effect program ) {
-		return runFutureExitWithContext( arguments.program, Context::empty() );
+		return _runFutureExitWithContext( arguments.program, Context::empty() );
 	}
 
 	function runFork( required Effect program ) {
-		return runForkWithContext( arguments.program, Context::empty() );
+		return _runForkWithContext( arguments.program, Context::empty() );
 	}
 
-	private function runFutureExitWithContext(
+	/** Internal async entry point for managed and nested runtimes. */
+	function _runFutureExitWithContext(
 		required Effect program,
 		required Context initialContext,
 		any controlState = null,
@@ -119,7 +120,8 @@ class {
 		}
 	}
 
-	private function runForkWithContext(
+	/** Internal Fiber entry point for managed and nested runtimes. */
+	function _runForkWithContext(
 		required Effect program,
 		required Context initialContext,
 		any sharedScope = null,
@@ -127,17 +129,36 @@ class {
 	) {
 		var fiberId = createUUID();
 		var controlState = new FiberControl( fiberId );
+		var programToRun = arguments.program;
+		var contextToUse = arguments.initialContext;
+		var scopeToUse = arguments.sharedScope;
+		var layerMemoToUse = arguments.sharedLayerMemo;
 		notifyObserver( "fiber:started", { fiberId: fiberId } );
+		var terminationFuture = futureNew();
+		var runtimeFuture = futureNew(
+			() => {
+				try {
+					var completedExit = _runSyncExitWithContext(
+						programToRun,
+						contextToUse,
+						controlState,
+						scopeToUse,
+						layerMemoToUse
+					);
+					terminationFuture.complete( completedExit );
+					return completedExit;
+				} catch ( any error ) {
+					terminationFuture.complete( Exit::failure( Cause::die( error ) ) );
+					throw( object: error );
+				}
+			},
+			executor()
+		);
 		return new Fiber(
-			future: runFutureExitWithContext(
-				arguments.program,
-				arguments.initialContext,
-				controlState,
-				arguments.sharedScope,
-				arguments.sharedLayerMemo
-			),
+			future: runtimeFuture,
 			fiberId: fiberId,
-			control: controlState
+			control: controlState,
+			terminationFuture: terminationFuture
 		);
 	}
 
@@ -436,6 +457,7 @@ class {
 					break;
 
 				case "SemaphoreAcquire":
+					var semaphoreThread = registerBlockingThread( arguments.controlState );
 					try {
 						current.permitSource._acquireNative();
 						current = {
@@ -444,10 +466,13 @@ class {
 						};
 					} catch ( any error ) {
 						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					} finally {
+						clearBlockingThread( arguments.controlState, semaphoreThread );
 					}
 					break;
 
 				case "QueueOffer":
+					var queueOfferThread = registerBlockingThread( arguments.controlState );
 					try {
 						var offerOutcome = current.queueSource._offerNative(
 							current.value,
@@ -466,10 +491,13 @@ class {
 							};
 					} catch ( any error ) {
 						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					} finally {
+						clearBlockingThread( arguments.controlState, queueOfferThread );
 					}
 					break;
 
 				case "QueueTake":
+					var queueTakeThread = registerBlockingThread( arguments.controlState );
 					try {
 						var takeOutcome = current.queueSource._takeNative( arguments.controlState );
 						current = takeOutcome.isInterrupted
@@ -485,10 +513,13 @@ class {
 							};
 					} catch ( any error ) {
 						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					} finally {
+						clearBlockingThread( arguments.controlState, queueTakeThread );
 					}
 					break;
 
 				case "PubSubPublish":
+					var publishThread = registerBlockingThread( arguments.controlState );
 					try {
 						var publishOutcome = current.pubSubSource._publishNative(
 							current.value,
@@ -507,10 +538,13 @@ class {
 								};
 					} catch ( any error ) {
 						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					} finally {
+						clearBlockingThread( arguments.controlState, publishThread );
 					}
 					break;
 
 				case "PubSubSubscribe":
+					var subscribeThread = registerBlockingThread( arguments.controlState );
 					try {
 						var subscribeOutcome = current.pubSubSource._subscribeNative(
 							arguments.controlState
@@ -528,10 +562,13 @@ class {
 								};
 					} catch ( any error ) {
 						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					} finally {
+						clearBlockingThread( arguments.controlState, subscribeThread );
 					}
 					break;
 
 				case "PubSubTake":
+					var pubSubTakeThread = registerBlockingThread( arguments.controlState );
 					try {
 						var subscriptionOutcome = current.subscriptionSource._takeNative(
 							arguments.controlState
@@ -554,6 +591,8 @@ class {
 									};
 					} catch ( any error ) {
 						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					} finally {
+						clearBlockingThread( arguments.controlState, pubSubTakeThread );
 					}
 					break;
 
@@ -581,7 +620,7 @@ class {
 
 				case "Fork":
 					try {
-						var childFiber = runForkWithContext(
+						var childFiber = _runForkWithContext(
 							current.effect,
 							runtimeContext,
 							runtimeScope,
@@ -826,6 +865,21 @@ class {
 		return defectInstruction( arguments.throwableValue );
 	}
 
+	private function registerBlockingThread( any controlState = null ) {
+		if ( isNull( arguments.controlState ) ) {
+			return null;
+		}
+		var workerThread = java.lang.Thread::currentThread();
+		arguments.controlState.setActiveThread( workerThread );
+		return workerThread;
+	}
+
+	private function clearBlockingThread( any controlState = null, any workerThread = null ) {
+		if ( !isNull( arguments.controlState ) && !isNull( arguments.workerThread ) ) {
+			arguments.controlState.clearActiveThread( arguments.workerThread );
+		}
+	}
+
 	private struct function queueShutdownError( required string operation ) {
 		return {
 			_tag : "QueueShutdown",
@@ -878,6 +932,11 @@ class {
 		notifyTerminalEvents( completedExit, arguments.controlState );
 		notifyObserver( "runtime:completed", { exit: completedExit } );
 		return completedExit;
+	}
+
+	/** Internal explicit Scope close used by ManagedRuntime ownership. */
+	function _closeScopeWithExit( required any initialExit, required Scope activeScope ) {
+		return finishExit( arguments.initialExit, arguments.activeScope, true );
 	}
 
 	private function notifyTerminalEvents( required any completedExit, any controlState = null ) {
@@ -1105,7 +1164,7 @@ class {
 		required Scope parentScope,
 		required LayerMemo sharedLayerMemo
 	) {
-		var childFiber = runForkWithContext(
+		var childFiber = _runForkWithContext(
 			arguments.program,
 			arguments.inheritedContext,
 			arguments.parentScope,
@@ -1151,7 +1210,7 @@ class {
 	) {
 		var children = [];
 		for ( var childProgram in arguments.programs ) {
-			var childFiber = runForkWithContext(
+			var childFiber = _runForkWithContext(
 				childProgram,
 				arguments.inheritedContext,
 				arguments.parentScope,

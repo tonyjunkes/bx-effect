@@ -1,0 +1,600 @@
+import bxModules.bxEffect.models.effect.Cause;
+import bxModules.bxEffect.models.effect.Effect;
+import bxModules.bxEffect.models.effect.internal.StreamCursor;
+
+/**
+ * A lazy, reusable description of effectful values consumed through
+ * demand-driven native-array batches.
+ */
+class {
+
+	variables.opener = null;
+	variables.concatParts = [];
+
+	function init( required function opener ) {
+		variables.opener = arguments.opener;
+		return this;
+	}
+
+	static function empty() {
+		return new Stream( () => Effect::succeed( new StreamCursor(
+			() => Effect::succeed( attempt() )
+		) ) );
+	}
+
+	static function succeed( any value ) {
+		return Stream::fromArray( [ arguments.value ] );
+	}
+
+	static function fail( required any error ) {
+		var failureValue = arguments.error;
+		return new Stream( () => Effect::succeed( new StreamCursor(
+			() => Effect::fail( failureValue )
+		) ) );
+	}
+
+	static function fromArray( required array values ) {
+		var sourceValues = copyArray( arguments.values );
+		return new Stream( () => {
+			var emitted = false;
+			return Effect::succeed( new StreamCursor( () => {
+				if ( emitted ) {
+					return Effect::succeed( attempt() );
+				}
+				emitted = true;
+				return sourceValues.len() == 0
+					? Effect::succeed( attempt() )
+					: Effect::succeed( attempt( sourceValues ) );
+			} ) );
+		} );
+	}
+
+	static function fromEffect( required Effect program ) {
+		var sourceProgram = arguments.program;
+		return new Stream( () => {
+			var emitted = false;
+			return Effect::succeed( new StreamCursor( () => {
+				if ( emitted ) {
+					return Effect::succeed( attempt() );
+				}
+				emitted = true;
+				return sourceProgram.map( ( value ) => attempt( [ value ] ) );
+			} ) );
+		} );
+	}
+
+	static function suspend( required function factory ) {
+		var streamFactory = arguments.factory;
+		return new Stream( () => Effect::suspend( () => streamFactory()._open() ) );
+	}
+
+	/**
+	 * The step Effect succeeds with empty Attempt to end or present
+	 * `{ value, state }` for the next element and state.
+	 */
+	static function unfoldEffect( any initialState, required function step ) {
+		var startingState = arguments.initialState;
+		var stepFunction = arguments.step;
+		return new Stream( () => {
+			var cursorState = { value: startingState, done: false };
+			return Effect::succeed( new StreamCursor( () => {
+				if ( cursorState.done ) {
+					return Effect::succeed( attempt() );
+				}
+				return Effect::suspend( () => stepFunction( cursorState.value ) ).map(
+					( nextAttempt ) => {
+						if ( !nextAttempt.isPresent() ) {
+							cursorState.done = true;
+							return attempt();
+						}
+						var next = nextAttempt.get();
+						if ( !isStruct( next ) || !structKeyExists( next, "value" ) || !structKeyExists( next, "state" ) ) {
+							throw(
+								type: "BXEffect.InvalidStreamUnfoldStep",
+								message: "Stream.unfoldEffect() step must yield { value, state }"
+							);
+						}
+						cursorState.value = next.state;
+						return attempt( [ next.value ] );
+					}
+				);
+			} ) );
+		} );
+	}
+
+	static function acquireRelease(
+		required Effect acquire,
+		required function release,
+		required function use
+	) {
+		var acquireProgram = arguments.acquire;
+		var releaseFunction = arguments.release;
+		var useFunction = arguments.use;
+		return new Stream( () => acquireProgram.flatMap( ( resource ) =>
+			Effect::suspend( () => useFunction( resource )._open() ).foldCause(
+				( acquisitionCause ) => Effect::_halt( acquisitionCause ).ensuring(
+					Effect::suspend( () => releaseFunction( resource ) )
+				),
+				( innerCursor ) => Effect::succeed( new StreamCursor(
+					() => innerCursor.pull(),
+					() => innerCursor.close().ensuring(
+						Effect::suspend( () => releaseFunction( resource ) )
+					)
+				) )
+			)
+		) );
+	}
+
+	/** QueueShutdown after buffered values drain is normal stream completion. */
+	static function fromQueue( required any queueSource ) {
+		var sourceQueue = arguments.queueSource;
+		return new Stream( () => Effect::succeed( new StreamCursor(
+			() => sourceQueue.take()
+				.map( ( value ) => attempt( [ value ] ) )
+				.catchTag( "QueueShutdown", ( ignored ) => Effect::succeed( attempt() ) )
+		) ) );
+	}
+
+	/** One subscription is acquired and owned by each Stream consumption. */
+	static function fromPubSub( required any pubSubSource ) {
+		var sourcePubSub = arguments.pubSubSource;
+		return new Stream( () => sourcePubSub.subscribe().map(
+			( subscription ) => new StreamCursor(
+				() => subscription.take()
+					.map( ( value ) => attempt( [ value ] ) )
+					.catchTag( "PubSubShutdown", ( ignored ) => Effect::succeed( attempt() ) )
+					.catchTag( "SubscriptionShutdown", ( ignored ) => Effect::succeed( attempt() ) ),
+				() => subscription.unsubscribe().asVoid()
+			)
+		) );
+	}
+
+	function map( required function mapper ) {
+		var mapValue = arguments.mapper;
+		return transformCursor( ( sourceCursor ) => new StreamCursor(
+			() => sourceCursor.pull().map( ( batchAttempt ) => {
+				if ( !batchAttempt.isPresent() ) {
+					return attempt();
+				}
+				var mappedValues = [];
+				for ( var value in batchAttempt.get() ) {
+					mappedValues.append( mapValue( value ) );
+				}
+				return attempt( mappedValues );
+			} ),
+			() => sourceCursor.close()
+		) );
+	}
+
+	function mapEffect( required function mapper ) {
+		var mapValue = arguments.mapper;
+		return transformCursor( ( sourceCursor ) => new StreamCursor(
+			() => sourceCursor.pull().flatMap( ( batchAttempt ) =>
+				!batchAttempt.isPresent()
+					? Effect::succeed( attempt() )
+					: Effect::forEach( batchAttempt.get(), ( value, index ) =>
+						Effect::suspend( () => mapValue( value ) )
+					).map( ( mappedValues ) => attempt( mappedValues ) )
+			),
+			() => sourceCursor.close()
+		) );
+	}
+
+	function filter( required function predicate ) {
+		var keepValue = arguments.predicate;
+		return transformCursor( ( sourceCursor ) => new StreamCursor(
+			() => filterPull( sourceCursor, keepValue ),
+			() => sourceCursor.close()
+		) );
+	}
+
+	function tap( required function observer ) {
+		var observeValue = arguments.observer;
+		return mapEffect( ( value ) => Effect::suspend( () => observeValue( value ) ).as( value ) );
+	}
+
+	function take( required numeric count ) {
+		validateCount( arguments.count, "take" );
+		var requested = arguments.count;
+		return transformCursor( ( sourceCursor ) => {
+			var takeState = { remaining: requested };
+			return new StreamCursor(
+				() => takePull( sourceCursor, takeState ),
+				() => sourceCursor.close()
+			);
+		} );
+	}
+
+	function drop( required numeric count ) {
+		validateCount( arguments.count, "drop" );
+		var requested = arguments.count;
+		return transformCursor( ( sourceCursor ) => {
+			var dropState = { remaining: requested };
+			return new StreamCursor(
+				() => dropPull( sourceCursor, dropState ),
+				() => sourceCursor.close()
+			);
+		} );
+	}
+
+	function concat( required Stream other ) {
+		var parts = _concatParts();
+		for ( var part in arguments.other._concatParts() ) {
+			parts.append( part );
+		}
+		var combined = new Stream( () => openConcatParts( parts ) );
+		return combined._rememberConcatParts( parts );
+	}
+
+	function flatMap( required function mapper ) {
+		var outerStream = this;
+		var mapValue = arguments.mapper;
+		return new Stream( () => outerStream._open().map( ( outerCursor ) => {
+			var flatMapState = {
+				outer : outerCursor,
+				inner : null,
+				pending : [],
+				index : 1
+			};
+			return new StreamCursor(
+				() => flatMapPull( flatMapState, mapValue ),
+				() => isNull( flatMapState.inner )
+					? flatMapState.outer.close()
+					: flatMapState.inner.close().ensuring( flatMapState.outer.close() )
+			);
+		} ) );
+	}
+
+	function catchAll( required function handler ) {
+		var errorHandler = arguments.handler;
+		return recoverWith(
+			( failureCause ) => errorHandler( failureCause.error() ),
+			( failureCause ) => failureCause.kind() == "Fail"
+		);
+	}
+
+	function catchCause( required function handler ) {
+		return recoverWith( arguments.handler, ( ignored ) => true );
+	}
+
+	function ensuring( required Effect finalizer ) {
+		var sourceStream = this;
+		var finalizerProgram = arguments.finalizer;
+		return new Stream( () => sourceStream._open()
+			.catchCause( ( openingCause ) => Effect::_halt( openingCause ).ensuring( finalizerProgram ) )
+			.map( ( sourceCursor ) => new StreamCursor(
+				() => sourceCursor.pull(),
+				() => sourceCursor.close().ensuring( finalizerProgram )
+			) )
+		);
+	}
+
+	function provide( required any provisioning ) {
+		var sourceStream = this;
+		var provided = arguments.provisioning;
+		return new Stream( () => sourceStream._open().provide( provided ).map(
+			( sourceCursor ) => new StreamCursor(
+				() => sourceCursor.pull().provide( provided ),
+				() => sourceCursor.close().provide( provided )
+			)
+		) );
+	}
+
+	function runCollect() {
+		return runWithCursor( ( sourceCursor ) => {
+			var collected = [];
+			return collectPulls( sourceCursor, collected );
+		} );
+	}
+
+	function runForEach( required function handler ) {
+		var consumeValue = arguments.handler;
+		return runWithCursor( ( sourceCursor ) => consumePulls( sourceCursor, consumeValue ) );
+	}
+
+	function runFold( any initial, required function reducer ) {
+		var initialValue = arguments.initial;
+		var reduceValue = arguments.reducer;
+		return runWithCursor( ( sourceCursor ) => {
+			var foldState = { value: initialValue };
+			return foldPulls( sourceCursor, foldState, reduceValue );
+		} );
+	}
+
+	function runDrain() {
+		return runForEach( ( ignored ) => Effect::succeed( null ) ).asVoid();
+	}
+
+	/** Internal fresh-cursor acquisition. Not part of the supported API. */
+	function _open() {
+		return Effect::suspend( () => variables.opener() );
+	}
+
+	/** Internal normalized concat leaves. */
+	array function _concatParts() {
+		if ( variables.concatParts.len() == 0 ) {
+			return [ this ];
+		}
+		return copyArray( variables.concatParts );
+	}
+
+	/** Internal concat construction metadata. */
+	function _rememberConcatParts( required array parts ) {
+		variables.concatParts = copyArray( arguments.parts );
+		return this;
+	}
+
+	private function transformCursor( required function transformation ) {
+		var sourceStream = this;
+		var transform = arguments.transformation;
+		return new Stream( () => sourceStream._open().map(
+			( sourceCursor ) => transform( sourceCursor )
+		) );
+	}
+
+	private function recoverWith( required function handler, required function predicate ) {
+		var sourceStream = this;
+		var recoveryHandler = arguments.handler;
+		var shouldRecover = arguments.predicate;
+		return new Stream( () => sourceStream._open().foldCause(
+			( openingCause ) => shouldRecover( openingCause )
+				? Effect::suspend( () => recoveryHandler( openingCause )._open() )
+				: Effect::_halt( openingCause ),
+			( sourceCursor ) => {
+				var recoveryState = {
+					cursor : sourceCursor,
+					recovered : false
+				};
+				return Effect::succeed( new StreamCursor(
+					() => recoverPull( recoveryState, recoveryHandler, shouldRecover ),
+					() => recoveryState.cursor.close()
+				) );
+			}
+		) );
+	}
+
+	private function runWithCursor( required function consumer ) {
+		var consumeCursor = arguments.consumer;
+		return Effect::acquireRelease(
+			_open(),
+			( sourceCursor ) => sourceCursor.close()
+		).flatMap( ( sourceCursor ) => consumeCursor( sourceCursor ) );
+	}
+
+	private static function filterPull( required any sourceCursor, required function predicate ) {
+		var cursorToPull = arguments.sourceCursor;
+		var keepValue = arguments.predicate;
+		return cursorToPull.pull().flatMap( ( batchAttempt ) => {
+			if ( !batchAttempt.isPresent() ) {
+				return Effect::succeed( attempt() );
+			}
+			var kept = [];
+			for ( var value in batchAttempt.get() ) {
+				if ( keepValue( value ) ) {
+					kept.append( value );
+				}
+			}
+			return kept.len() > 0
+				? Effect::succeed( attempt( kept ) )
+				: Effect::suspend( () => filterPull( cursorToPull, keepValue ) );
+		} );
+	}
+
+	private static function takePull( required any sourceCursor, required struct state ) {
+		var cursorToPull = arguments.sourceCursor;
+		var stateToUse = arguments.state;
+		if ( stateToUse.remaining == 0 ) {
+			return Effect::succeed( attempt() );
+		}
+		return cursorToPull.pull().map( ( batchAttempt ) => {
+			if ( !batchAttempt.isPresent() ) {
+				stateToUse.remaining = 0;
+				return attempt();
+			}
+			var batch = batchAttempt.get();
+			var emitCount = min( stateToUse.remaining, batch.len() );
+			var emitted = [];
+			for ( var index = 1; index <= emitCount; index++ ) {
+				emitted.append( batch[ index ] );
+			}
+			stateToUse.remaining -= emitCount;
+			return attempt( emitted );
+		} );
+	}
+
+	private static function dropPull( required any sourceCursor, required struct state ) {
+		var cursorToPull = arguments.sourceCursor;
+		var stateToUse = arguments.state;
+		return cursorToPull.pull().flatMap( ( batchAttempt ) => {
+			if ( !batchAttempt.isPresent() ) {
+				return Effect::succeed( attempt() );
+			}
+			var batch = batchAttempt.get();
+			if ( stateToUse.remaining >= batch.len() ) {
+				stateToUse.remaining -= batch.len();
+				return Effect::suspend( () => dropPull( cursorToPull, stateToUse ) );
+			}
+			var emitted = [];
+			for ( var index = stateToUse.remaining + 1; index <= batch.len(); index++ ) {
+				emitted.append( batch[ index ] );
+			}
+			stateToUse.remaining = 0;
+			return Effect::succeed( attempt( emitted ) );
+		} );
+	}
+
+	private static function openConcatParts( required array parts ) {
+		var streams = arguments.parts;
+		return streams[ 1 ]._open().map( ( firstCursor ) => {
+			var concatState = {
+				streams : streams,
+				index : 1,
+				current : firstCursor
+			};
+			return new StreamCursor(
+				() => concatPartsPull( concatState ),
+				() => isNull( concatState.current )
+					? Effect::succeed( null )
+					: concatState.current.close()
+			);
+		} );
+	}
+
+	private static function concatPartsPull( required struct state ) {
+		var stateToUse = arguments.state;
+		if ( isNull( stateToUse.current ) ) {
+			if ( stateToUse.index >= stateToUse.streams.len() ) {
+				return Effect::succeed( attempt() );
+			}
+			stateToUse.index++;
+			return stateToUse.streams[ stateToUse.index ]._open().flatMap( ( nextCursor ) => {
+				stateToUse.current = nextCursor;
+				return Effect::suspend( () => concatPartsPull( stateToUse ) );
+			} );
+		}
+		return stateToUse.current.pull().flatMap( ( batchAttempt ) => {
+			if ( batchAttempt.isPresent() ) {
+				return Effect::succeed( batchAttempt );
+			}
+			var completedCursor = stateToUse.current;
+			stateToUse.current = null;
+			return completedCursor.close().flatMap(
+				( ignored ) => Effect::suspend( () => concatPartsPull( stateToUse ) )
+			);
+		} );
+	}
+
+	private static function flatMapPull( required struct state, required function mapper ) {
+		var stateToUse = arguments.state;
+		var mapValue = arguments.mapper;
+		if ( !isNull( stateToUse.inner ) ) {
+			return stateToUse.inner.pull().flatMap( ( innerAttempt ) => {
+				if ( innerAttempt.isPresent() ) {
+					return Effect::succeed( innerAttempt );
+				}
+				var completedInner = stateToUse.inner;
+				stateToUse.inner = null;
+				return completedInner.close().flatMap(
+					( ignored ) => Effect::suspend( () => flatMapPull( stateToUse, mapValue ) )
+				);
+			} );
+		}
+		if ( stateToUse.index <= stateToUse.pending.len() ) {
+			var outerValue = stateToUse.pending[ stateToUse.index ];
+			stateToUse.index++;
+			return Effect::suspend( () => mapValue( outerValue )._open() ).flatMap(
+				( innerCursor ) => {
+					stateToUse.inner = innerCursor;
+					return Effect::suspend( () => flatMapPull( stateToUse, mapValue ) );
+				}
+			);
+		}
+		return stateToUse.outer.pull().flatMap( ( outerAttempt ) => {
+			if ( !outerAttempt.isPresent() ) {
+				return Effect::succeed( attempt() );
+			}
+			stateToUse.pending = outerAttempt.get();
+			stateToUse.index = 1;
+			return Effect::suspend( () => flatMapPull( stateToUse, mapValue ) );
+		} );
+	}
+
+	private static function recoverPull(
+		required struct state,
+		required function handler,
+		required function predicate
+	) {
+		var stateToUse = arguments.state;
+		var recoveryHandler = arguments.handler;
+		var shouldRecover = arguments.predicate;
+		return stateToUse.cursor.pull().catchCause( ( pullCause ) => {
+			if ( stateToUse.recovered || !shouldRecover( pullCause ) ) {
+				return Effect::_halt( pullCause );
+			}
+			stateToUse.recovered = true;
+			var failedCursor = stateToUse.cursor;
+			return failedCursor.close().exit().flatMap( ( closeExit ) => {
+				if ( closeExit.isFailure() ) {
+					return Effect::_halt( Cause::sequential( pullCause, closeExit.cause() ) );
+				}
+				return Effect::suspend( () => recoveryHandler( pullCause )._open() ).flatMap(
+					( recoveryCursor ) => {
+						stateToUse.cursor = recoveryCursor;
+						return recoveryCursor.pull();
+					}
+				);
+			} );
+		} );
+	}
+
+	private static function collectPulls( required any sourceCursor, required array collected ) {
+		var cursorToPull = arguments.sourceCursor;
+		var valuesToCollect = arguments.collected;
+		return cursorToPull.pull().flatMap( ( batchAttempt ) => {
+			if ( !batchAttempt.isPresent() ) {
+				return Effect::succeed( valuesToCollect );
+			}
+			for ( var value in batchAttempt.get() ) {
+				valuesToCollect.append( value );
+			}
+			return Effect::suspend( () => collectPulls( cursorToPull, valuesToCollect ) );
+		} );
+	}
+
+	private static function consumePulls( required any sourceCursor, required function handler ) {
+		var cursorToPull = arguments.sourceCursor;
+		var consumeValue = arguments.handler;
+		return cursorToPull.pull().flatMap( ( batchAttempt ) =>
+			!batchAttempt.isPresent()
+				? Effect::succeed( null )
+				: Effect::forEach(
+					batchAttempt.get(),
+					( value, index ) => Effect::suspend( () => consumeValue( value ) ),
+					{ concurrency: 1, discard: true }
+				).flatMap(
+					( ignored ) => Effect::suspend( () => consumePulls( cursorToPull, consumeValue ) )
+				)
+		);
+	}
+
+	private static function foldPulls(
+		required any sourceCursor,
+		required struct state,
+		required function reducer
+	) {
+		var cursorToPull = arguments.sourceCursor;
+		var stateToUse = arguments.state;
+		var reduceValue = arguments.reducer;
+		return cursorToPull.pull().flatMap( ( batchAttempt ) => {
+			if ( !batchAttempt.isPresent() ) {
+				return Effect::succeed( stateToUse.value );
+			}
+			for ( var value in batchAttempt.get() ) {
+				stateToUse.value = reduceValue( stateToUse.value, value );
+			}
+			return Effect::suspend( () => foldPulls(
+				cursorToPull,
+				stateToUse,
+				reduceValue
+			) );
+		} );
+	}
+
+	private static array function copyArray( required array values ) {
+		var copied = [];
+		for ( var value in arguments.values ) {
+			copied.append( value );
+		}
+		return copied;
+	}
+
+	private static function validateCount( required numeric count, required string operation ) {
+		if ( arguments.count < 0 || arguments.count != int( arguments.count ) ) {
+			throw(
+				type: "BXEffect.InvalidStreamCount",
+				message: "Stream.#arguments.operation#() requires a non-negative whole number"
+			);
+		}
+	}
+
+}

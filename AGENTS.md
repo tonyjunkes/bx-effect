@@ -1,5 +1,5 @@
 <!-- FOR AI AGENTS | Verify commands and runtime assumptions against README.md and CI. -->
-<!-- Last updated: 2026-08-17 | Last verified: 2026-08-17 -->
+<!-- Last updated: 2026-08-23 | Last verified: 2026-08-23 -->
 
 # AGENTS.md
 
@@ -27,7 +27,9 @@ public API.
 | `models/effect/EffectRuntime.bx` | Iterative interpreter and sync/async execution boundaries |
 | `models/effect/Cause.bx`, `Exit.bx`, `Result.bx` | Failure trees and outcome values |
 | `models/effect/Scope.bx`, `Fiber.bx` | Resource safety and structured concurrency |
+| `models/effect/ManagedRuntime.bx` | Explicit application-lived Layer ownership across repeated runs |
 | `models/effect/Schedule.bx`, `Clock.bx` | Retry, repeat, live delay, and timeout policies |
+| `models/effect/Stream.bx`, `internal/StreamCursor.bx` | Pull-based multi-value descriptions and private single-run cursors |
 | `models/effect/testing/TestClock.bx` | Published deterministic-clock test support for module consumers |
 | `models/effect/context/` | `Context`, `Layer`, and `ServiceTag` dependency model |
 | `models/effect/internal/` | Central throwable and tagged-error policies |
@@ -59,6 +61,11 @@ annotation-scanning requirements.
   immutable values. Avoid exposing mutable semantic state.
 - Preserve Context isolation and restore the previous Context after nested
   provisioning on both success and failure.
+- `ManagedRuntime` is explicitly instance-owned and lazy. Concurrent first runs
+  share one Layer build; failed builds clean partial resources and remain
+  retryable. Closing rejects new work, waits for active run finalization, and
+  only then releases managed services once. Never expose its Context or memo,
+  install it globally, or release a managed Scope while a run may still use it.
 - Missing services are wiring defects. Preserve `BXEffect.MissingService` and
   include only deterministic requested/available tag diagnostics; do not infer
   a Layer graph from builder closures.
@@ -121,6 +128,16 @@ annotation-scanning requirements.
   interpreter instructions, and preserve tagged PubSub/Subscription shutdown
   errors. Do not add replay, dropping/sliding strategies, implicit Scope
   ownership, or Stream behavior without a separate contract and tests.
+- `Stream` is an immutable reusable description whose private cursor pulls
+  native `Attempt<Array>` batches on demand. Empty Attempt is normal completion;
+  failures remain in Cause. Every consumer opens a fresh cursor and closes it on
+  success, failure, defect, or interruption. Keep the MVP sequential and
+  demand-driven: no implicit read-ahead, Channel/Sink/Chunk layer, concurrent
+  flatMap, Java Stream wrapper, or Queue/PubSub ownership changes.
+- Fiber interruption tracks the actual worker thread only while the interpreter
+  is inside a known interruptible Semaphore, Queue, or PubSub instruction. Keep
+  that registration tightly scoped and always clear it in `finally`; do not
+  interrupt executor threads around arbitrary user code.
 - Benchmark elapsed times must use imported `java.lang.System.nanoTime()` and
   convert to milliseconds. Do not use `getTickCount()` for recorded baselines;
   it has produced anomalous elapsed readings under the BoxLang CLI runtime.
@@ -179,6 +196,10 @@ Additional checks:
 | Package metadata | `box package show` |
 | Stack-safety benchmark | `box boxlang cli --bx-config tests/boxlang.json benchmarks/EffectRuntimeBench.bxm` |
 | Layer-sharing benchmark | `box boxlang cli --bx-config tests/boxlang.json benchmarks/LayerRuntimeBench.bxm` |
+| Managed runtime benchmark | `box boxlang cli --bx-config tests/boxlang.json benchmarks/ManagedRuntimeBench.bxm` |
+| Stream benchmark | `box boxlang cli --bx-config tests/boxlang.json benchmarks/StreamBench.bxm` |
+| Managed runtime specs | `box boxlang cli --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs.runtime --stream --write-report=false --properties-summary=false --stacktrace=short` |
+| Stream specs | `box boxlang cli --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs.stream --stream --write-report=false --properties-summary=false --stacktrace=short` |
 | Async runtime baseline | `box boxlang cli --bx-config tests/boxlang.json benchmarks/AsyncRuntimeBench.bxm` |
 | Concurrency baseline | `box boxlang cli --bx-config tests/boxlang.json benchmarks/ConcurrencyBench.bxm` |
 | Context/Scope baseline | `box boxlang cli --bx-config tests/boxlang.json benchmarks/ContextScopeBench.bxm` |
@@ -195,9 +216,11 @@ for interpreter or composition changes.
 | Constructors or operators | Laziness, success path, expected failure, defect behavior, public docs, and core specs |
 | Cause/Exit/Result | Information preservation, conversion semantics, pretty diagnostics, and error-model docs |
 | Context or Layers | Isolation, restoration, dependency order, scoped cleanup, and context specs |
+| Managed runtime | Build sharing/retry, run isolation, close races, interruption, cleanup ordering, runtime specs, and Layer benchmark |
 | Scope or finalizers | All exit modes, LIFO order, idempotence, and sequential Cause composition |
 | Futures, Fibers, or concurrency | Native BoxFuture return types, Context inheritance, child ownership, cancellation, and async specs |
 | Schedule or timeout | Laziness, expected-failure-only retry, cleanup, timing semantics, and schedule specs |
+| Stream | Pull/acquisition laziness, Cause channels, early cleanup, Context on every pull, interruption, coordination ownership, stream specs, and Stream benchmark |
 | Module settings | `ModuleConfig.bx`, both test configs, module specs, and executor-override check |
 | Version or release metadata | `box.json`, `ModuleConfig.bx`, `CHANGELOG.md`, and `docs/releasing.md` |
 | Supported runtime matrix | `box.json`, README requirements, test configs, and `.github/workflows/tests.yml` |

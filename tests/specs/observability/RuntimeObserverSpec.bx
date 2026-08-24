@@ -1,13 +1,31 @@
 import models.effect.Effect@bxEffect;
 import models.effect.EffectRuntime@bxEffect;
 import models.effect.Schedule@bxEffect;
+import models.effect.observability.LoggingObserver@bxEffect;
 import java.util.concurrent.atomic.AtomicBoolean;
 import tests.resources.AsyncTestSupport;
+import tests.resources.RecordingLogger;
 
 class extends="testbox.system.BaseSpec" {
 
 	function run() {
 		describe( "Runtime observer boundary", () => {
+
+			it( "adapts observer events to an existing logger without affecting outcomes", () => {
+				var logger = new RecordingLogger();
+				var observer = LoggingObserver::make( logger, {
+					"runtime:started" : "trace",
+					"runtime:completed" : "debug"
+				} );
+				var runtime = new EffectRuntime( { observer: observer } );
+
+				expect( runtime.runSync( Effect::succeed( 42 ) ) ).toBe( 42 );
+				expect( logger.entries()[ 1 ].level ).toBe( "trace" );
+				expect( logger.entries().last().level ).toBe( "debug" );
+				expect( logger.entries()[ 1 ].message ).toInclude( "runtime:started" );
+				expect( () => LoggingObserver::make( logger, { "*": "fatal" } ) )
+					.toThrow( type: "BXEffect.InvalidLoggingObserverLevel" );
+			} );
 
 			it( "reports stable runtime, suspension, scope, and retry events", () => {
 				var events = [];

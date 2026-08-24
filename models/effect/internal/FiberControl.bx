@@ -8,6 +8,7 @@
 class {
 
 	variables.activeFuture = new java.util.concurrent.atomic.AtomicReference();
+	variables.activeThread = new java.util.concurrent.atomic.AtomicReference();
 	variables.fiberId = "";
 	variables.interrupted = new java.util.concurrent.atomic.AtomicBoolean( false );
 
@@ -29,9 +30,23 @@ class {
 		return this;
 	}
 
+	function setActiveThread( required any workerThread ) {
+		variables.activeThread.set( arguments.workerThread );
+		if ( variables.interrupted.get() ) {
+			interruptActiveThread();
+		}
+		return this;
+	}
+
+	function clearActiveThread( required any workerThread ) {
+		variables.activeThread.compareAndSet( arguments.workerThread, null );
+		return this;
+	}
+
 	function interrupt() {
 		variables.interrupted.set( true );
 		cancelActiveFuture();
+		interruptActiveThread();
 		return this;
 	}
 
@@ -53,6 +68,18 @@ class {
 			currentFuture.cancel( true );
 		} catch ( any ignored ) {
 			// A BoxFuture implementation may not support cancellation.
+		}
+	}
+
+	private function interruptActiveThread() {
+		var workerThread = variables.activeThread.get();
+		if ( isNull( workerThread ) ) {
+			return;
+		}
+		try {
+			workerThread.interrupt();
+		} catch ( any ignored ) {
+			// The worker may have completed between lookup and interruption.
 		}
 	}
 

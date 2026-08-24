@@ -12,13 +12,16 @@
    ```
 
 4. Confirm `box package show` parses the ForgeBox descriptor.
-5. Create and push a `v<version>` tag. The `Release` workflow reruns the suite,
-   verifies the module-setting override and tag/package version match, and
-   publishes with `box publish`.
-   Configure its `FORGEBOX_API_TOKEN` repository secret before creating the tag.
+5. Install the repository package into a clean `boxlang_modules` directory and
+   run `tests/consumer/Smoke.bxm` with `tests/consumer/boxlang.json`. The normal
+   test mapping is not acceptable evidence for this check.
+6. Record the verified BoxLang and Java versions with the release candidate.
 
-`box.json` deliberately uses `location: "forgeboxStorage"`; ForgeBox stores the
-published archive, so no artifact URL needs to be edited for a release.
+ForgeBox publishing is intentionally deferred. The `Release` workflow remains
+disabled and `box.json` has no publication location. Before enabling it, review
+the tag/version check, choose the ForgeBox storage location, configure
+`FORGEBOX_API_TOKEN`, and repeat every check above. Pushing a tag today does not
+publish the module.
 
 ## Compatibility matrix
 

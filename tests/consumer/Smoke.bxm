@@ -1,0 +1,60 @@
+<bx:script>
+import models.effect.Cause@bxEffect;
+import models.effect.Clock@bxEffect;
+import models.effect.Deferred@bxEffect;
+import models.effect.Effect@bxEffect;
+import models.effect.EffectRuntime@bxEffect;
+import models.effect.Exit@bxEffect;
+import models.effect.Fiber@bxEffect;
+import models.effect.ManagedRuntime@bxEffect;
+import models.effect.PubSub@bxEffect;
+import models.effect.PubSubSubscription@bxEffect;
+import models.effect.Queue@bxEffect;
+import models.effect.Result@bxEffect;
+import models.effect.Schedule@bxEffect;
+import models.effect.Scope@bxEffect;
+import models.effect.Semaphore@bxEffect;
+import models.effect.Stream@bxEffect;
+import models.effect.context.Context@bxEffect;
+import models.effect.context.Layer@bxEffect;
+import models.effect.context.ServiceTag@bxEffect;
+import models.effect.testing.TestClock@bxEffect;
+import models.effect.observability.LoggingObserver@bxEffect;
+
+function assertConsumer( required boolean condition, required string message ) {
+	if ( !arguments.condition ) {
+		throw( type: "BXEffect.ConsumerSmokeFailed", message: arguments.message );
+	}
+}
+
+tagToUse = ServiceTag::of( "consumer/Value" );
+applicationLayer = Layer::succeed( tagToUse, 21 );
+managed = ManagedRuntime::make( applicationLayer );
+assertConsumer( managed.runSync( Effect::service( tagToUse ).map( ( value ) => value * 2 ) ) == 42, "ManagedRuntime import/run failed" );
+assertConsumer( managed.close().isSuccess(), "ManagedRuntime close failed" );
+
+standardRuntime = new EffectRuntime();
+loggingObserverValue = LoggingObserver::make( "application" );
+assertConsumer( standardRuntime.runSync( Stream::fromArray( [ 1, 2 ] ).runFold( 0, ( total, value ) => total + value ) ) == 3, "Stream import/run failed" );
+assertConsumer( Cause::fail( "expected" ).kind() == "Fail", "Cause import failed" );
+assertConsumer( Exit::success( 1 ).isSuccess(), "Exit import failed" );
+assertConsumer( Result::success( 1 ).isSuccess(), "Result import failed" );
+assertConsumer( Context::empty().add( tagToUse, 1 ).has( tagToUse ), "Context import failed" );
+assertConsumer( new Scope().isClosed() == false, "Scope import failed" );
+assertConsumer( new Clock().now() > 0, "Clock import failed" );
+assertConsumer( new TestClock().now() == 0, "TestClock import failed" );
+assertConsumer( Schedule::recurs( 1 ).next( 0, null ).continue, "Schedule import failed" );
+
+deferredValue = Deferred::make();
+assertConsumer( deferredValue.isDone() == false, "Deferred import failed" );
+assertConsumer( Semaphore::make( 1 ).availablePermits() == 1, "Semaphore import failed" );
+assertConsumer( Queue::unbounded().size() == 0, "Queue import failed" );
+pubSubSource = PubSub::unbounded();
+subscription = standardRuntime.runSync( pubSubSource.subscribe() );
+assertConsumer( structKeyExists( subscription, "unsubscribe" ), "PubSubSubscription import failed" );
+standardRuntime.runSync( subscription.unsubscribe() );
+fiberValue = standardRuntime.runFork( Effect::succeed( "fiber" ) );
+assertConsumer( fiberValue.join() == "fiber", "Fiber import failed" );
+
+println( "BX_EFFECT_CONSUMER_SMOKE_OK" );
+</bx:script>

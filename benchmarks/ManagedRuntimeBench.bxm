@@ -1,0 +1,51 @@
+<bx:script>
+import models.effect.Effect@bxEffect;
+import models.effect.ManagedRuntime@bxEffect;
+import models.effect.context.Layer@bxEffect;
+import models.effect.context.ServiceTag@bxEffect;
+import java.util.concurrent.atomic.AtomicInteger;
+import benchmarks.BenchmarkSupport;
+
+runsPerSample = 128;
+builds = new AtomicInteger( 0 );
+releases = new AtomicInteger( 0 );
+repository = ServiceTag::of( "benchmark/ManagedRepository" );
+applicationLayer = Layer::scoped(
+	repository,
+	Effect::acquireRelease(
+		Effect::sync( () => {
+			builds.incrementAndGet();
+			return "repository";
+		} ),
+		( ignored ) => Effect::sync( () => releases.incrementAndGet() )
+	)
+);
+managed = ManagedRuntime::make( applicationLayer );
+
+measurement = BenchmarkSupport::measure( () => {
+	var completed = 0;
+	for ( var runIndex = 1; runIndex <= runsPerSample; runIndex++ ) {
+		if ( managed.runSync( Effect::service( repository ) ) == "repository" ) {
+			completed++;
+		}
+	}
+	return completed;
+} );
+closeExit = managed.close();
+
+if (
+	measurement.value != runsPerSample
+	|| builds.get() != 1
+	|| releases.get() != 1
+	|| closeExit.isFailure()
+) {
+	throw(
+		type: "BXEffect.BenchmarkFailure",
+		message: "ManagedRuntime did not share one build across repeated boundaries or release it once"
+	);
+}
+
+writeOutput(
+	"executor=io-tasks runsPerSample=#runsPerSample# samples=5 builds=#builds.get()# releases=#releases.get()# minimumMs=#measurement.minimumMs# medianMs=#measurement.medianMs#"
+);
+</bx:script>

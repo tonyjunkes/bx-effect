@@ -45,3 +45,19 @@ jobs:
           --write-report=false
           --properties-summary=false
           --stacktrace=short
+
+      - name: Inspect package metadata
+        run: box package show
+
+      - name: Verify isolated installed consumer
+        shell: bash
+        run: |
+          consumer_dir="${RUNNER_TEMP}/bx-effect-consumer"
+          mkdir -p "${consumer_dir}/boxlang_modules"
+          cp tests/consumer/Smoke.bxm tests/consumer/boxlang.json "${consumer_dir}/"
+          cd "${consumer_dir}"
+          box install "${GITHUB_WORKSPACE}" \
+            --directory="boxlang_modules" \
+            --production \
+            --save=false
+          boxlang --bx-config boxlang.json Smoke.bxm

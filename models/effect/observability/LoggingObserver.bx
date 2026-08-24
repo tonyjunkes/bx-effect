@@ -1,0 +1,89 @@
+/**
+ * Optional adapter from EffectRuntime observer events to an existing BoxLang
+ * logger object or named writeLog target. It configures no appenders and owns
+ * no logging lifecycle.
+ */
+class {
+
+	variables.target = null;
+	variables.levels = {};
+
+	function init( required any loggerOrName, struct levels = {} ) {
+		if ( !isObject( arguments.loggerOrName ) && !isSimpleValue( arguments.loggerOrName ) ) {
+			throw(
+				type: "BXEffect.InvalidLoggingObserverTarget",
+				message: "LoggingObserver requires a logger object or logger name"
+			);
+		}
+		variables.target = arguments.loggerOrName;
+		variables.levels = {
+			"*" : "info",
+			"defect:unhandled" : "error",
+			"fiber:interrupted" : "warn",
+			"retry:scheduled" : "debug"
+		};
+		for ( var eventName in arguments.levels ) {
+			variables.levels[ eventName ] = normalizeLevel( arguments.levels[ eventName ] );
+		}
+		return this;
+	}
+
+	static function make( required any loggerOrName, struct levels = {} ) {
+		return new LoggingObserver( arguments.loggerOrName, arguments.levels );
+	}
+
+	function onEvent( required string eventName, struct details = {} ) {
+		try {
+			var level = structKeyExists( variables.levels, arguments.eventName )
+				? variables.levels[ arguments.eventName ]
+				: variables.levels[ "*" ];
+			var message = "BX Effect [#arguments.eventName#] #renderDetails( arguments.details )#";
+			if ( isObject( variables.target ) ) {
+				variables.target[ level ]( message );
+			} else {
+				writeLog(
+					text: message,
+					type: writeLogLevel( level ),
+					log: variables.target.toString()
+				);
+			}
+		} catch ( any ignored ) {
+			// Observer adapters are diagnostic-only and never affect an Exit.
+		}
+	}
+
+	private string function renderDetails( required struct details ) {
+		try {
+			return JSONSerialize( arguments.details );
+		} catch ( any ignored ) {
+			return "{details-unavailable}";
+		}
+	}
+
+	private string function normalizeLevel( required any level ) {
+		var requested = lCase( arguments.level.toString() );
+		if ( listFindNoCase( "trace,debug,info,warn,error", requested ) == 0 ) {
+			throw(
+				type: "BXEffect.InvalidLoggingObserverLevel",
+				message: "LoggingObserver levels must be trace, debug, info, warn, or error"
+			);
+		}
+		return requested;
+	}
+
+	private string function writeLogLevel( required string level ) {
+		switch ( arguments.level ) {
+			case "trace":
+				return "Trace";
+			case "debug":
+				return "Debug";
+			case "warn":
+				return "Warning";
+			case "error":
+				return "Error";
+			default:
+				return "Information";
+		}
+	}
+
+}

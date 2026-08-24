@@ -71,13 +71,16 @@ class extends="testbox.system.BaseSpec" {
 
 			it( "forks through the Effect instruction without starting work during construction", () => {
 				var runs = 0;
-				var program = Effect::sync( () => {
+				var forkedProgram = Effect::sync( () => {
 					runs++;
 					return "value";
 				} ).fork();
 
 				expect( runs ).toBe( 0 );
-				var fiber = Effect::runSync( program );
+				var fiber = Effect::runSync( forkedProgram.flatMap( ( childFiber ) =>
+					Effect::fromBoxFuture( () => childFiber._completionFuture() )
+						.as( childFiber )
+				) );
 				expect( fiber.join() ).toBe( "value" );
 				expect( runs ).toBe( 1 );
 			} );
@@ -219,6 +222,24 @@ class extends="testbox.system.BaseSpec" {
 
 				expect( Effect::runSync( program ) ).toBeNull();
 				expect( mapped ).toBe( 2 );
+			} );
+
+			it( "accumulates forEach mapper failures in input order", () => {
+				var mapped = [];
+				var exit = Effect::runSyncExit( Effect::forEach(
+					[ "first", "second", "third" ],
+					( value, index ) => {
+						mapped.append( value );
+						return index == 2
+							? Effect::succeed( value )
+							: Effect::fail( value );
+					},
+					{ concurrency: 2, mode: "accumulate" }
+				) );
+
+				expect( mapped.len() ).toBe( 3 );
+				expect( exit.cause().kind() ).toBe( "Parallel" );
+				expect( exit.cause().failures() ).toBe( [ "first", "third" ] );
 			} );
 
 			it( "inherits provided services in concurrent branches", () => {

@@ -1,0 +1,77 @@
+<bx:script>
+import models.effect.Effect@bxEffect;
+import models.effect.Queue@bxEffect;
+import models.effect.Stream@bxEffect;
+import java.lang.Runtime;
+import java.lang.System;
+import benchmarks.BenchmarkSupport;
+
+mappedValues = [];
+for ( index = 1; index <= 100000; index++ ) {
+	mappedValues.append( index );
+}
+
+mapMeasurement = BenchmarkSupport::measure( () => Effect::runSync(
+	Stream::fromArray( mappedValues )
+		.map( ( value ) => value + 1 )
+		.runFold( 0, ( total, value ) => total + 1 )
+) );
+
+pullCount = 10000;
+pullMeasurement = BenchmarkSupport::measure( () => Effect::runSync(
+	Stream::unfoldEffect( 1, ( state ) => Effect::succeed(
+		state > pullCount
+			? attempt()
+			: attempt( { value: state, state: state + 1 } )
+	) ).runFold( 0, ( total, value ) => total + 1 )
+) );
+
+queueValues = 1000;
+queueMeasurement = BenchmarkSupport::measure( () => {
+	var queueSource = Queue::unbounded();
+	var offers = [];
+	for ( var queueIndex = 1; queueIndex <= queueValues; queueIndex++ ) {
+		offers.append( queueSource.offer( queueIndex ) );
+	}
+	return Effect::runSync(
+		Effect::all( offers, { concurrency: 1 } )
+			.flatMap( () => queueSource.shutdown() )
+			.flatMap( () => Stream::fromQueue( queueSource ).runFold(
+				0,
+				( total, value ) => total + 1
+			) )
+	);
+} );
+
+interruptMeasurement = BenchmarkSupport::measure( () => {
+	var queueSource = Queue::unbounded();
+	var blockedFiber = Effect::runFork( Stream::fromQueue( queueSource ).runDrain() );
+	blockedFiber.interrupt();
+	var interruptionExit = blockedFiber._awaitTermination().await();
+	return interruptionExit.cause().isInterrupted();
+} );
+
+jvmRuntime = Runtime.getRuntime();
+System.gc();
+usedBefore = jvmRuntime.totalMemory() - jvmRuntime.freeMemory();
+collected = Effect::runSync( Stream::fromArray( mappedValues ).map( ( value ) => value + 1 ).runCollect() );
+usedAfter = jvmRuntime.totalMemory() - jvmRuntime.freeMemory();
+retainedBytes = max( 0, usedAfter - usedBefore );
+
+if (
+	mapMeasurement.value != 100000
+	|| pullMeasurement.value != pullCount
+	|| queueMeasurement.value != queueValues
+	|| !interruptMeasurement.value
+	|| collected.len() != 100000
+) {
+	throw(
+		type: "BXEffect.BenchmarkFailure",
+		message: "Stream benchmark correctness check failed"
+	);
+}
+
+writeOutput(
+	"mappedValues=100000 mapMedianMs=#mapMeasurement.medianMs# repeatedPulls=#pullCount# pullMedianMs=#pullMeasurement.medianMs# queueValues=#queueValues# queueMedianMs=#queueMeasurement.medianMs# interruptMedianMs=#interruptMeasurement.medianMs# retainedBytes=#retainedBytes# samples=5"
+);
+</bx:script>

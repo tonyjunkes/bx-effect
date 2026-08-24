@@ -1,0 +1,345 @@
+import models.effect.Cause@bxEffect;
+import models.effect.Effect@bxEffect;
+import models.effect.EffectRuntime@bxEffect;
+import models.effect.PubSub@bxEffect;
+import models.effect.Queue@bxEffect;
+import models.effect.Stream@bxEffect;
+import models.effect.context.Context@bxEffect;
+import models.effect.context.ServiceTag@bxEffect;
+import models.effect.testing.TestClock@bxEffect;
+import tests.resources.AsyncTestSupport;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Stream MVP", () => {
+
+			it( "constructs lazily and opens a fresh cursor for every consumption", () => {
+				var constructions = 0;
+				var mutableValues = [ 1, 2 ];
+				var snapshot = Stream::fromArray( mutableValues );
+				mutableValues.append( 3 );
+				var sourceFlow = Stream::suspend( () => {
+					constructions++;
+					return Stream::fromArray( [ 1, 2, 3 ] );
+				} ).map( ( value ) => value * 2 );
+
+				expect( constructions ).toBe( 0 );
+				expect( Effect::runSync( sourceFlow.runCollect() ) ).toBe( [ 2, 4, 6 ] );
+				expect( Effect::runSync( sourceFlow.runCollect() ) ).toBe( [ 2, 4, 6 ] );
+				expect( constructions ).toBe( 2 );
+				expect( Effect::runSync( snapshot.runCollect() ) ).toBe( [ 1, 2 ] );
+			} );
+
+			it( "supports empty, effect, filter, take, drop, and concat", () => {
+				var sourceFlow = Stream::empty()
+					.concat( Stream::fromEffect( Effect::succeed( 1 ) ) )
+					.concat( Stream::fromArray( [ 2, 3, 4, 5 ] ) )
+					.filter( ( value ) => value % 2 == 1 )
+					.drop( 1 )
+					.take( 2 );
+
+				expect( Effect::runSync( sourceFlow.runCollect() ) ).toBe( [ 3, 5 ] );
+				expect( Effect::runSync( Stream::fromArray( [] ).runCollect() ) ).toBeEmpty();
+			} );
+
+			it( "maps and flattens Effects sequentially", () => {
+				var order = [];
+				var sourceFlow = Stream::fromArray( [ 1, 2, 3 ] )
+					.mapEffect( ( value ) => Effect::sync( () => {
+						order.append( "map:#value#" );
+						return value;
+					} ) )
+					.flatMap( ( value ) => Stream::fromArray( [ value, value * 10 ] ) )
+					.tap( ( value ) => Effect::sync( () => order.append( "tap:#value#" ) ) );
+
+				expect( Effect::runSync( sourceFlow.runCollect() ) ).toBe( [ 1, 10, 2, 20, 3, 30 ] );
+				expect( order ).toBe( [
+					"map:1", "map:2", "map:3",
+					"tap:1", "tap:10", "tap:2", "tap:20", "tap:3", "tap:30"
+				] );
+			} );
+
+			it( "runs effectful consumers and folds values", () => {
+				var consumed = [];
+				var sourceFlow = Stream::fromArray( [ 1, 2, 3, 4 ] );
+
+				expect( Effect::runSync( sourceFlow.runFold( 0, ( total, value ) => total + value ) ) ).toBe( 10 );
+				expect( Effect::runSync( sourceFlow.runForEach(
+					( value ) => Effect::sync( () => consumed.append( value ) )
+				) ) ).toBeNull();
+				expect( consumed ).toBe( [ 1, 2, 3, 4 ] );
+				expect( Effect::runSync( sourceFlow.runDrain() ) ).toBeNull();
+			} );
+
+			it( "recovers expected errors separately from complete Causes", () => {
+				var expected = Stream::fail( "missing" ).catchAll(
+					( error ) => Stream::succeed( "recovered:#error#" )
+				);
+				var defect = Stream::fromEffect( Effect::sync( () => {
+					throw( type: "BXEffect.StreamDefect", message: "broken" );
+				} ) );
+
+				expect( Effect::runSync( expected.runCollect() ) ).toBe( [ "recovered:missing" ] );
+				expect( Effect::runSyncExit(
+					defect.catchAll( ( ignored ) => Stream::succeed( "wrong" ) ).runCollect()
+				).cause().kind() ).toBe( "Die" );
+				expect( Effect::runSync(
+					defect.catchCause( ( failureCause ) => Stream::succeed( failureCause.kind() ) ).runCollect()
+				) ).toBe( [ "Die" ] );
+				expect( Effect::runSync(
+					Stream::fromEffect( Effect::_halt( Cause::interrupt( "stream-fiber" ) ) )
+						.catchCause( ( failureCause ) => Stream::succeed( failureCause.kind() ) )
+						.runCollect()
+				) ).toBe( [ "Interrupt" ] );
+			} );
+
+			it( "acquires lazily and releases once after early take", () => {
+				var acquired = 0;
+				var released = 0;
+				var pulls = 0;
+				var sourceFlow = Stream::acquireRelease(
+					Effect::sync( () => {
+						acquired++;
+						return "resource";
+					} ),
+					( ignored ) => Effect::sync( () => released++ ),
+					( ignored ) => Stream::unfoldEffect( 1, ( state ) => Effect::sync( () => {
+						pulls++;
+						return attempt( { value: state, state: state + 1 } );
+					} ) )
+				).take( 2 );
+
+				expect( acquired ).toBe( 0 );
+				expect( Effect::runSync( sourceFlow.runCollect() ) ).toBe( [ 1, 2 ] );
+				expect( acquired ).toBe( 1 );
+				expect( pulls ).toBe( 2 );
+				expect( released ).toBe( 1 );
+			} );
+
+			it( "closes acquisition and ensuring finalizers after consumer failure", () => {
+				var events = [];
+				var sourceFlow = Stream::acquireRelease(
+					Effect::succeed( "resource" ),
+					( ignored ) => Effect::sync( () => events.append( "release" ) ),
+					( ignored ) => Stream::fromArray( [ 1, 2 ] )
+				).ensuring( Effect::sync( () => events.append( "ensuring" ) ) );
+
+				var exit = Effect::runSyncExit( sourceFlow.runForEach(
+					( value ) => Effect::fail( "consumer" )
+				) );
+				expect( exit.cause().error() ).toBe( "consumer" );
+				expect( events ).toBe( [ "release", "ensuring" ] );
+			} );
+
+			it( "does not release an unacquired resource", () => {
+				var releases = 0;
+				var expectedExit = Effect::runSyncExit(
+					Stream::acquireRelease(
+						Effect::fail( "not-acquired" ),
+						( ignored ) => Effect::sync( () => releases++ ),
+						( ignored ) => Stream::succeed( "unused" )
+					).runCollect()
+				);
+				var defectExit = Effect::runSyncExit(
+					Stream::acquireRelease(
+						Effect::sync( () => {
+							throw( type: "BXEffect.StreamAcquireDefect", message: "broken acquire" );
+						} ),
+						( ignored ) => Effect::sync( () => releases++ ),
+						( ignored ) => Stream::succeed( "unused" )
+					).runCollect()
+				);
+
+				expect( expectedExit.cause().error() ).toBe( "not-acquired" );
+				expect( defectExit.cause().kind() ).toBe( "Die" );
+				expect( releases ).toBe( 0 );
+			} );
+
+			it( "appends a failed release to the active Stream failure", () => {
+				var failedExit = Effect::runSyncExit(
+					Stream::acquireRelease(
+						Effect::succeed( "resource" ),
+						( ignored ) => Effect::fail( "release-failed" ),
+						( ignored ) => Stream::fail( "source-failed" )
+					).runCollect()
+				);
+
+				expect( failedExit.cause().kind() ).toBe( "Sequential" );
+				expect( failedExit.cause().failures() ).toBe( [ "source-failed", "release-failed" ] );
+			} );
+
+			it( "provides Context to every unfold pull and restores it afterward", () => {
+				var tagToUse = ServiceTag::of( "stream/Multiplier" );
+				var providedContext = Context::empty().add( tagToUse, 3 );
+				var sourceFlow = Stream::unfoldEffect( 1, ( state ) =>
+					state > 3
+						? Effect::succeed( attempt() )
+						: Effect::service( tagToUse ).map( ( multiplier ) => attempt( {
+							value : state * multiplier,
+							state : state + 1
+						} ) )
+				).provide( providedContext );
+
+				expect( Effect::runSync( sourceFlow.runCollect() ) ).toBe( [ 3, 6, 9 ] );
+				expect( Effect::runSyncExit( Effect::service( tagToUse ) ).cause().kind() ).toBe( "Die" );
+			} );
+
+			it( "uses the runtime Clock for deterministic effectful pulls", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var timedSource = Stream::unfoldEffect( 1, ( state ) =>
+					state > 2
+						? Effect::succeed( attempt() )
+						: Effect::sleep( 1, "second" ).as( attempt( {
+							value : state,
+							state : state + 1
+						} ) )
+				);
+				var collectedFuture = runtime.runFuture( timedSource.runCollect() );
+
+				AsyncTestSupport::awaitCondition( () => clock.pendingCount() == 1 );
+				expect( collectedFuture.isDone() ).toBeFalse();
+				clock.advance( 1, "second" );
+				AsyncTestSupport::awaitCondition( () => clock.pendingCount() == 1 );
+				expect( collectedFuture.isDone() ).toBeFalse();
+				clock.advance( 1, "second" );
+				expect( collectedFuture.get() ).toBe( [ 1, 2 ] );
+			} );
+
+			it( "drains Queue values and treats QueueShutdown as completion", () => {
+				var queueSource = Queue::bounded( 4 );
+				var sourceFlow = Stream::fromQueue( queueSource );
+				var program = queueSource.offer( "a" )
+					.flatMap( ( ignored ) => queueSource.offer( "b" ) )
+					.flatMap( ( ignored ) => queueSource.shutdown() )
+					.flatMap( ( ignored ) => sourceFlow.runCollect() );
+
+				expect( Effect::runSync( program ) ).toBe( [ "a", "b" ] );
+			} );
+
+			it( "preserves bounded Queue backpressure until Stream demand arrives", () => {
+				var queueSource = Queue::bounded( 1 );
+				Effect::runSync( queueSource.offer( "first" ) );
+				var blockedOffer = Effect::runFuture( queueSource.offer( "second" ) );
+				expect( blockedOffer.isDone() ).toBeFalse();
+
+				var collectedFuture = Effect::runFuture(
+					Stream::fromQueue( queueSource ).take( 2 ).runCollect()
+				);
+
+				expect( collectedFuture.get() ).toBe( [ "first", "second" ] );
+				expect( blockedOffer.get() ).toBeNull();
+			} );
+
+			it( "owns one PubSub subscription and unsubscribes after take", () => {
+				var pubSubSource = PubSub::bounded( 2 );
+				var collectedFuture = Effect::runFuture(
+					Stream::fromPubSub( pubSubSource ).take( 2 ).runCollect()
+				);
+				AsyncTestSupport::awaitCondition( () => pubSubSource.subscriberCount() == 1 );
+				Effect::runSync( pubSubSource.publish( "a" ) );
+				Effect::runSync( pubSubSource.publish( "b" ) );
+
+				expect( collectedFuture.get() ).toBe( [ "a", "b" ] );
+				expect( pubSubSource.subscriberCount() ).toBe( 0 );
+			} );
+
+			it( "interrupts a blocked PubSub pull and unsubscribes", () => {
+				var pubSubSource = PubSub::unbounded();
+				var fiber = Effect::runFork( Stream::fromPubSub( pubSubSource ).runDrain() );
+				AsyncTestSupport::awaitCondition( () => pubSubSource.subscriberCount() == 1 );
+
+				fiber.interrupt();
+				expect( fiber.await().cause().isInterrupted() ).toBeTrue();
+				fiber._awaitTermination();
+				AsyncTestSupport::awaitCondition( () => pubSubSource.subscriberCount() == 0 );
+			} );
+
+			it( "unsubscribes PubSub consumers after expected failure and defect", () => {
+				var expectedHub = PubSub::unbounded();
+				var expectedFuture = Effect::runFutureExit(
+					Stream::fromPubSub( expectedHub ).runForEach(
+						( ignored ) => Effect::fail( "consumer-failed" )
+					)
+				);
+				AsyncTestSupport::awaitCondition( () => expectedHub.subscriberCount() == 1 );
+				Effect::runSync( expectedHub.publish( "value" ) );
+				expect( expectedFuture.get().cause().error() ).toBe( "consumer-failed" );
+				AsyncTestSupport::awaitCondition( () => expectedHub.subscriberCount() == 0 );
+
+				var defectHub = PubSub::unbounded();
+				var defectFuture = Effect::runFutureExit(
+					Stream::fromPubSub( defectHub ).runForEach(
+						( ignored ) => Effect::sync( () => {
+							throw( type: "BXEffect.StreamConsumerDefect", message: "broken consumer" );
+						} )
+					)
+				);
+				AsyncTestSupport::awaitCondition( () => defectHub.subscriberCount() == 1 );
+				Effect::runSync( defectHub.publish( "value" ) );
+				expect( defectFuture.get().cause().kind() ).toBe( "Die" );
+				AsyncTestSupport::awaitCondition( () => defectHub.subscriberCount() == 0 );
+			} );
+
+			it( "interrupts a blocked Queue pull without owning the Queue", () => {
+				var queueSource = Queue::unbounded();
+				var fiber = Effect::runFork( Stream::fromQueue( queueSource ).runDrain() );
+				expect( fiber.isDone() ).toBeFalse();
+
+				fiber.interrupt();
+				expect( fiber.await().cause().isInterrupted() ).toBeTrue();
+				fiber._awaitTermination();
+				Effect::runSync( queueSource.offer( "still-open" ) );
+				expect( Effect::runSync( queueSource.take() ) ).toBe( "still-open" );
+			} );
+
+			it( "processes long pull chains without growing the JVM stack", () => {
+				var sourceFlow = Stream::unfoldEffect( 1, ( state ) => Effect::succeed(
+					state > 10000
+						? attempt()
+						: attempt( { value: state, state: state + 1 } )
+				) );
+
+				expect( Effect::runSync(
+					sourceFlow.runFold( 0, ( total, value ) => total + 1 )
+				) ).toBe( 10000 );
+			} );
+
+			it( "opens deep concat descriptions without growing the JVM stack", () => {
+				var sourceFlow = Stream::empty();
+				for ( var index = 1; index <= 2000; index++ ) {
+					sourceFlow = sourceFlow.concat( Stream::succeed( index ) );
+				}
+
+				expect( Effect::runSync(
+					sourceFlow.runFold( 0, ( total, value ) => total + 1 )
+				) ).toBe( 2000 );
+			} );
+
+			it( "composes deep flatMap descriptions without growing the JVM stack", () => {
+				var sourceFlow = Stream::succeed( 0 );
+				for ( var index = 1; index <= 1000; index++ ) {
+					sourceFlow = sourceFlow.flatMap(
+						( value ) => Stream::succeed( value + 1 )
+					);
+				}
+
+				expect( Effect::runSync( sourceFlow.runCollect() ) ).toBe( [ 1000 ] );
+			} );
+
+			it( "folds a large finite batch without a second unbounded buffer", () => {
+				var values = [];
+				for ( var index = 1; index <= 100000; index++ ) {
+					values.append( index );
+				}
+
+				expect( Effect::runSync(
+					Stream::fromArray( values ).runFold( 0, ( total, value ) => total + 1 )
+				) ).toBe( 100000 );
+			} );
+
+		} );
+	}
+
+}

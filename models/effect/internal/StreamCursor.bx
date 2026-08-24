@@ -1,0 +1,34 @@
+import bxModules.bxEffect.models.effect.Effect;
+
+/** Runtime-private, single-consumption Stream cursor. */
+class {
+
+	variables.pullFactory = null;
+	variables.closeFactory = null;
+	variables.closed = new java.util.concurrent.atomic.AtomicBoolean( false );
+
+	function init( required function pullFactory, function closeFactory = () => Effect::succeed( null ) ) {
+		variables.pullFactory = arguments.pullFactory;
+		variables.closeFactory = arguments.closeFactory;
+		return this;
+	}
+
+	function pull() {
+		return Effect::suspend( () => variables.closed.get()
+			? Effect::succeed( attempt() )
+			: variables.pullFactory()
+		);
+	}
+
+	function close() {
+		return Effect::suspend( () => variables.closed.compareAndSet( false, true )
+			? variables.closeFactory()
+			: Effect::succeed( null )
+		);
+	}
+
+	boolean function isClosed() {
+		return variables.closed.get();
+	}
+
+}

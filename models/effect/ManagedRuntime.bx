@@ -1,0 +1,284 @@
+import bxModules.bxEffect.models.effect.Cause;
+import bxModules.bxEffect.models.effect.Effect;
+import bxModules.bxEffect.models.effect.EffectRuntime;
+import bxModules.bxEffect.models.effect.Exit;
+import bxModules.bxEffect.models.effect.Scope;
+import bxModules.bxEffect.models.effect.context.Context;
+import bxModules.bxEffect.models.effect.internal.LayerMemo;
+import bxModules.bxEffect.models.effect.internal.ThrowablePolicy;
+
+/**
+ * Explicitly owns one lazily built application Layer across many Effect runs.
+ *
+ * Managed services remain private and live until close begins. Every run still
+ * receives its own root Scope for local resources and child Fibers.
+ */
+class {
+
+	variables.applicationLayer = null;
+	variables.runtime = null;
+	variables.state = "Open";
+	variables.lock = new java.util.concurrent.locks.ReentrantLock();
+	variables.managedContext = null;
+	variables.managedScope = null;
+	variables.managedLayerMemo = null;
+	variables.buildFiber = null;
+	variables.buildOutcomeFuture = null;
+	variables.activeRuns = new java.util.concurrent.ConcurrentHashMap();
+	variables.closeOutcomeFuture = null;
+
+	ManagedRuntime function init( required any applicationLayer, struct options = {} ) {
+		if (
+			!isObject( arguments.applicationLayer )
+			|| !structKeyExists( arguments.applicationLayer, "build" )
+			|| !structKeyExists( arguments.applicationLayer, "_identity" )
+		) {
+			throw(
+				type: "BXEffect.InvalidManagedLayer",
+				message: "ManagedRuntime requires a Layer"
+			);
+		}
+		variables.applicationLayer = arguments.applicationLayer;
+		variables.runtime = new EffectRuntime( arguments.options );
+		return this;
+	}
+
+	static function make( required any applicationLayer, struct options = {} ) {
+		return new ManagedRuntime( arguments.applicationLayer, arguments.options );
+	}
+
+	function runSync( required Effect program ) {
+		return unwrap( runSyncExit( arguments.program ) );
+	}
+
+	function runSyncExit( required Effect program ) {
+		return runFork( arguments.program ).await();
+	}
+
+	function runFuture( required Effect program ) {
+		return runFutureExit( arguments.program ).then( ( completedExit ) => unwrap( completedExit ) );
+	}
+
+	function runFutureExit( required Effect program ) {
+		return runFork( arguments.program )._completionFuture();
+	}
+
+	function runFork( required Effect program ) {
+		variables.lock.lock();
+		try {
+			var accepted = variables.state == "Open";
+			var programToRun = accepted
+				? withManagedContext( arguments.program )
+				: Effect::fail( closedError() );
+			var runFiber = variables.runtime._runForkWithContext(
+				programToRun,
+				Context::empty()
+			);
+			if ( accepted ) {
+				variables.activeRuns.put( runFiber.id(), runFiber );
+				var runId = runFiber.id();
+				runFiber._terminationFuture().then( ( ignored ) => {
+					variables.activeRuns.remove( runId );
+					return null;
+				} );
+			}
+			return runFiber;
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	function close() {
+		try {
+			return closeFuture().get();
+		} catch ( any error ) {
+			ThrowablePolicy::rethrowIfFatal( error );
+			return Exit::failure( Cause::die( error ) );
+		}
+	}
+
+	function closeFuture() {
+		variables.lock.lock();
+		try {
+			if ( !isNull( variables.closeOutcomeFuture ) ) {
+				return variables.closeOutcomeFuture;
+			}
+
+			variables.state = "Closing";
+			var runsToStop = [];
+			for ( var activeFiber in variables.activeRuns.values() ) {
+				runsToStop.append( activeFiber );
+			}
+			var buildToStop = variables.buildFiber;
+			var buildToAwait = variables.buildOutcomeFuture;
+			for ( var runFiber in runsToStop ) {
+				runFiber.interrupt();
+			}
+			if ( !isNull( buildToStop ) ) {
+				buildToStop.interrupt();
+			}
+			variables.closeOutcomeFuture = futureNew(
+				() => completeClose( runsToStop, buildToStop, buildToAwait ),
+				variables.runtime.executor()
+			);
+			return variables.closeOutcomeFuture;
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	boolean function isClosed() {
+		variables.lock.lock();
+		try {
+			return variables.state == "Closed";
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	private function withManagedContext( required Effect program ) {
+		var programToRun = arguments.program;
+		return Effect::suspend( () => {
+			var buildAccess = contextBuildAccess();
+			if ( buildAccess.closed ) {
+				return Effect::fail( closedError() );
+			}
+			var dependentBuild = buildAccess.outcomeFuture.then(
+				( buildExit ) => buildExit
+			);
+			return Effect::fromBoxFuture( () => dependentBuild ).flatMap(
+				( buildExit ) => buildExit.isSuccess()
+					? programToRun.provide( buildExit.value() )
+					: Effect::_halt( buildExit.cause() )
+			);
+		} );
+	}
+
+	private struct function contextBuildAccess() {
+		variables.lock.lock();
+		try {
+			if ( variables.state != "Open" ) {
+				return { closed: true };
+			}
+			if ( !isNull( variables.managedContext ) ) {
+				var completedContext = futureNew();
+				completedContext.complete( Exit::success( variables.managedContext ) );
+				return { closed: false, outcomeFuture: completedContext };
+			}
+			if ( !isNull( variables.buildOutcomeFuture ) ) {
+				return { closed: false, outcomeFuture: variables.buildOutcomeFuture };
+			}
+
+			var buildScope = new Scope();
+			var buildMemo = new LayerMemo();
+			var layerToBuild = variables.applicationLayer;
+			var buildFiber = variables.runtime._runForkWithContext(
+				Effect::_buildLayer( layerToBuild, Context::empty() ),
+				Context::empty(),
+				buildScope,
+				buildMemo
+			);
+			var buildOutcome = buildFiber._terminationFuture().then(
+				( buildExit ) => finishBuildAttempt( buildExit, buildScope, buildMemo )
+			);
+			variables.managedScope = buildScope;
+			variables.managedLayerMemo = buildMemo;
+			variables.buildFiber = buildFiber;
+			variables.buildOutcomeFuture = buildOutcome;
+			return { closed: false, outcomeFuture: buildOutcome };
+		} finally {
+			variables.lock.unlock();
+		}
+	}
+
+	private function finishBuildAttempt(
+		required any completedExit,
+		required Scope buildScope,
+		required LayerMemo buildMemo
+	) {
+		var buildExit = arguments.completedExit;
+		if ( buildExit.isFailure() ) {
+			buildExit = variables.runtime._closeScopeWithExit( buildExit, arguments.buildScope );
+		}
+
+		variables.lock.lock();
+		try {
+			if ( buildExit.isSuccess() && variables.state == "Open" ) {
+				variables.managedContext = buildExit.value();
+			} else if ( buildExit.isFailure() ) {
+				variables.managedScope = null;
+				variables.managedLayerMemo = null;
+				variables.buildFiber = null;
+				variables.buildOutcomeFuture = null;
+			}
+		} finally {
+			variables.lock.unlock();
+		}
+		return buildExit;
+	}
+
+	private function completeClose(
+		required array runsToStop,
+		any buildToStop = null,
+		any buildToAwait = null
+	) {
+		try {
+			for ( var runFiber in arguments.runsToStop ) {
+				runFiber._awaitTermination();
+			}
+			if ( !isNull( arguments.buildToStop ) ) {
+				arguments.buildToStop._awaitTermination();
+			}
+			if ( !isNull( arguments.buildToAwait ) ) {
+				arguments.buildToAwait.get();
+			}
+
+			variables.lock.lock();
+			try {
+				var scopeToClose = variables.managedScope;
+			} finally {
+				variables.lock.unlock();
+			}
+			var closeExit = isNull( scopeToClose )
+				? Exit::success( null )
+				: variables.runtime._closeScopeWithExit( Exit::success( null ), scopeToClose );
+		} catch ( any error ) {
+			ThrowablePolicy::rethrowIfFatal( error );
+			var closeExit = Exit::failure( Cause::die( error ) );
+		}
+
+		variables.lock.lock();
+		try {
+			variables.state = "Closed";
+			variables.managedContext = null;
+			variables.managedScope = null;
+			variables.managedLayerMemo = null;
+			variables.buildFiber = null;
+			variables.buildOutcomeFuture = null;
+			variables.activeRuns.clear();
+		} finally {
+			variables.lock.unlock();
+		}
+		return closeExit;
+	}
+
+	private function unwrap( required any completedExit ) {
+		if ( arguments.completedExit.isSuccess() ) {
+			return arguments.completedExit.value();
+		}
+		throw(
+			type: "BXEffect.EffectFailure",
+			message: arguments.completedExit.cause().pretty(),
+			extendedInfo: arguments.completedExit.cause()
+		);
+	}
+
+	private struct function closedError() {
+		return {
+			_tag : "ManagedRuntimeClosed",
+			type : "BXEffect.ManagedRuntimeClosed",
+			message : "ManagedRuntime is closing or closed"
+		};
+	}
+
+}

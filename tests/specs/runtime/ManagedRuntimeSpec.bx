@@ -1,0 +1,397 @@
+import models.effect.Effect@bxEffect;
+import models.effect.ManagedRuntime@bxEffect;
+import models.effect.Queue@bxEffect;
+import models.effect.Semaphore@bxEffect;
+import models.effect.context.Context@bxEffect;
+import models.effect.context.Layer@bxEffect;
+import models.effect.context.ServiceTag@bxEffect;
+import models.effect.testing.TestClock@bxEffect;
+import java.util.concurrent.atomic.AtomicInteger;
+import tests.resources.AsyncTestSupport;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "ManagedRuntime", () => {
+
+			it( "builds lazily once, reuses services, and releases them on close", () => {
+				var builds = 0;
+				var releases = [];
+				var tagToUse = ServiceTag::of( "managed/Service" );
+				var applicationLayer = Layer::scoped(
+					tagToUse,
+					Effect::acquireRelease(
+						Effect::sync( () => {
+							builds++;
+							return { id: builds };
+						} ),
+						( serviceValue ) => Effect::sync( () => releases.append( serviceValue.id ) )
+					)
+				);
+				var runtime = ManagedRuntime::make( applicationLayer );
+
+				expect( builds ).toBe( 0 );
+				expect( runtime.runSync( Effect::service( tagToUse ) ).id ).toBe( 1 );
+				expect( runtime.runSync( Effect::service( tagToUse ) ).id ).toBe( 1 );
+				expect( builds ).toBe( 1 );
+				expect( releases ).toBeEmpty();
+
+				var closeExit = runtime.close();
+				expect( closeExit.isSuccess() ).toBeTrue();
+				expect( releases ).toBe( [ 1 ] );
+				expect( runtime.isClosed() ).toBeTrue();
+			} );
+
+			it( "shares a concurrent first build", () => {
+				var builds = new java.util.concurrent.atomic.AtomicInteger( 0 );
+				var tagToUse = ServiceTag::of( "managed/Concurrent" );
+				var applicationLayer = new Layer( ( baseContext ) =>
+					Effect::fromBoxFuture( () => futureNew( () => {
+						builds.incrementAndGet();
+						sleep( 50 );
+						return baseContext.add( tagToUse, "shared" );
+					} ) )
+				);
+				var runtime = ManagedRuntime::make( applicationLayer );
+				var first = runtime.runFuture( Effect::service( tagToUse ) );
+				var second = runtime.runFuture( Effect::service( tagToUse ) );
+
+				expect( first.get() ).toBe( "shared" );
+				expect( second.get() ).toBe( "shared" );
+				expect( builds.get() ).toBe( 1 );
+				runtime.close();
+			} );
+
+			it( "retries a failed build after cleaning partial resources", () => {
+				var attempts = 0;
+				var released = [];
+				var tagToUse = ServiceTag::of( "managed/Retry" );
+				var applicationLayer = new Layer( ( baseContext ) =>
+					Effect::acquireRelease(
+						Effect::sync( () => {
+							attempts++;
+							return attempts;
+						} ),
+						( acquiredAttempt ) => Effect::sync( () => released.append( acquiredAttempt ) )
+					).flatMap( ( acquiredAttempt ) => acquiredAttempt == 1
+						? Effect::fail( "build-failed" )
+						: Effect::succeed( baseContext.add( tagToUse, acquiredAttempt ) )
+					)
+				);
+				var runtime = ManagedRuntime::make( applicationLayer );
+
+				var firstExit = runtime.runSyncExit( Effect::service( tagToUse ) );
+				expect( firstExit.cause().error() ).toBe( "build-failed" );
+				expect( released ).toBe( [ 1 ] );
+				expect( runtime.runSync( Effect::service( tagToUse ) ) ).toBe( 2 );
+				expect( released ).toBe( [ 1 ] );
+				runtime.close();
+				expect( released ).toBe( [ 1, 2 ] );
+			} );
+
+			it( "retries a defective build after cleaning partial resources", () => {
+				var attempts = 0;
+				var releases = [];
+				var tagToUse = ServiceTag::of( "managed/DefectRetry" );
+				var applicationLayer = new Layer( ( baseContext ) =>
+					Effect::acquireRelease(
+						Effect::sync( () => {
+							attempts++;
+							return attempts;
+						} ),
+						( acquiredAttempt ) => Effect::sync( () => releases.append( acquiredAttempt ) )
+					).flatMap( ( acquiredAttempt ) => {
+						if ( acquiredAttempt == 1 ) {
+							return Effect::sync( () => {
+								throw( type: "BXEffect.ManagedBuildDefect", message: "broken build" );
+							} );
+						}
+						return Effect::succeed( baseContext.add( tagToUse, acquiredAttempt ) );
+					} )
+				);
+				var runtime = ManagedRuntime::make( applicationLayer );
+
+				var firstExit = runtime.runSyncExit( Effect::service( tagToUse ) );
+				expect( firstExit.cause().kind() ).toBe( "Die" );
+				expect( releases ).toBe( [ 1 ] );
+				expect( runtime.runSync( Effect::service( tagToUse ) ) ).toBe( 2 );
+				runtime.close();
+				expect( releases ).toBe( [ 1, 2 ] );
+			} );
+
+			it( "keeps each run Scope local while managed services remain live", () => {
+				var managedReleases = 0;
+				var runReleases = [];
+				var tagToUse = ServiceTag::of( "managed/Scoped" );
+				var applicationLayer = Layer::scoped(
+					tagToUse,
+					Effect::acquireRelease(
+						Effect::succeed( "service" ),
+						( ignored ) => Effect::sync( () => managedReleases++ )
+					)
+				);
+				var runtime = ManagedRuntime::make( applicationLayer );
+				var localProgram = Effect::acquireRelease(
+					Effect::sync( () => runReleases.len() + 1 ),
+					( runId ) => Effect::sync( () => runReleases.append( runId ) )
+				).flatMap( ( ignored ) => Effect::service( tagToUse ) );
+
+				expect( runtime.runSync( localProgram ) ).toBe( "service" );
+				expect( runtime.runSync( localProgram ) ).toBe( "service" );
+				expect( runReleases ).toBe( [ 1, 2 ] );
+				expect( managedReleases ).toBe( 0 );
+				runtime.close();
+				expect( managedReleases ).toBe( 1 );
+			} );
+
+			it( "isolates per-run Context and keeps managed services through failed runs", () => {
+				var releases = 0;
+				var tagToUse = ServiceTag::of( "managed/Isolation" );
+				var runtime = ManagedRuntime::make( Layer::scoped(
+					tagToUse,
+					Effect::acquireRelease(
+						Effect::succeed( "managed" ),
+						( ignored ) => Effect::sync( () => releases++ )
+					)
+				) );
+				var localContext = Context::empty().add( tagToUse, "local" );
+
+				expect( runtime.runSync( Effect::service( tagToUse ).provide( localContext ) ) ).toBe( "local" );
+				expect( runtime.runSyncExit( Effect::fail( "expected" ) ).cause().kind() ).toBe( "Fail" );
+				expect( runtime.runSyncExit( Effect::sync( () => {
+					throw( type: "BXEffect.ManagedRunDefect", message: "broken run" );
+				} ) ).cause().kind() ).toBe( "Die" );
+				expect( runtime.runSync( Effect::service( tagToUse ) ) ).toBe( "managed" );
+				expect( releases ).toBe( 0 );
+				runtime.close();
+				expect( releases ).toBe( 1 );
+			} );
+
+			it( "closes idempotently before build and rejects later user work", () => {
+				var builds = 0;
+				var userRuns = 0;
+				var tagToUse = ServiceTag::of( "managed/NeverBuilt" );
+				var runtime = ManagedRuntime::make( Layer::effect(
+					tagToUse,
+					Effect::sync( () => {
+						builds++;
+						return "unused";
+					} )
+				) );
+
+				var firstCloseFuture = runtime.closeFuture();
+				var secondCloseFuture = runtime.closeFuture();
+				expect( firstCloseFuture ).toBe( secondCloseFuture );
+				expect( firstCloseFuture.get().isSuccess() ).toBeTrue();
+				expect( runtime.close().isSuccess() ).toBeTrue();
+				var rejected = runtime.runSyncExit( Effect::sync( () => userRuns++ ) );
+
+				expect( builds ).toBe( 0 );
+				expect( userRuns ).toBe( 0 );
+				expect( rejected.cause().error()._tag ).toBe( "ManagedRuntimeClosed" );
+			} );
+
+			it( "interrupts active runs and finalizes them before managed cleanup", () => {
+				var events = [];
+				var clock = new TestClock();
+				var tagToUse = ServiceTag::of( "managed/Interrupt" );
+				var applicationLayer = Layer::scoped(
+					tagToUse,
+					Effect::acquireRelease(
+						Effect::succeed( "service" ),
+						( ignored ) => Effect::sync( () => events.append( "managed" ) )
+					)
+				);
+				var runtime = ManagedRuntime::make( applicationLayer, { clock: clock } );
+				var activeFiber = runtime.runFork(
+					Effect::service( tagToUse ).flatMap( ( ignored ) =>
+						Effect::sleep( 100, "seconds" )
+					).ensuring( Effect::sync( () => events.append( "run" ) ) )
+				);
+				AsyncTestSupport::awaitCondition( () => clock.pendingCount() == 1 );
+
+				var closeExit = runtime.close();
+				expect( closeExit.isSuccess() ).toBeTrue();
+				expect( events ).toBe( [ "run", "managed" ] );
+				expect( activeFiber.await().cause().isInterrupted() ).toBeTrue();
+				expect( clock.pendingCount() ).toBe( 0 );
+			} );
+
+			it( "terminates blocked coordination runs before managed cleanup", () => {
+				var events = [];
+				var started = new AtomicInteger( 0 );
+				var queueSource = Queue::unbounded();
+				var permitSource = Semaphore::make( 0 );
+				var tagToUse = ServiceTag::of( "managed/Blocking" );
+				var applicationLayer = Layer::scoped(
+					tagToUse,
+					Effect::acquireRelease(
+						Effect::succeed( "service" ),
+						( ignored ) => Effect::sync( () => events.append( "managed" ) )
+					)
+				);
+				var runtime = ManagedRuntime::make( applicationLayer );
+				var queueFiber = runtime.runFork(
+					Effect::sync( () => started.incrementAndGet() )
+						.flatMap( () => queueSource.take() )
+						.ensuring( Effect::sync( () => events.append( "queue" ) ) )
+				);
+				var semaphoreFiber = runtime.runFork(
+					Effect::sync( () => started.incrementAndGet() )
+						.flatMap( () => permitSource.acquire() )
+						.ensuring( Effect::sync( () => events.append( "semaphore" ) ) )
+				);
+				AsyncTestSupport::awaitCondition( () => started.get() == 2 );
+
+				var closeExit = runtime.close();
+
+				expect( closeExit.isSuccess() ).toBeTrue();
+				expect( queueFiber.await().cause().isInterrupted() ).toBeTrue();
+				expect( semaphoreFiber.await().cause().isInterrupted() ).toBeTrue();
+				expect( events.len() ).toBe( 3 );
+				expect( events.last() ).toBe( "managed" );
+				expect( listFind( events.toList(), "queue" ) > 0 ).toBeTrue();
+				expect( listFind( events.toList(), "semaphore" ) > 0 ).toBeTrue();
+			} );
+
+			it( "closes active native future and concurrent collection runs", () => {
+				var events = [];
+				var started = new AtomicInteger( 0 );
+				var queueSource = Queue::unbounded();
+				var permitSource = Semaphore::make( 0 );
+				var tagToUse = ServiceTag::of( "managed/ConcurrentClose" );
+				var runtime = ManagedRuntime::make( Layer::scoped(
+					tagToUse,
+					Effect::acquireRelease(
+						Effect::succeed( "service" ),
+						( ignored ) => Effect::sync( () => events.append( "managed" ) )
+					)
+				) );
+				var asyncFiber = runtime.runFork(
+					Effect::fromBoxFuture( () => {
+						started.incrementAndGet();
+						return futureNew();
+					} ).ensuring( Effect::sync( () => events.append( "async" ) ) )
+				);
+				var allFiber = runtime.runFork(
+					Effect::all( [
+						Effect::sync( () => started.incrementAndGet() ).flatMap( () => queueSource.take() ),
+						Effect::sync( () => started.incrementAndGet() ).flatMap( () => permitSource.acquire() )
+					] ).ensuring( Effect::sync( () => events.append( "all" ) ) )
+				);
+				AsyncTestSupport::awaitCondition( () => started.get() == 3 );
+
+				expect( runtime.close().isSuccess() ).toBeTrue();
+				expect( asyncFiber.await().cause().isInterrupted() ).toBeTrue();
+				expect( allFiber.await().cause().isInterrupted() ).toBeTrue();
+				expect( events.last() ).toBe( "managed" );
+				expect( listFind( events.toList(), "async" ) > 0 ).toBeTrue();
+				expect( listFind( events.toList(), "all" ) > 0 ).toBeTrue();
+			} );
+
+			it( "runs managed finalizers in LIFO order and retains cleanup failures", () => {
+				var events = [];
+				var tagToUse = ServiceTag::of( "managed/CleanupFailure" );
+				var applicationLayer = new Layer( ( baseContext ) =>
+					Effect::acquireRelease(
+						Effect::succeed( "first" ),
+						( ignored ) => Effect::sync( () => events.append( "first" ) )
+							.flatMap( () => Effect::fail( "first-release" ) )
+					).flatMap( ( ignoredFirst ) =>
+						Effect::acquireRelease(
+							Effect::succeed( "second" ),
+							( ignored ) => Effect::sync( () => events.append( "second" ) )
+								.flatMap( () => Effect::fail( "second-release" ) )
+						)
+					).as( baseContext.add( tagToUse, "ready" ) )
+				);
+				var runtime = ManagedRuntime::make( applicationLayer );
+
+				expect( runtime.runSync( Effect::service( tagToUse ) ) ).toBe( "ready" );
+				var closeExit = runtime.close();
+
+				expect( events ).toBe( [ "second", "first" ] );
+				expect( closeExit.cause().kind() ).toBe( "Sequential" );
+				expect( closeExit.cause().failures() ).toBe( [ "second-release", "first-release" ] );
+				expect( runtime.close() ).toBe( closeExit );
+			} );
+
+			it( "returns native BoxFutures and Fibers", () => {
+				var tagToUse = ServiceTag::of( "managed/Boundaries" );
+				var runtime = ManagedRuntime::make( Layer::succeed( tagToUse, 9 ) );
+				var futureExit = runtime.runFutureExit( Effect::service( tagToUse ) );
+				var futureValue = runtime.runFuture( Effect::service( tagToUse ) );
+				var fiber = runtime.runFork( Effect::service( tagToUse ) );
+
+				expect( futureExit.getClass().getName() ).toInclude( "BoxFuture" );
+				expect( futureValue.get() ).toBe( 9 );
+				expect( fiber.join() ).toBe( 9 );
+				runtime.close();
+			} );
+
+			it( "contains observer failures across build, run, and close", () => {
+				var releases = 0;
+				var tagToUse = ServiceTag::of( "managed/Observer" );
+				var runtime = ManagedRuntime::make(
+					Layer::scoped(
+						tagToUse,
+						Effect::acquireRelease(
+							Effect::succeed( "observed" ),
+							( ignored ) => Effect::sync( () => releases++ )
+						)
+					),
+					{ observer: ( eventName, details ) => {
+						throw( type: "BXEffect.ManagedObserverFailure", message: eventName );
+					} }
+				);
+
+				expect( runtime.runSync( Effect::service( tagToUse ) ) ).toBe( "observed" );
+				expect( runtime.close().isSuccess() ).toBeTrue();
+				expect( releases ).toBe( 1 );
+			} );
+
+			it( "orders managed observer completion after Scope cleanup", () => {
+				var events = [];
+				var tagToUse = ServiceTag::of( "managed/ObserverOrder" );
+				var runtime = ManagedRuntime::make(
+					Layer::scoped(
+						tagToUse,
+						Effect::acquireRelease(
+							Effect::succeed( "observed" ),
+							( ignored ) => Effect::succeed( null )
+						)
+					),
+					{ observer: ( eventName, details ) => events.append( eventName ) }
+				);
+
+				runtime.runSync( Effect::service( tagToUse ) );
+				var startsBeforeClose = countEventNames( events, "runtime:started" );
+				var completionsBeforeClose = countEventNames( events, "runtime:completed" );
+				runtime.close();
+
+				expect( countEventNames( events, "runtime:started" ) ).toBe( startsBeforeClose );
+				expect( countEventNames( events, "runtime:completed" ) ).toBe( completionsBeforeClose + 1 );
+				expect( events[ events.len() - 2 ] ).toBe( "scope:closing" );
+				expect( events[ events.len() - 1 ] ).toBe( "scope:closed" );
+				expect( events.last() ).toBe( "runtime:completed" );
+			} );
+
+			it( "rejects values that are not Layers", () => {
+				expect( () => ManagedRuntime::make( {} ) )
+					.toThrow( type: "BXEffect.InvalidManagedLayer" );
+			} );
+
+		} );
+	}
+
+	private numeric function countEventNames( required array events, required string eventName ) {
+		var count = 0;
+		for ( var recordedName in arguments.events ) {
+			if ( recordedName == arguments.eventName ) {
+				count++;
+			}
+		}
+		return count;
+	}
+
+}

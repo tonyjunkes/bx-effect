@@ -14,15 +14,20 @@ class {
 	variables.future = null;
 	variables.fiberId = "";
 	variables.control = null;
+	variables.terminationFuture = null;
 
 	Fiber function init(
 		required any future,
 		required string fiberId,
-		required FiberControl control
+		required FiberControl control,
+		any terminationFuture = null
 	) {
 		variables.future = arguments.future;
 		variables.fiberId = arguments.fiberId;
 		variables.control = arguments.control;
+		variables.terminationFuture = isNull( arguments.terminationFuture )
+			? arguments.future.then( ( completedExit ) => completedExit )
+			: arguments.terminationFuture;
 		return this;
 	}
 
@@ -77,6 +82,20 @@ class {
 	/** Internal dependent completion used by runtime concurrency operators. */
 	function _completionFuture() {
 		return variables.future.then( ( completedExit ) => completedExit );
+	}
+
+	/**
+	 * Internal completion that resolves only after interpretation and Scope
+	 * cleanup finish, including when the public future was canceled.
+	 */
+	function _terminationFuture() {
+		return variables.terminationFuture.then( ( completedExit ) => completedExit );
+	}
+
+	/** Internal blocking cleanup-completion wait used by managed ownership. */
+	function _awaitTermination() {
+		variables.terminationFuture.get();
+		return this;
 	}
 
 }

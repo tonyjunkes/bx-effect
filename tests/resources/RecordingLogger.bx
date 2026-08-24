@@ -1,0 +1,29 @@
+class {
+
+	variables.entries = [];
+
+	function trace( required string message ) {
+		variables.entries.append( { level: "trace", message: arguments.message } );
+	}
+
+	function debug( required string message ) {
+		variables.entries.append( { level: "debug", message: arguments.message } );
+	}
+
+	function info( required string message ) {
+		variables.entries.append( { level: "info", message: arguments.message } );
+	}
+
+	function warn( required string message ) {
+		variables.entries.append( { level: "warn", message: arguments.message } );
+	}
+
+	function error( required string message ) {
+		variables.entries.append( { level: "error", message: arguments.message } );
+	}
+
+	array function entries() {
+		return variables.entries;
+	}
+
+}

@@ -1,4 +1,6 @@
+import bxModules.bxEffect.models.effect.Cause;
 import bxModules.bxEffect.models.effect.EffectRuntime;
+import bxModules.bxEffect.models.effect.Exit;
 import bxModules.bxEffect.models.effect.Result;
 import bxModules.bxEffect.models.effect.context.Context;
 import bxModules.bxEffect.models.effect.context.ServiceTag;
@@ -178,7 +180,7 @@ class {
 		var allOptions = { concurrency: 1 };
 		var discardResults = false;
 		for ( var optionName in arguments.options ) {
-			if ( listFindNoCase( "concurrency,discard", optionName ) == 0 ) {
+			if ( listFindNoCase( "concurrency,discard,mode", optionName ) == 0 ) {
 				throw(
 					type: "BXEffect.InvalidForEachOption",
 					message: "Effect.forEach() does not support option [#optionName#]"
@@ -187,6 +189,9 @@ class {
 		}
 		if ( structKeyExists( arguments.options, "concurrency" ) ) {
 			allOptions.concurrency = arguments.options.concurrency;
+		}
+		if ( structKeyExists( arguments.options, "mode" ) ) {
+			allOptions.mode = arguments.options.mode;
 		}
 		if ( structKeyExists( arguments.options, "discard" ) ) {
 			if ( !isBoolean( arguments.options.discard ) ) {
@@ -249,10 +254,10 @@ class {
 	}
 
 	/** Internal runtime constructor used to preserve an existing Cause. */
-	static function _halt( required any cause ) {
+	static function _halt( required any failureCause ) {
 		return new Effect( {
 			kind : "Halt",
-			cause : arguments.cause
+			cause : arguments.failureCause
 		} );
 	}
 
@@ -275,6 +280,60 @@ class {
 	function tap( required function observer ) {
 		var effectfulObserver = arguments.observer;
 		return flatMap( ( value ) => effectfulObserver( value ).as( value ) );
+	}
+
+	/**
+	 * Runs an Effect for a pure expected failure and then preserves that failure.
+	 * A handler failure is appended sequentially to the original Cause.
+	 */
+	function tapError( required function handler ) {
+		var errorHandler = arguments.handler;
+		return catchAll( ( error ) => Effect::suspend( () => errorHandler( error ) )
+			.foldCause(
+				( handlerCause ) => Effect::_halt(
+					Cause::sequential( Cause::fail( error ), handlerCause )
+				),
+				( ignored ) => Effect::fail( error )
+			)
+		);
+	}
+
+	/**
+	 * Runs an Effect for any Cause and then preserves that Cause. A handler
+	 * failure is appended sequentially to the original Cause.
+	 */
+	function tapCause( required function handler ) {
+		var causeHandler = arguments.handler;
+		return catchCause( ( failureCause ) => Effect::suspend( () => causeHandler( failureCause ) )
+			.foldCause(
+				( handlerCause ) => Effect::_halt(
+					Cause::sequential( failureCause, handlerCause )
+				),
+				( ignored ) => Effect::_halt( failureCause )
+			)
+		);
+	}
+
+	/** Captures success or the complete Cause as a successful Exit value. */
+	function exit() {
+		return foldCause(
+			( failureCause ) => Effect::succeed( Exit::failure( failureCause ) ),
+			( value ) => Effect::succeed( Exit::success( value ) )
+		);
+	}
+
+	/** Sequentially pairs this Effect with another Effect. */
+	function zip( required Effect other ) {
+		return zipWith( arguments.other, ( left, right ) => [ left, right ] );
+	}
+
+	/** Sequentially combines this Effect and another Effect. */
+	function zipWith( required Effect other, required function combiner ) {
+		var rightProgram = arguments.other;
+		var combineValues = arguments.combiner;
+		return flatMap( ( left ) => rightProgram.map(
+			( right ) => combineValues( left, right )
+		) );
 	}
 
 	function as( any value ) {

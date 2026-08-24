@@ -24,5 +24,7 @@ The scripts cover:
 - 100,000-node `map` and `flatMap` interpretation;
 - delayed async execution and concurrency scaling;
 - runtime-local Layer sharing;
+- repeated `ManagedRuntime` boundaries with one application Layer build and release;
+- 100,000-value Stream mapping, 10,000 repeated pulls, Queue consumption,
+  early interruption, and an indicative retained-memory reading;
 - Context lookup/provision and Scope finalization.
-
