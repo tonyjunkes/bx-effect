@@ -12,7 +12,9 @@ All notable changes to BX Effect are documented here.
 - Direct iterative `map` interpretation, lazy executor resolution, and reusable
   concurrent completion futures.
 - Stack-safe Cause inspection, transformation, and rendering.
-- Repeatable warmup/median benchmark reporting and an expanded 176-spec suite.
+- Repeatable warmup/median benchmark reporting and an expanded 181-spec suite.
+- A JDK `ArrayDeque` continuation stack that preserves the BoxLang interpreter
+  and public API while materially improving deep Map and FlatMap execution.
 - Explicit `ManagedRuntime` ownership for one lazily shared application Layer.
 - Focused `forEach` accumulation, `tapError`, `tapCause`, `exit`, `zip`, and
   `zipWith` operators.

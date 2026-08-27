@@ -1,0 +1,66 @@
+<bx:script>
+import models.effect.Effect@bxEffect;
+import java:jdk.jfr.Configuration;
+import java:jdk.jfr.Recording;
+import java:java.lang.System;
+import java:java.nio.file.Files;
+import java:java.nio.file.Paths;
+
+cliOptions = cliGetArgs().options;
+mode = cliOptions.mode ?: "flatMap";
+iterations = cliOptions.iterations ?: 100000;
+recordedRuns = cliOptions.runs ?: 3;
+outputPath = cliOptions.output ?: "benchmarks/build/effect-runtime-#mode#.jfr";
+
+program = Effect::succeed( 0 );
+switch ( mode ) {
+	case "map":
+		for ( index = 1; index <= iterations; index++ ) {
+			program = program.map( ( value ) => value + 1 );
+		}
+		break;
+	case "flatMap":
+		for ( index = 1; index <= iterations; index++ ) {
+			program = program.flatMap( ( value ) => Effect::succeed( value + 1 ) );
+		}
+		break;
+	default:
+		throw(
+			type: "BXEffect.InvalidProfileMode",
+			message: "Profile mode must be map or flatMap"
+		);
+}
+
+runProgram = () => Effect::runSync( program );
+if ( runProgram() != iterations ) {
+	throw(
+		type: "BXEffect.ProfileFailure",
+		message: "Profile warmup returned an incorrect result"
+	);
+}
+
+System.gc();
+profilePath = Paths.get( outputPath ).toAbsolutePath();
+if ( !isNull( profilePath.getParent() ) ) {
+	Files.createDirectories( profilePath.getParent() );
+}
+profileRecording = new Recording( Configuration.getConfiguration( "profile" ) );
+profileRecording.start();
+startedAt = System.nanoTime();
+for ( runIndex = 1; runIndex <= recordedRuns; runIndex++ ) {
+	if ( runProgram() != iterations ) {
+		throw(
+			type: "BXEffect.ProfileFailure",
+			message: "Recorded profile returned an incorrect result"
+		);
+	}
+}
+elapsedMs = int( ( System.nanoTime() - startedAt ) / 1000000 );
+profileRecording.stop();
+profileRecording.dump( profilePath );
+profileRecording.close();
+
+writeOutput(
+	"mode=#mode# iterations=#iterations# runs=#recordedRuns# elapsedMs=#elapsedMs# recording=#outputPath#"
+);
+</bx:script>

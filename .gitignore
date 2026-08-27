@@ -8,3 +8,8 @@ testbox/
 .DS_Store
 .engine
 .agents/specs/
+.gradle/
+**/build/
+
+# Miscellaneous
+benchmarks/*/*

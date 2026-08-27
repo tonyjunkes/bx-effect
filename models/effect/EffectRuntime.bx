@@ -8,6 +8,7 @@ import bxModules.bxEffect.models.effect.internal.FiberControl;
 import bxModules.bxEffect.models.effect.internal.LayerMemo;
 import bxModules.bxEffect.models.effect.internal.ThrowablePolicy;
 import bxModules.bxEffect.models.effect.Scope;
+import java.util.ArrayDeque;
 
 /**
  * Iterative Effect interpreter. Async waits intentionally occur on BoxLang's
@@ -172,7 +173,7 @@ class {
 	) {
 		notifyObserver( "runtime:started", {} );
 		var current = arguments.program._instruction();
-		var continuations = [];
+		var continuations = new ArrayDeque();
 		var runtimeContext = arguments.initialContext;
 		var ownsScope = isNull( arguments.sharedScope );
 		var runtimeScope = ownsScope ? new Scope() : arguments.sharedScope;
@@ -194,7 +195,7 @@ class {
 			}
 			switch ( current.kind ) {
 				case "Succeed":
-					if ( continuations.len() == 0 ) {
+					if ( continuations.isEmpty() ) {
 						return finishExit(
 							Exit::success( current.value ),
 							runtimeScope,
@@ -202,7 +203,7 @@ class {
 							arguments.controlState
 						);
 					}
-					var successFrame = continuations.pop();
+					var successFrame = continuations.removeLast();
 					if ( successFrame.kind == "RestoreContext" ) {
 						runtimeContext = successFrame.context;
 						break;
@@ -218,7 +219,7 @@ class {
 							break;
 						}
 						if ( successFrame.kind == "ProvideLayer" ) {
-							continuations.append( {
+							continuations.addLast( {
 								kind : "RestoreContext",
 								context : runtimeContext
 							} );
@@ -238,7 +239,7 @@ class {
 							break;
 						}
 						if ( successFrame.kind == "RetryResume" ) {
-							continuations.append( {
+							continuations.addLast( {
 								kind : "Retry",
 								effect : successFrame.effect,
 								schedule : successFrame.schedule,
@@ -259,7 +260,7 @@ class {
 									variables.clock.now()
 								);
 								if ( repeatDecision.continue ) {
-									continuations.append( {
+									continuations.addLast( {
 										kind : "RepeatResume",
 										effect : successFrame.effect,
 										schedule : successFrame.schedule,
@@ -278,7 +279,7 @@ class {
 							break;
 						}
 						if ( successFrame.kind == "RepeatResume" ) {
-							continuations.append( {
+							continuations.addLast( {
 								kind : "Repeat",
 								effect : successFrame.effect,
 								schedule : successFrame.schedule,
@@ -318,8 +319,8 @@ class {
 
 				case "Halt":
 					var recovered = false;
-					while ( continuations.len() > 0 ) {
-						var failureFrame = continuations.pop();
+					while ( !continuations.isEmpty() ) {
+						var failureFrame = continuations.removeLast();
 						if ( failureFrame.kind == "CompleteLayerBuild" ) {
 							runtimeLayerMemo.completeFailure(
 								failureFrame.layerId,
@@ -362,7 +363,7 @@ class {
 										delay : retryDecision.delay,
 										unit : retryDecision.unit
 									} );
-									continuations.append( {
+									continuations.addLast( {
 										kind : "RetryResume",
 										effect : failureFrame.effect,
 										schedule : failureFrame.schedule,
@@ -718,7 +719,7 @@ class {
 					break;
 
 					case "ProvideContext":
-					continuations.append( {
+					continuations.addLast( {
 						kind : "RestoreContext",
 						context : runtimeContext
 					} );
@@ -728,7 +729,7 @@ class {
 
 					case "ProvideLayer":
 						try {
-							continuations.append( {
+							continuations.addLast( {
 								kind : "ProvideLayer",
 								layer : current.layer,
 								effect : current.effect
@@ -747,7 +748,7 @@ class {
 							var layerIdentity = current.layer._identity();
 							var layerBuild = runtimeLayerMemo.begin( layerIdentity );
 							if ( layerBuild.owner ) {
-								continuations.append( {
+								continuations.addLast( {
 									kind : "CompleteLayerBuild",
 									layerId : layerIdentity,
 									outcomeFuture : layerBuild.outcomeFuture
@@ -785,7 +786,7 @@ class {
 						break;
 
 				case "AcquireRelease":
-					continuations.append( {
+					continuations.addLast( {
 						kind : "RegisterFinalizer",
 						release : current.release
 					} );
@@ -793,7 +794,7 @@ class {
 					break;
 
 				case "Ensuring":
-					continuations.append( {
+					continuations.addLast( {
 						kind : "Ensuring",
 						handler : current.handler
 					} );
@@ -801,7 +802,7 @@ class {
 					break;
 
 				case "FlatMap":
-					continuations.append( {
+					continuations.addLast( {
 						kind : "FlatMap",
 						mapper : current.mapper
 					} );
@@ -809,7 +810,7 @@ class {
 					break;
 
 				case "Map":
-					continuations.append( {
+					continuations.addLast( {
 						kind : "Map",
 						mapper : current.mapper
 					} );
@@ -817,7 +818,7 @@ class {
 					break;
 
 				case "FoldCause":
-					continuations.append( {
+					continuations.addLast( {
 						kind : "FoldCause",
 						onFailure : current.onFailure,
 						onSuccess : current.onSuccess
@@ -826,7 +827,7 @@ class {
 					break;
 
 				case "Retry":
-					continuations.append( {
+					continuations.addLast( {
 						kind : "Retry",
 						effect : current.effect,
 						schedule : current.schedule,
@@ -837,7 +838,7 @@ class {
 					break;
 
 				case "Repeat":
-					continuations.append( {
+					continuations.addLast( {
 						kind : "Repeat",
 						effect : current.effect,
 						schedule : current.schedule,

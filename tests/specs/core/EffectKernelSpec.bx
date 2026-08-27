@@ -122,6 +122,41 @@ class extends="testbox.system.BaseSpec" {
 				expect( exit.value() ).toBe( depth );
 			} );
 
+			it( "interprets deep map chains without growing the JVM stack", () => {
+				var depth = 10000;
+				var program = Effect::succeed( 0 );
+
+				for ( var index = 1; index <= depth; index++ ) {
+					program = program.map( ( value ) => value + 1 );
+				}
+
+				var exit = Effect::runSyncExit( program );
+
+				expect( exit.isSuccess() ).toBeTrue();
+				expect( exit.value() ).toBe( depth );
+			} );
+
+			it( "unwinds mixed continuation frames in LIFO order", () => {
+				var events = [];
+				var program = Effect::succeed( 1 )
+					.map( ( value ) => {
+						events.append( "map" );
+						return value + 1;
+					} )
+					.flatMap( ( value ) => {
+						events.append( "flatMap:#value#" );
+						return Effect::fail( "expected" );
+					} )
+					.ensuring( Effect::sync( () => events.append( "cleanup" ) ) )
+					.catchAll( ( error ) => Effect::sync( () => {
+						events.append( "recover:#error#" );
+						return "done";
+					} ) );
+
+				expect( Effect::runSync( program ) ).toBe( "done" );
+				expect( events ).toBe( [ "map", "flatMap:2", "cleanup", "recover:expected" ] );
+			} );
+
 			it( "preserves sequential and parallel Cause trees", () => {
 				var effectCause = Cause::sequential(
 					Cause::fail( "first" ),

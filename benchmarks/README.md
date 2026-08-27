@@ -19,9 +19,22 @@ demonstrable allocation or complexity problem without materially regressing
 other scenarios. Record the BoxLang version, Java version, executor override,
 and machine context with any published result.
 
+Capture a prebuilt kernel graph with Java Flight Recorder after its warmup:
+
+```bash
+box boxlang cli --bx-config tests/boxlang.json benchmarks/EffectRuntimeProfile.bxm --mode=map
+box boxlang cli --bx-config tests/boxlang.json benchmarks/EffectRuntimeProfile.bxm --mode=flatMap
+```
+
+The recordings are written under the ignored `benchmarks/build/` directory by
+default. Use `jfr view hot-methods` and `jfr view allocation-by-class` to inspect
+them.
+
 The scripts cover:
 
 - 100,000-node `map` and `flatMap` interpretation;
+- Java Flight Recorder profiles for prebuilt `map` and `flatMap` graphs through
+  `EffectRuntimeProfile.bxm`;
 - delayed async execution and concurrency scaling;
 - runtime-local Layer sharing;
 - repeated `ManagedRuntime` boundaries with one application Layer build and release;
