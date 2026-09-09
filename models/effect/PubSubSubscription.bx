@@ -1,3 +1,4 @@
+import ortus.boxlang.runtime.dynamic.Attempt;
 import bxModules.bxEffect.models.effect.Effect;
 
 /**
@@ -10,52 +11,108 @@ class {
 	variables.items = new java.util.ArrayDeque();
 	variables.shutdown = new java.util.concurrent.atomic.AtomicBoolean( false );
 
-	function init( required any pubSubSource ) {
+	/**
+	 * Creates the internal consumer buffer; the parent hub is responsible for registration.
+	 *
+	 * @pubSubSource Parent PubSub hub coordinating subscription state and waits.
+	 * @return This subscription.
+	 */
+	PubSubSubscription function init( required any pubSubSource ) {
 		variables.pubSubSource = arguments.pubSubSource;
 		return this;
 	}
 
-	function take() {
+	/**
+	 * Describes an interruptible take coordinated by the parent hub.
+	 *
+	 * @return An Effect yielding a value or a tagged PubSubShutdown/SubscriptionShutdown failure.
+	 */
+	Effect function take() {
 		return Effect::_takePubSubSubscription( this );
 	}
 
-	function poll() {
+	/**
+	 * Immediately removes one available value through the parent hub.
+	 *
+	 * @return A native Attempt, empty if no value is available or the subscription is closed.
+	 */
+	Attempt function poll() {
 		return variables.pubSubSource._pollNative( this );
 	}
 
-	function unsubscribe() {
+	/**
+	 * Describes idempotent removal from the parent hub and discards unread values.
+	 *
+	 * @return An Effect yielding true only if the subscription was active.
+	 */
+	Effect function unsubscribe() {
 		var parentPubSub = variables.pubSubSource;
 		var subscriptionSource = this;
 		return Effect::sync( () => parentPubSub._unsubscribeNative( subscriptionSource ) );
 	}
 
+	/**
+	 * Checks local unsubscribe and parent hub shutdown state.
+	 *
+	 * @return Whether this subscription is closed.
+	 */
 	boolean function isShutdown() {
 		return variables.shutdown.get() || variables.pubSubSource.isShutdown();
 	}
 
-	/** Runtime-private parent-coordinated take. */
-	function _takeNative( any controlState = null ) {
+	/**
+	 * Delegates an internal blocking take to the parent hub.
+	 *
+	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
+	 * @return The parent's take outcome struct.
+	 */
+	struct function _takeNative( any controlState = null ) {
 		return variables.pubSubSource._takeNative( this, arguments.controlState );
 	}
 
-	/** Runtime-private methods called only under the parent PubSub lock. */
-	function _enqueueNative( any value ) {
+	/**
+	 * Appends one wrapped value; the caller must hold the parent hub lock.
+	 *
+	 * @value Value carried by this operation; may be null.
+	 * @return No value.
+	 */
+	void function _enqueueNative( any value ) {
 		variables.items.addLast( { value: arguments.value } );
 	}
 
+	/**
+	 * Checks the buffer; the caller must hold the parent hub lock.
+	 *
+	 * @return Whether no values are buffered.
+	 */
 	boolean function _isEmptyNative() {
 		return variables.items.isEmpty();
 	}
 
+	/**
+	 * Counts buffered entries; the caller must hold the parent hub lock.
+	 *
+	 * @return The buffer size.
+	 */
 	numeric function _sizeNative() {
 		return variables.items.size();
 	}
 
-	function _dequeueNative() {
+	/**
+	 * Removes the oldest entry; the caller must hold the parent hub lock and ensure nonemptiness.
+	 *
+	 * @return A wrapper struct containing value.
+	 */
+	any function _dequeueNative() {
 		return variables.items.removeFirst();
 	}
 
-	function _shutdownNative() {
+	/**
+	 * Marks closure and discards buffered entries; the caller must hold the parent hub lock.
+	 *
+	 * @return No value.
+	 */
+	void function _shutdownNative() {
 		variables.shutdown.set( true );
 		variables.items.clear();
 	}

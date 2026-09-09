@@ -1,7 +1,7 @@
 <bx:script>
-import models.effect.Effect@bxEffect;
-import models.effect.context.Context@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
 import benchmarks.BenchmarkSupport;
 
 lookupIterations = 100000;
@@ -44,7 +44,7 @@ if (
 	|| releases != scopeIterations * 6
 ) {
 	throw(
-		type: "BXEffect.BenchmarkFailure",
+		type: "bxeffect.benchmarks.BenchmarkFailureException",
 		message: "Expected Context lookups, provisions, and Scope releases to complete correctly"
 	);
 }

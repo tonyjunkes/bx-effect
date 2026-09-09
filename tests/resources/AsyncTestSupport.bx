@@ -8,7 +8,7 @@ class {
 		}
 		if ( !arguments.predicate() ) {
 			throw(
-				type: "BXEffect.TestTimeout",
+				type: "bxeffect.testing.TestTimeoutException",
 				message: "Timed out waiting for an asynchronous test condition"
 			);
 		}

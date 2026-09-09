@@ -21,12 +21,41 @@ Native `Attempt` remains the right type for presence/absence. Convert it with
 `runFuture` applies the same boundary rule as `runSync`: it completes its native
 BoxFuture successfully for an Effect success and exceptionally for an Effect
 failure. As with every BoxFuture, `get()` exposes BoxLang's native execution
-wrapper; its underlying failure is `BXEffect.EffectFailure` and retains the
+wrapper; its underlying failure is `bxeffect.EffectFailureException` and retains the
 rendered Cause. Use `runFutureExit` when a future should always resolve to an
 `Exit` instead.
 
 ## Missing services
 
 Resolving an unprovided `ServiceTag` is a defect, not an expected error. The
-`BXEffect.MissingService` detail contains `requestedTag` and sorted
+`bxeffect.context.MissingServiceException` detail contains `requestedTag` and sorted
 `availableTags` values so callers can diagnose incorrect Context/Layer wiring.
+
+## Exception naming
+
+Library-thrown custom exception types use
+`bxeffect[.<namespace>].<DescriptiveName>Exception`: lowercase library and
+namespace segments, followed by a PascalCase name ending in `Exception`.
+Namespaces describe stable public areas rather than mirroring every directory.
+
+| Area | Examples |
+| --- | --- |
+| Core and shared exceptions | `bxeffect.InvalidDeferredOutcomeException`, `bxeffect.EffectFailureException`, `bxeffect.ScopeClosedException` |
+| Context and service tags | `bxeffect.context.MissingServiceException`, `bxeffect.context.InvalidServiceTagException` |
+| Observability | `bxeffect.observability.InvalidLoggingObserverLevelException`, `bxeffect.observability.InvalidLoggingObserverTargetException` |
+
+Implementation directories such as `models`, `effect`, and `internal` do not
+appear in exception types. Shared validation types remain at the root:
+`bxeffect.InvalidDurationException` and `bxeffect.InvalidTimeUnitException`
+also apply when thrown by the published `TestClock`.
+
+These are BoxLang custom exception type strings. Expected error values and
+their tags, including `QueueShutdown`, `PubSubShutdown`, and
+`SubscriptionShutdown`, retain their names and failure-channel semantics.
+Application-provided exception types are preserved as supplied.
+
+Code migrating from the previous naming convention must update typed catches
+and exception-type comparisons: append `Exception`, lowercase the library
+prefix to `bxeffect`, and add `context` for `MissingService`/`InvalidServiceTag`
+or `observability` for `InvalidLoggingObserverLevel`/`InvalidLoggingObserverTarget`.
+The old names are not aliases. Messages, details, and Cause channels are unchanged.

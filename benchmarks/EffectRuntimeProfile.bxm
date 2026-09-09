@@ -1,5 +1,5 @@
 <bx:script>
-import models.effect.Effect@bxEffect;
+import models.effect.Effect@bxeffect;
 import java:jdk.jfr.Configuration;
 import java:jdk.jfr.Recording;
 import java:java.lang.System;
@@ -26,7 +26,7 @@ switch ( mode ) {
 		break;
 	default:
 		throw(
-			type: "BXEffect.InvalidProfileMode",
+			type: "bxeffect.benchmarks.InvalidProfileModeException",
 			message: "Profile mode must be map or flatMap"
 		);
 }
@@ -34,7 +34,7 @@ switch ( mode ) {
 runProgram = () => Effect::runSync( program );
 if ( runProgram() != iterations ) {
 	throw(
-		type: "BXEffect.ProfileFailure",
+		type: "bxeffect.benchmarks.ProfileFailureException",
 		message: "Profile warmup returned an incorrect result"
 	);
 }
@@ -50,7 +50,7 @@ startedAt = System.nanoTime();
 for ( runIndex = 1; runIndex <= recordedRuns; runIndex++ ) {
 	if ( runProgram() != iterations ) {
 		throw(
-			type: "BXEffect.ProfileFailure",
+			type: "bxeffect.benchmarks.ProfileFailureException",
 			message: "Recorded profile returned an incorrect result"
 		);
 	}

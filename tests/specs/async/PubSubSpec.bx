@@ -1,5 +1,5 @@
-import models.effect.Effect@bxEffect;
-import models.effect.PubSub@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.PubSub@bxeffect;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -49,6 +49,23 @@ class extends="testbox.system.BaseSpec" {
 				blockedPublisher.join();
 				expect( Effect::runSync( activeSubscription.take() ) ).toBe( "second" );
 				expect( pubSubSource.subscriberCount() ).toBe( 1 );
+			} );
+
+			it( "unsubscribes before recovery from a throwing subscription callback", () => {
+				var pubSubSource = PubSub::bounded( 1 );
+				try {
+					var outcome = Effect::runSyncExit( pubSubSource.withSubscription( ( subscription ) => {
+						throw( type: "bxeffect.testing.SubscriptionCallbackDefectException", message: "bad callback" );
+					} ).tapCause( ( failureCause ) => Effect::sync( () => {
+						expect( pubSubSource.subscriberCount() ).toBe( 0 );
+					} ) ) );
+					expect( outcome.cause().kind() ).toBe( "Die" );
+					expect( outcome.cause().defect().type ).toBe( "bxeffect.testing.SubscriptionCallbackDefectException" );
+					expect( pubSubSource.subscriberCount() ).toBe( 0 );
+					Effect::runSync( pubSubSource.publish( 1 ).zip( pubSubSource.publish( 2 ) ) );
+				} finally {
+					Effect::runSync( pubSubSource.shutdown() );
+				}
 			} );
 
 			it( "closes a subscription after withSubscription completes", () => {
@@ -127,9 +144,9 @@ class extends="testbox.system.BaseSpec" {
 			} );
 
 			it( "rejects invalid bounded capacities before constructing native state", () => {
-				expect( () => PubSub::bounded( 0 ) ).toThrow( type: "BXEffect.InvalidPubSubCapacity" );
-				expect( () => PubSub::bounded( -1 ) ).toThrow( type: "BXEffect.InvalidPubSubCapacity" );
-				expect( () => PubSub::bounded( 1.5 ) ).toThrow( type: "BXEffect.InvalidPubSubCapacity" );
+				expect( () => PubSub::bounded( 0 ) ).toThrow( type: "bxeffect.InvalidPubSubCapacityException" );
+				expect( () => PubSub::bounded( -1 ) ).toThrow( type: "bxeffect.InvalidPubSubCapacityException" );
+				expect( () => PubSub::bounded( 1.5 ) ).toThrow( type: "bxeffect.InvalidPubSubCapacityException" );
 			} );
 
 		} );

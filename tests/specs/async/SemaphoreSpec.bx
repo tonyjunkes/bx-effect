@@ -1,12 +1,36 @@
-import models.effect.Effect@bxEffect;
-import models.effect.Deferred@bxEffect;
-import models.effect.Semaphore@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Deferred@bxeffect;
+import models.effect.Semaphore@bxeffect;
 import tests.resources.AsyncTestSupport;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.internal.FiberControl@bxeffect;
+import tests.resources.InterruptingSemaphore;
+import java.lang.Thread;
 
 class extends="testbox.system.BaseSpec" {
 
 	function run() {
 		describe( "Semaphore", () => {
+
+			it( "releases a permit when cancellation arrives during acquisition handoff", () => {
+				var controlState = new FiberControl( "permit-handoff" );
+				var permitSource = new InterruptingSemaphore( controlState );
+				var continued = false;
+				var runtime = new EffectRuntime();
+				var outcome = null;
+				try {
+					outcome = runtime._runSyncExitWithContext( permitSource.withPermit(
+						Effect::sync( () => continued = true )
+					), Context::empty(), controlState );
+				} finally {
+					// This fixture interrupts the caller rather than an executor worker.
+					Thread::interrupted();
+				}
+				expect( outcome.cause().kind() ).toBe( "Interrupt" );
+				expect( continued ).toBeFalse();
+				expect( permitSource.availablePermits() ).toBe( 1 );
+			} );
 
 			it( "acquires lazily and releases a blocked Fiber when a permit becomes available", () => {
 				var permitSource = Semaphore::make( 1 );
@@ -32,7 +56,7 @@ class extends="testbox.system.BaseSpec" {
 				expect( Effect::runSyncExit( permitSource.withPermit( Effect::fail( "bad" ) ) ).cause().kind() )
 					.toBe( "Fail" );
 				expect( permitSource.availablePermits() ).toBe( 1 );
-				expect( Effect::runSyncExit( permitSource.withPermit( Effect::sync( () => { throw( type: "BXEffect.Defect", message: "bad" ); } ) ) ).cause().kind() )
+				expect( Effect::runSyncExit( permitSource.withPermit( Effect::sync( () => { throw( type: "bxeffect.testing.DefectException", message: "bad" ); } ) ) ).cause().kind() )
 					.toBe( "Die" );
 				expect( permitSource.availablePermits() ).toBe( 1 );
 			} );
@@ -69,8 +93,8 @@ class extends="testbox.system.BaseSpec" {
 			} );
 
 			it( "rejects invalid permit counts before constructing the native primitive", () => {
-				expect( () => Semaphore::make( -1 ) ).toThrow( type: "BXEffect.InvalidPermitCount" );
-				expect( () => Semaphore::make( 1.5 ) ).toThrow( type: "BXEffect.InvalidPermitCount" );
+				expect( () => Semaphore::make( -1 ) ).toThrow( type: "bxeffect.InvalidPermitCountException" );
+				expect( () => Semaphore::make( 1.5 ) ).toThrow( type: "bxeffect.InvalidPermitCountException" );
 		} );
 
 	} );

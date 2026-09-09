@@ -1,7 +1,7 @@
-import models.effect.Effect@bxEffect;
-import models.effect.EffectRuntime@bxEffect;
-import models.effect.Schedule@bxEffect;
-import models.effect.observability.LoggingObserver@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.Schedule@bxeffect;
+import models.effect.observability.LoggingObserver@bxeffect;
 import java.util.concurrent.atomic.AtomicBoolean;
 import tests.resources.AsyncTestSupport;
 import tests.resources.RecordingLogger;
@@ -10,6 +10,11 @@ class extends="testbox.system.BaseSpec" {
 
 	function run() {
 		describe( "Runtime observer boundary", () => {
+
+			it( "rejects invalid logging targets with an observability exception", () => {
+				expect( () => LoggingObserver::make( [] ) )
+					.toThrow( type: "bxeffect.observability.InvalidLoggingObserverTargetException" );
+			} );
 
 			it( "adapts observer events to an existing logger without affecting outcomes", () => {
 				var logger = new RecordingLogger();
@@ -24,7 +29,7 @@ class extends="testbox.system.BaseSpec" {
 				expect( logger.entries().last().level ).toBe( "debug" );
 				expect( logger.entries()[ 1 ].message ).toInclude( "runtime:started" );
 				expect( () => LoggingObserver::make( logger, { "*": "fatal" } ) )
-					.toThrow( type: "BXEffect.InvalidLoggingObserverLevel" );
+					.toThrow( type: "bxeffect.observability.InvalidLoggingObserverLevelException" );
 			} );
 
 			it( "reports stable runtime, suspension, scope, and retry events", () => {
@@ -50,11 +55,39 @@ class extends="testbox.system.BaseSpec" {
 				expect( events[ events.len() ] ).toBe( "runtime:completed" );
 			} );
 
+			it( "preserves resume events and cleanup when a native future factory throws", () => {
+				var failFactory = () => {
+					throw( type: "bxeffect.testing.FutureFactoryDefectException", message: "factory failed" );
+				};
+				for ( var instructionKind in [ "AsyncFuture", "Sleep" ] ) {
+					var events = [];
+					var runtime = new EffectRuntime( {
+						clock : { sleep: failFactory },
+						observer : ( eventName, details ) => {
+							if ( eventName == "effect:suspended" || eventName == "effect:resumed" ) {
+								events.append( "#eventName#:#details.instruction#" );
+							}
+						}
+					} );
+					var program = instructionKind == "Sleep"
+						? Effect::sleep( 1 )
+						: Effect::fromBoxFuture( failFactory );
+					var outcome = runtime.runSyncExit( program.ensuring(
+						Effect::sync( () => events.append( "cleanup" ) )
+					) );
+
+					expect( outcome.isFailure() ).toBeTrue();
+					expect( outcome.cause().kind() ).toBe( "Die" );
+					expect( outcome.cause().defect().type ).toBe( "bxeffect.testing.FutureFactoryDefectException" );
+					expect( events ).toBe( [ "effect:resumed:#instructionKind#", "cleanup" ] );
+				}
+			} );
+
 			it( "contains observer failures without changing cleanup or outcomes", () => {
 				var finalized = false;
 				var runtime = new EffectRuntime( {
 					observer : ( eventName, details ) => {
-						throw( type: "BXEffect.ObserverFailure", message: "diagnostic failure" );
+						throw( type: "bxeffect.testing.ObserverFailureException", message: "diagnostic failure" );
 					}
 				} );
 				var program = Effect::succeed( "value" ).ensuring(
@@ -92,7 +125,7 @@ class extends="testbox.system.BaseSpec" {
 				AsyncTestSupport::awaitCondition( () => countEvents( events, "fiber:interrupted" ) == 1 );
 
 				var defectExit = runtime.runSyncExit( Effect::sync( () => {
-					throw( type: "BXEffect.ObserverTestDefect", message: "broken" );
+					throw( type: "bxeffect.testing.ObserverTestDefectException", message: "broken" );
 				} ) );
 
 				expect( countEvents( events, "fiber:completed" ) ).toBe( 1 );
@@ -100,7 +133,7 @@ class extends="testbox.system.BaseSpec" {
 				expect( countEvents( events, "defect:unhandled" ) ).toBe( 1 );
 
 				expect( runtime.runSync( Effect::sync( () => {
-					throw( type: "BXEffect.ObserverRecoveredDefect", message: "recovered" );
+					throw( type: "bxeffect.testing.ObserverRecoveredDefectException", message: "recovered" );
 				} ).catchCause( ( ignoredCause ) => Effect::succeed( "recovered" ) ) ) )
 					.toBe( "recovered" );
 				expect( countEvents( events, "defect:unhandled" ) ).toBe( 1 );

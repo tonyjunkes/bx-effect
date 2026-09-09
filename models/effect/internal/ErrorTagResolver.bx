@@ -3,6 +3,13 @@
  */
 class {
 
+	/**
+	 * Resolves expected-error identity in order:
+	 * explicit _tag, effectError annotation, throwable type, metadata name, native class.
+	 *
+	 * @errorValue Expected error whose tag or metadata is inspected.
+	 * @return The tag string used by catchTag.
+	 */
 	static string function resolve( required any errorValue ) {
 		var explicitTag = readExplicitTag( arguments.errorValue );
 		if ( !isNull( explicitTag ) ) {
@@ -34,7 +41,13 @@ class {
 		return arguments.errorValue.getClass().getName();
 	}
 
-	private static function readExplicitTag( required any errorValue ) {
+	/**
+	 * Attempts structural _tag access without requiring a struct or BoxLang class.
+	 *
+	 * @errorValue Expected error whose tag or metadata is inspected.
+	 * @return The explicit tag, or null when unavailable.
+	 */
+	private static any function readExplicitTag( required any errorValue ) {
 		try {
 			if ( structKeyExists( arguments.errorValue, "_tag" ) ) {
 				return arguments.errorValue._tag;
@@ -44,7 +57,13 @@ class {
 		return null;
 	}
 
-	private static function readMetadata( required any errorValue ) {
+	/**
+	 * Attempts BoxLang class metadata access for tag fallback.
+	 *
+	 * @errorValue Expected error whose tag or metadata is inspected.
+	 * @return Metadata, or null when unavailable.
+	 */
+	private static any function readMetadata( required any errorValue ) {
 		try {
 			return getClassMetadata( arguments.errorValue );
 		} catch ( any ignored ) {

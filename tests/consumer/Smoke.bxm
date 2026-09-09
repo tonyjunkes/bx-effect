@@ -1,29 +1,29 @@
 <bx:script>
-import models.effect.Cause@bxEffect;
-import models.effect.Clock@bxEffect;
-import models.effect.Deferred@bxEffect;
-import models.effect.Effect@bxEffect;
-import models.effect.EffectRuntime@bxEffect;
-import models.effect.Exit@bxEffect;
-import models.effect.Fiber@bxEffect;
-import models.effect.ManagedRuntime@bxEffect;
-import models.effect.PubSub@bxEffect;
-import models.effect.PubSubSubscription@bxEffect;
-import models.effect.Queue@bxEffect;
-import models.effect.Result@bxEffect;
-import models.effect.Schedule@bxEffect;
-import models.effect.Scope@bxEffect;
-import models.effect.Semaphore@bxEffect;
-import models.effect.Stream@bxEffect;
-import models.effect.context.Context@bxEffect;
-import models.effect.context.Layer@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
-import models.effect.testing.TestClock@bxEffect;
-import models.effect.observability.LoggingObserver@bxEffect;
+import models.effect.Cause@bxeffect;
+import models.effect.Clock@bxeffect;
+import models.effect.Deferred@bxeffect;
+import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.Exit@bxeffect;
+import models.effect.Fiber@bxeffect;
+import models.effect.ManagedRuntime@bxeffect;
+import models.effect.PubSub@bxeffect;
+import models.effect.PubSubSubscription@bxeffect;
+import models.effect.Queue@bxeffect;
+import models.effect.Result@bxeffect;
+import models.effect.Schedule@bxeffect;
+import models.effect.Scope@bxeffect;
+import models.effect.Semaphore@bxeffect;
+import models.effect.Stream@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
+import models.effect.observability.LoggingObserver@bxeffect;
 
 function assertConsumer( required boolean condition, required string message ) {
 	if ( !arguments.condition ) {
-		throw( type: "BXEffect.ConsumerSmokeFailed", message: arguments.message );
+		throw( type: "bxeffect.testing.ConsumerSmokeFailedException", message: arguments.message );
 	}
 }
 

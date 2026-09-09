@@ -1,14 +1,78 @@
-import models.effect.Effect@bxEffect;
-import models.effect.EffectRuntime@bxEffect;
-import models.effect.Schedule@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
-import models.effect.testing.TestClock@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.Schedule@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
 import tests.resources.AsyncTestSupport;
+import java.lang.System;
 
 class extends="testbox.system.BaseSpec" {
 
 	function run() {
 		describe( "Runtime Clock and TestClock", () => {
+
+			it( "honors a live delay through the native delayed executor", () => {
+				var startedAt = System.nanoTime();
+				expect( Effect::runSync( Effect::sleep( 80 ) ) ).toBeNull();
+				expect( ( System.nanoTime() - startedAt ) / 1000000 ).toBeGTE( 75 );
+			} );
+
+			it( "does not time out work before the live deadline", () => {
+				var outcome = Effect::runFutureExit( Effect::sleep( 20 ).as( "ready" ).timeout( 500 ) ).get( 3000 );
+				expect( outcome.isSuccess() ).toBeTrue();
+				expect( outcome.value() ).toBe( "ready" );
+				var startedAt = System.nanoTime();
+				var timedOut = Effect::runFutureExit( Effect::sleep( 1000 ).timeout( 80 ) ).get( 3000 );
+				expect( ( System.nanoTime() - startedAt ) / 1000000 ).toBeGTE( 75 );
+				expect( timedOut.cause().kind() ).toBe( "Fail" );
+				expect( timedOut.cause().error()._tag ).toBe( "TimeoutError" );
+			} );
+
+			it( "completes zero sleeps and count-only recurrence without advancing time", () => {
+				var clock = new TestClock();
+				var completed = clock.sleep( 0 );
+				expect( completed.isDone() ).toBeTrue();
+				expect( completed.get( 1000 ) ).toBeNull();
+				expect( clock.pendingCount() ).toBe( 0 );
+				var runtime = new EffectRuntime( { clock: clock } );
+				var repeats = 0;
+				var repeated = runtime.runFutureExit( Effect::sync( () => ++repeats ).repeat( Schedule::recurs( 2 ) ) ).get( 3000 );
+				expect( repeated.value() ).toBe( 3 );
+				var attempts = 0;
+				var retried = runtime.runFutureExit( Effect::suspend( () =>
+					++attempts < 3 ? Effect::fail( "again" ) : Effect::succeed( attempts )
+				).retry( Schedule::recurs( 2 ) ) ).get( 3000 );
+				expect( retried.value() ).toBe( 3 );
+				expect( clock.now() ).toBe( 0 );
+			} );
+
+			it( "skips fixed schedule backlogs after one immediate restart", () => {
+				for ( var policy in [
+					Schedule::fixed( 10 ),
+					Schedule::fixed( 10 ).or( Schedule::recurs( 0 ) ),
+					Schedule::fixed( 10 ).jittered( 1, 1 )
+				] ) {
+					var clock = new TestClock();
+					var starts = new java.util.concurrent.CopyOnWriteArrayList();
+					var runtime = new EffectRuntime( { clock: clock } );
+					var program = Effect::sync( () => {
+						starts.add( clock.now() );
+						if ( starts.size() == 1 ) { clock.advance( 35 ); }
+						return null;
+					} ).repeat( policy.and( Schedule::recurs( 2 ) ) );
+					var fiber = runtime.runFork( program );
+					try {
+						awaitPending( clock, 1 );
+						expect( starts.toArray() ).toBe( [ 0, 35 ] );
+						clock.advance( 10 );
+						expect( fiber._terminationFuture().get( 3000 ).isSuccess() ).toBeTrue();
+						expect( starts.toArray() ).toBe( [ 0, 35, 45 ] );
+					} finally {
+						fiber.interrupt();
+						fiber._terminationFuture().get( 3000 );
+					}
+				}
+			} );
 
 			it( "completes TestClock sleepers only when time advances", () => {
 				var clock = new TestClock();

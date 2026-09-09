@@ -1,0 +1,14 @@
+/** Requests cancellation after the native permit is acquired, before return. */
+class extends="bxModules.bxEffect.models.effect.Semaphore" {
+	function init( required any controlState ) {
+		super.init( 1 );
+		variables.testControl = arguments.controlState;
+		return this;
+	}
+
+	function _acquireNative() {
+		super._acquireNative();
+		variables.testControl.interrupt();
+		return null;
+	}
+}

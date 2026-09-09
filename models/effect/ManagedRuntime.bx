@@ -1,7 +1,9 @@
+import ortus.boxlang.runtime.async.BoxFuture;
 import bxModules.bxEffect.models.effect.Cause;
 import bxModules.bxEffect.models.effect.Effect;
 import bxModules.bxEffect.models.effect.EffectRuntime;
 import bxModules.bxEffect.models.effect.Exit;
+import bxModules.bxEffect.models.effect.Fiber;
 import bxModules.bxEffect.models.effect.Scope;
 import bxModules.bxEffect.models.effect.context.Context;
 import bxModules.bxEffect.models.effect.internal.LayerMemo;
@@ -10,8 +12,10 @@ import bxModules.bxEffect.models.effect.internal.ThrowablePolicy;
 /**
  * Explicitly owns one lazily built application Layer across many Effect runs.
  *
- * Managed services remain private and live until close begins. Every run still
- * receives its own root Scope for local resources and child Fibers.
+ * Managed services remain private and live through active run finalization;
+ * close releases them only after those runs terminate. Every run receives its
+ * own root Scope for local resources and child Fibers. Failed initial builds
+ * clean partial resources before a later run may retry.
  */
 class {
 
@@ -21,12 +25,18 @@ class {
 	variables.lock = new java.util.concurrent.locks.ReentrantLock();
 	variables.managedContext = null;
 	variables.managedScope = null;
-	variables.managedLayerMemo = null;
 	variables.buildFiber = null;
 	variables.buildOutcomeFuture = null;
 	variables.activeRuns = new java.util.concurrent.ConcurrentHashMap();
 	variables.closeOutcomeFuture = null;
 
+	/**
+	 * Validates and stores an application Layer without building its services.
+	 *
+	 * @applicationLayer Application service Layer owned by this ManagedRuntime instance.
+	 * @options Optional executor name, Clock object, and diagnostic observer callback/object.
+	 * @return This managed runtime.
+	 */
 	ManagedRuntime function init( required any applicationLayer, struct options = {} ) {
 		if (
 			!isObject( arguments.applicationLayer )
@@ -34,7 +44,7 @@ class {
 			|| !structKeyExists( arguments.applicationLayer, "_identity" )
 		) {
 			throw(
-				type: "BXEffect.InvalidManagedLayer",
+				type: "bxeffect.InvalidManagedLayerException",
 				message: "ManagedRuntime requires a Layer"
 			);
 		}
@@ -43,27 +53,65 @@ class {
 		return this;
 	}
 
-	static function make( required any applicationLayer, struct options = {} ) {
+	/**
+	 * Creates an explicitly owned runtime with lazy shared service acquisition.
+	 *
+	 * @applicationLayer Application service Layer owned by this ManagedRuntime instance.
+	 * @options Optional executor name, Clock object, and diagnostic observer callback/object.
+	 * @return A new ManagedRuntime.
+	 */
+	static ManagedRuntime function make( required any applicationLayer, struct options = {} ) {
 		return new ManagedRuntime( arguments.applicationLayer, arguments.options );
 	}
 
-	function runSync( required Effect program ) {
+	/**
+	 * Runs with managed services and unwraps success; failure throws EffectFailureException.
+	 *
+	 * @program Effect to execute within this operation's boundary.
+	 * @return The success value.
+	 */
+	any function runSync( required Effect program ) {
 		return unwrap( runSyncExit( arguments.program ) );
 	}
 
-	function runSyncExit( required Effect program ) {
+	/**
+	 * Starts a managed run and blocks on its public Fiber completion.
+	 *
+	 * @program Effect to execute within this operation's boundary.
+	 * @return The complete Exit.
+	 */
+	any function runSyncExit( required Effect program ) {
 		return runFork( arguments.program ).await();
 	}
 
-	function runFuture( required Effect program ) {
+	/**
+	 * Starts a managed run without blocking the caller.
+	 *
+	 * @program Effect to execute within this operation's boundary.
+	 * @return A native BoxFuture yielding the value or failing with EffectFailureException.
+	 */
+	BoxFuture function runFuture( required Effect program ) {
 		return runFutureExit( arguments.program ).then( ( completedExit ) => unwrap( completedExit ) );
 	}
 
-	function runFutureExit( required Effect program ) {
+	/**
+	 * Starts a managed run with its own root Scope and shared application services.
+	 *
+	 * @program Effect to execute within this operation's boundary.
+	 * @return A native BoxFuture yielding the Exit.
+	 */
+	BoxFuture function runFutureExit( required Effect program ) {
 		return runFork( arguments.program )._completionFuture();
 	}
 
-	function runFork( required Effect program ) {
+	/**
+	 * Atomically admits a run while open; closing or closed runtimes produce ManagedRuntimeClosed
+	 * failure.
+	 *
+	 * @program Effect to execute within this operation's boundary.
+	 * @return A Fiber handle.
+	 */
+	Fiber function runFork( required Effect program ) {
 		variables.lock.lock();
 		try {
 			var accepted = variables.state == "Open";
@@ -88,7 +136,13 @@ class {
 		}
 	}
 
-	function close() {
+	/**
+	 * Begins idempotent shutdown and blocks until active run finalization and service release
+	 * finish.
+	 *
+	 * @return The shutdown Exit.
+	 */
+	any function close() {
 		try {
 			return closeFuture().get();
 		} catch ( any error ) {
@@ -97,7 +151,12 @@ class {
 		}
 	}
 
-	function closeFuture() {
+	/**
+	 * Stops admission, interrupts admitted runs/build work, and starts one shared shutdown task.
+	 *
+	 * @return The shared native BoxFuture yielding the shutdown Exit.
+	 */
+	BoxFuture function closeFuture() {
 		variables.lock.lock();
 		try {
 			if ( !isNull( variables.closeOutcomeFuture ) ) {
@@ -105,6 +164,8 @@ class {
 			}
 
 			variables.state = "Closing";
+			// Admission and this snapshot share the lock: every accepted run is
+			// either already finalized or included in the shutdown wait.
 			var runsToStop = [];
 			for ( var activeFiber in variables.activeRuns.values() ) {
 				runsToStop.append( activeFiber );
@@ -127,6 +188,11 @@ class {
 		}
 	}
 
+	/**
+	 * Checks whether shutdown has fully finished; Closing is not yet Closed.
+	 *
+	 * @return Whether state is Closed.
+	 */
 	boolean function isClosed() {
 		variables.lock.lock();
 		try {
@@ -136,13 +202,20 @@ class {
 		}
 	}
 
-	private function withManagedContext( required Effect program ) {
+	/**
+	 * Lazily obtains shared services through a cancellation-isolated build waiter.
+	 *
+	 * @program Effect to execute within this operation's boundary.
+	 * @return An Effect running the program with managed bindings.
+	 */
+	private Effect function withManagedContext( required Effect program ) {
 		var programToRun = arguments.program;
 		return Effect::suspend( () => {
 			var buildAccess = contextBuildAccess();
 			if ( buildAccess.closed ) {
 				return Effect::fail( closedError() );
 			}
+			// One interrupted run must not cancel the build shared by other runs.
 			var dependentBuild = buildAccess.outcomeFuture.then(
 				( buildExit ) => buildExit
 			);
@@ -154,6 +227,11 @@ class {
 		} );
 	}
 
+	/**
+	 * Serializes first-build admission and shares an in-flight or successful Context build.
+	 *
+	 * @return A closed marker or a shared build outcome future.
+	 */
 	private struct function contextBuildAccess() {
 		variables.lock.lock();
 		try {
@@ -179,10 +257,9 @@ class {
 				buildMemo
 			);
 			var buildOutcome = buildFiber._terminationFuture().then(
-				( buildExit ) => finishBuildAttempt( buildExit, buildScope, buildMemo )
+				( buildExit ) => finishBuildAttempt( buildExit, buildScope )
 			);
 			variables.managedScope = buildScope;
-			variables.managedLayerMemo = buildMemo;
 			variables.buildFiber = buildFiber;
 			variables.buildOutcomeFuture = buildOutcome;
 			return { closed: false, outcomeFuture: buildOutcome };
@@ -191,13 +268,22 @@ class {
 		}
 	}
 
-	private function finishBuildAttempt(
+	/**
+	 * Cleans failed partial builds before enabling retry and publishes successful services only
+	 * while open.
+	 *
+	 * @completedExit Execution outcome to publish, unwrap, or combine with cleanup.
+	 * @buildScope Scope owning resources acquired during this build attempt.
+	 * @return The build Exit including any failed cleanup.
+	 */
+	private any function finishBuildAttempt(
 		required any completedExit,
-		required Scope buildScope,
-		required LayerMemo buildMemo
+		required Scope buildScope
 	) {
 		var buildExit = arguments.completedExit;
 		if ( buildExit.isFailure() ) {
+			// Cleanup precedes clearing buildOutcomeFuture so retry cannot overlap
+			// release of resources from the failed attempt.
 			buildExit = variables.runtime._closeScopeWithExit( buildExit, arguments.buildScope );
 		}
 
@@ -207,7 +293,6 @@ class {
 				variables.managedContext = buildExit.value();
 			} else if ( buildExit.isFailure() ) {
 				variables.managedScope = null;
-				variables.managedLayerMemo = null;
 				variables.buildFiber = null;
 				variables.buildOutcomeFuture = null;
 			}
@@ -217,7 +302,15 @@ class {
 		return buildExit;
 	}
 
-	private function completeClose(
+	/**
+	 * Waits for interpreter termination and build cleanup before releasing managed services once.
+	 *
+	 * @runsToStop Snapshot of admitted runs captured when closing began.
+	 * @buildToStop Optional in-flight build Fiber whose interpreter must terminate.
+	 * @buildToAwait Optional build outcome future including failed-build cleanup.
+	 * @return The shutdown Exit.
+	 */
+	private any function completeClose(
 		required array runsToStop,
 		any buildToStop = null,
 		any buildToAwait = null
@@ -230,6 +323,7 @@ class {
 				arguments.buildToStop._awaitTermination();
 			}
 			if ( !isNull( arguments.buildToAwait ) ) {
+				// Build termination alone does not include finishBuildAttempt cleanup.
 				arguments.buildToAwait.get();
 			}
 
@@ -252,7 +346,6 @@ class {
 			variables.state = "Closed";
 			variables.managedContext = null;
 			variables.managedScope = null;
-			variables.managedLayerMemo = null;
 			variables.buildFiber = null;
 			variables.buildOutcomeFuture = null;
 			variables.activeRuns.clear();
@@ -262,21 +355,32 @@ class {
 		return closeExit;
 	}
 
-	private function unwrap( required any completedExit ) {
+	/**
+	 * Unwraps success or throws EffectFailureException retaining the Cause.
+	 *
+	 * @completedExit Execution outcome to publish, unwrap, or combine with cleanup.
+	 * @return The success value.
+	 */
+	private any function unwrap( required any completedExit ) {
 		if ( arguments.completedExit.isSuccess() ) {
 			return arguments.completedExit.value();
 		}
 		throw(
-			type: "BXEffect.EffectFailure",
+			type: "bxeffect.EffectFailureException",
 			message: arguments.completedExit.cause().pretty(),
 			extendedInfo: arguments.completedExit.cause()
 		);
 	}
 
+	/**
+	 * Constructs the expected failure for work submitted during or after shutdown.
+	 *
+	 * @return A ManagedRuntimeClosed tagged struct.
+	 */
 	private struct function closedError() {
 		return {
 			_tag : "ManagedRuntimeClosed",
-			type : "BXEffect.ManagedRuntimeClosed",
+			type : "bxeffect.ManagedRuntimeClosedException",
 			message : "ManagedRuntime is closing or closed"
 		};
 	}

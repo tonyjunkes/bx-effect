@@ -1,5 +1,5 @@
 <!-- FOR AI AGENTS | Verify commands and runtime assumptions against README.md and CI. -->
-<!-- Last updated: 2026-08-23 | Last verified: 2026-08-23 -->
+<!-- Last updated: 2026-09-07 | Last verified: 2026-09-07 -->
 
 # AGENTS.md
 
@@ -32,13 +32,15 @@ public API.
 | `models/effect/Stream.bx`, `internal/StreamCursor.bx` | Pull-based multi-value descriptions and private single-run cursors |
 | `models/effect/testing/TestClock.bx` | Published deterministic-clock test support for module consumers |
 | `models/effect/context/` | `Context`, `Layer`, and `ServiceTag` dependency model |
-| `models/effect/internal/` | Central throwable and tagged-error policies |
+| `models/effect/Deferred.bx`, `Semaphore.bx`, `Queue.bx`, `PubSub.bx`, `PubSubSubscription.bx` | Explicit coordination and interruptible waits |
+| `models/effect/internal/` | Private Fiber control, Layer memoization, Stream cursors, and throwable/tagged-error policies |
 | `ModuleConfig.bx`, `box.json` | Module settings, identity, packaging, and version metadata |
 | `tests/specs/` | TestBox contracts grouped by subsystem |
-| `.github/workflows/tests.yml` | Test matrix for BoxLang `1.16.0` and `latest` |
+| `.github/workflows/pr.yml` | PR checks targeting `develop`; BoxLang `latest` and `snapshot`, override, metadata, and installed-consumer smoke test |
+| `.github/workflows/release.yml` | Verify and publish from `main` using BoxLang `latest`; version tags have no `v` prefix |
 
 BX Effect is module-first: its BoxLang module must be installed, registered,
-and activated. Public applications import `models.effect.Effect@bxEffect` and
+and activated. Public applications import `models.effect.Effect@bxeffect` and
 then call `Effect::...`; library classes import peers through
 `bxModules.bxEffect...`. Keep those public and internal resolver paths
 distinct. The kernel is lifecycle-independent, not activation-independent:
@@ -66,14 +68,19 @@ annotation-scanning requirements.
   retryable. Closing rejects new work, waits for active run finalization, and
   only then releases managed services once. Never expose its Context or memo,
   install it globally, or release a managed Scope while a run may still use it.
-- Missing services are wiring defects. Preserve `BXEffect.MissingService` and
+- Missing services are wiring defects. Preserve `bxeffect.context.MissingServiceException` and
   include only deterministic requested/available tag diagnostics; do not infer
   a Layer graph from builder closures.
 - Finalizers run idempotently in LIFO order after success, failure, defect, or
   interruption. Continue cleanup after a failed finalizer and retain failures
   in the resulting Cause.
-- A closing Scope must reject both new finalizers and child Fibers; no work may
-  escape its root lifetime after cleanup starts.
+- Successful acquisition must register release before observing pending
+  interruption; acquisition waits remain interruptible. If Scope registration
+  is rejected, release immediately and retain cleanup failure with the defect.
+  See `docs/resources.md` and `tests/specs/resources/AcquisitionSpec.bx`.
+- Root shutdown stops child admission, interrupts and awaits admitted Fibers,
+  then runs Scope cleanup. A closing Scope rejects new finalizers and children;
+  no work may escape its root lifetime after cleanup starts.
 - Reuse `BoxFuture`, `AsyncService`, named executors, and `asyncAll`/`asyncAny`.
   Do not add a promise, thread-pool, scheduler, cache, logger, optional-value, or
   testing subsystem that duplicates BoxLang.
@@ -131,7 +138,10 @@ annotation-scanning requirements.
 - `Stream` is an immutable reusable description whose private cursor pulls
   native `Attempt<Array>` batches on demand. Empty Attempt is normal completion;
   failures remain in Cause. Every consumer opens a fresh cursor and closes it on
-  success, failure, defect, or interruption. Keep the MVP sequential and
+  success, failure, defect, or interruption, before following Effect work or
+  outer recovery. Cursor opening must retain an idempotent release fallback.
+  Queue sources never own the Queue; PubSub sources own only their per-consumer
+  subscription. Shutdown becomes normal completion. Keep the MVP sequential and
   demand-driven: no implicit read-ahead, Channel/Sink/Chunk layer, concurrent
   flatMap, Java Stream wrapper, or Queue/PubSub ownership changes.
 - Fiber interruption tracks the actual worker thread only while the interpreter
@@ -148,8 +158,15 @@ a custom abstraction unless a tested semantic requirement proves otherwise.
 
 ## Imports and BoxLang Conventions
 
+- Custom exception types use `bxeffect[.<namespace>].<DescriptiveName>Exception`,
+  with lowercase namespaces and PascalCase names. Use stable public namespaces
+  such as `context` and `observability`; omit implementation directories such
+  as `models`, `effect`, and `internal`. Shared exceptions stay at the root,
+  including duration/unit validation in TestClock. Repository-only exceptions
+  use `testing` or `benchmarks`. Expected error tags such as `QueueShutdown`
+  retain their names. See `docs/error-model.md` for the public contract.
 - Public examples and tests import activated module classes with paths such as
-  `models.effect.Effect@bxEffect`.
+  `models.effect.Effect@bxeffect`.
 - Library classes resolve peers through paths such as
   `bxModules.bxEffect.models.effect.Cause`; keep those internal and public
   import styles distinct.
@@ -188,21 +205,32 @@ change `--directory` to a package such as `tests.specs.core`,
 `tests.specs.context`, or `tests.specs.schedule`. In CI or with a standalone
 executable, use `boxlang` in place of `box boxlang cli`.
 
+Keep `--bx-home .boxlang/test` on checkout test and benchmark commands so an
+installed module cannot shadow the checkout. The supported minimum remains
+BoxLang `1.16.0`, but the current PR matrix runs `latest` and `snapshot`; verify
+minimum-runtime compatibility separately for parser-facing or platform changes.
+
+Inspect TestBox totals, not only the process exit code: the runner can exit zero
+with failing specs. The release workflow writes JSON reports and checks
+`totalFail == 0`, `totalError == 0`, and `totalPass > 0`. For package/import
+changes, also follow the isolated installed-consumer step in
+`.github/workflows/pr.yml` using `tests/consumer/Smoke.bxm` and its config.
+
 Additional checks:
 
 | Task | Command |
 | --- | --- |
-| Module executor override | `box boxlang cli --bx-config tests/boxlang.executor-override.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs.module --stream --write-report=false --properties-summary=false --stacktrace=short` |
+| Module executor override | `box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.executor-override.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs.module --stream --write-report=false --properties-summary=false --stacktrace=short` |
 | Package metadata | `box package show` |
-| Stack-safety benchmark | `box boxlang cli --bx-config tests/boxlang.json benchmarks/EffectRuntimeBench.bxm` |
-| Layer-sharing benchmark | `box boxlang cli --bx-config tests/boxlang.json benchmarks/LayerRuntimeBench.bxm` |
-| Managed runtime benchmark | `box boxlang cli --bx-config tests/boxlang.json benchmarks/ManagedRuntimeBench.bxm` |
-| Stream benchmark | `box boxlang cli --bx-config tests/boxlang.json benchmarks/StreamBench.bxm` |
-| Managed runtime specs | `box boxlang cli --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs.runtime --stream --write-report=false --properties-summary=false --stacktrace=short` |
-| Stream specs | `box boxlang cli --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs.stream --stream --write-report=false --properties-summary=false --stacktrace=short` |
-| Async runtime baseline | `box boxlang cli --bx-config tests/boxlang.json benchmarks/AsyncRuntimeBench.bxm` |
-| Concurrency baseline | `box boxlang cli --bx-config tests/boxlang.json benchmarks/ConcurrencyBench.bxm` |
-| Context/Scope baseline | `box boxlang cli --bx-config tests/boxlang.json benchmarks/ContextScopeBench.bxm` |
+| Stack-safety benchmark | `box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json benchmarks/EffectRuntimeBench.bxm` |
+| Layer-sharing benchmark | `box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json benchmarks/LayerRuntimeBench.bxm` |
+| Managed runtime benchmark | `box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json benchmarks/ManagedRuntimeBench.bxm` |
+| Stream benchmark | `box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json benchmarks/StreamBench.bxm` |
+| Managed runtime specs | `box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs.runtime --stream --write-report=false --properties-summary=false --stacktrace=short` |
+| Stream specs | `box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs.stream --stream --write-report=false --properties-summary=false --stacktrace=short` |
+| Async runtime baseline | `box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json benchmarks/AsyncRuntimeBench.bxm` |
+| Concurrency baseline | `box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json benchmarks/ConcurrencyBench.bxm` |
+| Context/Scope baseline | `box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json benchmarks/ContextScopeBench.bxm` |
 
 Run the narrowest relevant spec while iterating. Before handoff, run the full
 suite when feasible. Also run the override check for module settings/runtime
@@ -222,8 +250,8 @@ for interpreter or composition changes.
 | Schedule or timeout | Laziness, expected-failure-only retry, cleanup, timing semantics, and schedule specs |
 | Stream | Pull/acquisition laziness, Cause channels, early cleanup, Context on every pull, interruption, coordination ownership, stream specs, and Stream benchmark |
 | Module settings | `ModuleConfig.bx`, both test configs, module specs, and executor-override check |
-| Version or release metadata | `box.json`, `ModuleConfig.bx`, `CHANGELOG.md`, and `docs/releasing.md` |
-| Supported runtime matrix | `box.json`, README requirements, test configs, and `.github/workflows/tests.yml` |
+| Version or release metadata | `box.json`, `ModuleConfig.bx`, `CHANGELOG.md`, and `.github/workflows/release.yml` |
+| Supported runtime matrix | `box.json`, README requirements, test configs, `.github/workflows/pr.yml`, and `.github/workflows/release.yml` |
 | Public API | README/guides, module-resolved imports, focused tests, and package contents |
 
 Add focused TestBox coverage with behavior changes. Tests should assert failure

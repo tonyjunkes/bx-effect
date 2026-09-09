@@ -1,23 +1,29 @@
-name: Tests
+name: PR
 
 on:
-  push:
   pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: read
 
 jobs:
   test:
     name: BoxLang ${{ matrix.boxlang-version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         boxlang-version:
-          - "1.16.0"
           - latest
+          - snapshot
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up BoxLang
         uses: ortus-boxlang/setup-boxlang@main
@@ -30,7 +36,7 @@ jobs:
 
       - name: Run TestBox
         run: >-
-          boxlang --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx
+          boxlang --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx
           --directory=tests.specs
           --stream
           --write-report=false
@@ -39,7 +45,7 @@ jobs:
 
       - name: Verify module setting override
         run: >-
-          boxlang --bx-config tests/boxlang.executor-override.json testbox/system/runners/BoxLangRunner.bx
+          boxlang --bx-home .boxlang/test --bx-config tests/boxlang.executor-override.json testbox/system/runners/BoxLangRunner.bx
           --directory=tests.specs.module
           --stream
           --write-report=false

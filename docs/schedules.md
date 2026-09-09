@@ -29,14 +29,16 @@ to BoxFuture's native delayed executor.
 execution overruns its next target, the next iteration begins without an
 additional delay; it does not attempt to run missed iterations. Both behaviors
 use the runtime Clock, so `TestClock` can prove their timing without wall-clock
-waiting.
+waiting. The immediate restart becomes the new interval anchor: with a 10 ms
+interval and first execution finishing at 35 ms, starts are 0, 35, then 45 ms
+when subsequent work is instantaneous, rather than several starts at 35 ms.
 
 For deterministic TestBox coverage, supply a `TestClock` when constructing a
 runtime and advance it explicitly:
 
 ```boxlang
-import models.effect.EffectRuntime@bxEffect;
-import models.effect.testing.TestClock@bxEffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
 
 clock = new TestClock();
 runtime = new EffectRuntime( { clock: clock } );
@@ -49,3 +51,6 @@ fiber.join();
 `TestClock` is published deterministic test support for downstream module
 consumers. It does not depend on TestBox, replace BoxLang Scheduled Tasks, or
 create an application scheduler.
+
+A zero-duration TestClock sleep returns an already completed native BoxFuture.
+Count-only recurrence therefore needs no explicit clock advancement.

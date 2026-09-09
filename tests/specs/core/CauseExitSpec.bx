@@ -1,5 +1,5 @@
-import models.effect.Cause@bxEffect;
-import models.effect.Exit@bxEffect;
+import models.effect.Cause@bxeffect;
+import models.effect.Exit@bxeffect;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -10,13 +10,13 @@ class extends="testbox.system.BaseSpec" {
 				var effectCause = Cause::sequential(
 					Cause::fail( "first" ),
 					Cause::parallel(
-						Cause::die( { message: "broken" } ),
+						Cause::sequential( Cause::die( { message: "broken" } ), Cause::fail( "second" ) ),
 						Cause::interrupt( "fiber-1" )
 					)
 				);
 
-				expect( effectCause.failures() ).toBe( [ "first" ] );
-				expect( effectCause.defects().len() ).toBe( 1 );
+				expect( effectCause.failures() ).toBe( [ "first", "second" ] );
+				expect( effectCause.defects() ).toBe( [ { message: "broken" } ] );
 				expect( effectCause.isFailure() ).toBeTrue();
 				expect( effectCause.isDefect() ).toBeTrue();
 				expect( effectCause.isInterrupted() ).toBeTrue();

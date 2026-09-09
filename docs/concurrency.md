@@ -39,7 +39,7 @@ or async-boundary behavior.
 
 `runFuture` mirrors `runSync`: an Effect failure completes the native BoxFuture
 exceptionally. `get()` exposes BoxLang's normal execution wrapper around the
-underlying `BXEffect.EffectFailure`; choose `runFutureExit` when the future
+underlying `bxeffect.EffectFailureException`; choose `runFutureExit` when the future
 should resolve to an `Exit` for both outcomes.
 
 Use `Effect::all`, `race`, or `firstSuccessOf` for concurrent programs. Branches
@@ -109,8 +109,8 @@ native BoxFuture; it is not another promise implementation. Completion methods
 return lazy Effects and only the first completion wins.
 
 ```boxlang
-import models.effect.Deferred@bxEffect;
-import models.effect.Effect@bxEffect;
+import models.effect.Deferred@bxeffect;
+import models.effect.Effect@bxeffect;
 
 signal = Deferred::make();
 waiter = Effect::runFork( signal.await() );
@@ -135,8 +135,8 @@ uses a fair `java.util.concurrent.Semaphore` internally, while `acquire()` and
 `release()` remain lazy Effects.
 
 ```boxlang
-import models.effect.Effect@bxEffect;
-import models.effect.Semaphore@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Semaphore@bxeffect;
 
 databaseSlots = Semaphore::make( 8 );
 
@@ -161,8 +161,8 @@ coordinate mutable queue state; its blocking operations are interpreter
 instructions, not nested worker futures.
 
 ```boxlang
-import models.effect.Effect@bxEffect;
-import models.effect.Queue@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Queue@bxeffect;
 
 requests = Queue::bounded( 64 );
 Effect::runSync( requests.offer( request ) );
@@ -206,8 +206,8 @@ slowest active subscriber, or `PubSub::unbounded()` when that limit is not
 needed.
 
 ```boxlang
-import models.effect.Effect@bxEffect;
-import models.effect.PubSub@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.PubSub@bxeffect;
 
 events = PubSub::bounded( 64 );
 subscription = Effect::runSync( events.subscribe() );

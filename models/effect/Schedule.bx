@@ -12,7 +12,17 @@ class {
 	variables.timeUnit = "milliseconds";
 	variables.decision = null;
 
-	function init(
+	/**
+	 * Stores an immutable policy description; recurrence state is supplied by each runtime run.
+	 *
+	 * @scheduleKind Internal Recurs, Spaced, Fixed, Exponential, or Custom discriminator.
+	 * @limit Optional recurrence limit; null permits unbounded recurrence.
+	 * @delay Base delay in timeUnit; defaults to zero.
+	 * @timeUnit Stored delay unit; defaults to milliseconds.
+	 * @decision Callback receiving recurrence, value, scheduledAt, and nowMillis and returning a decision struct.
+	 * @return This Schedule.
+	 */
+	Schedule function init(
 		required string scheduleKind,
 		any limit,
 		numeric delay = 0,
@@ -31,44 +41,59 @@ class {
 		return this;
 	}
 
-	static function recurs( required numeric count ) {
+	/**
+	 * Allows a bounded number of recurrences after the initial execution.
+	 *
+	 * @count Non-negative maximum number of additional executions after the initial run.
+	 * @return A Schedule with no delay.
+	 */
+	static Schedule function recurs( required numeric count ) {
 		if ( arguments.count < 0 ) {
-			throw( type: "BXEffect.InvalidSchedule", message: "Schedule.recurs() requires a non-negative count" );
+			throw( type: "bxeffect.InvalidScheduleException", message: "Schedule.recurs() requires a non-negative count" );
 		}
 		return new Schedule( scheduleKind: "Recurs", limit: arguments.count );
 	}
 
-	static function spaced( required numeric duration, string unit = "milliseconds" ) {
-		var validatedDelay = validateDelay( arguments.duration );
-		toMillis( validatedDelay, arguments.unit );
-		return new Schedule(
-			scheduleKind: "Spaced",
-			delay: validatedDelay,
-			timeUnit: arguments.unit
-		);
+	/**
+	 * Delays each recurrence from completion of the previous run.
+	 *
+	 * @duration Non-negative delay or elapsed amount in the supplied unit.
+	 * @unit Time unit; defaults to milliseconds when omitted.
+	 * @return A Schedule with a constant completion-relative delay.
+	 */
+	static Schedule function spaced( required numeric duration, string unit = "milliseconds" ) {
+		return delayed( "Spaced", arguments.duration, arguments.unit );
 	}
 
-	static function fixed( required numeric duration, string unit = "milliseconds" ) {
-		var validatedDelay = validateDelay( arguments.duration );
-		toMillis( validatedDelay, arguments.unit );
-		return new Schedule(
-			scheduleKind: "Fixed",
-			delay: validatedDelay,
-			timeUnit: arguments.unit
-		);
+	/**
+	 * Targets recurrence start times; overruns restart immediately without replaying missed intervals.
+	 *
+	 * @duration Non-negative delay or elapsed amount in the supplied unit.
+	 * @unit Time unit; defaults to milliseconds when omitted.
+	 * @return A Schedule anchored to recurrence starts.
+	 */
+	static Schedule function fixed( required numeric duration, string unit = "milliseconds" ) {
+		return delayed( "Fixed", arguments.duration, arguments.unit );
 	}
 
-	static function exponential( required numeric baseDuration, string unit = "milliseconds" ) {
-		var validatedDelay = validateDelay( arguments.baseDuration );
-		toMillis( validatedDelay, arguments.unit );
-		return new Schedule(
-			scheduleKind: "Exponential",
-			delay: validatedDelay,
-			timeUnit: arguments.unit
-		);
+	/**
+	 * Doubles the base delay for each successive recurrence.
+	 *
+	 * @baseDuration Non-negative initial delay, doubled for each recurrence.
+	 * @unit Time unit; defaults to milliseconds when omitted.
+	 * @return An unbounded exponential Schedule.
+	 */
+	static Schedule function exponential( required numeric baseDuration, string unit = "milliseconds" ) {
+		return delayed( "Exponential", arguments.baseDuration, arguments.unit );
 	}
 
-	function and( required any other ) {
+	/**
+	 * Continues only while both policies continue, using the longer delay.
+	 *
+	 * @other Schedule-compatible policy or shorthand times struct to intersect.
+	 * @return A composed Schedule.
+	 */
+	Schedule function and( required any other ) {
 		var leftSchedule = this;
 		var rightSchedule = Schedule::coerce( arguments.other );
 		return Schedule::custom( ( recurrence, value, scheduledAt, nowMillis ) => {
@@ -76,14 +101,23 @@ class {
 			var rightDecision = rightSchedule.next( recurrence, value, scheduledAt, nowMillis );
 			return {
 				continue : leftDecision.continue && rightDecision.continue,
-				delay : max( toMillis( leftDecision.delay, leftDecision.unit ), toMillis( rightDecision.delay, rightDecision.unit ) ),
+				delay : max(
+					toMillis( leftDecision.delay, leftDecision.unit ),
+					toMillis( rightDecision.delay, rightDecision.unit )
+				),
 				unit : "milliseconds",
 				nextScheduledAt : firstScheduledAt( leftDecision, rightDecision )
 			};
 		} );
 	}
 
-	function or( required any other ) {
+	/**
+	 * Continues while either policy continues, using the shorter delay among continuing policies.
+	 *
+	 * @other Schedule-compatible policy or shorthand times struct to combine as an alternative.
+	 * @return A composed Schedule.
+	 */
+	Schedule function or( required any other ) {
 		var leftSchedule = this;
 		var rightSchedule = Schedule::coerce( arguments.other );
 		return Schedule::custom( ( recurrence, value, scheduledAt, nowMillis ) => {
@@ -103,7 +137,13 @@ class {
 		} );
 	}
 
-	function whileInput( required function predicate ) {
+	/**
+	 * Continues only while the underlying policy and input predicate both permit it.
+	 *
+	 * @predicate Callback receiving the latest expected error (retry) or success value (repeat) and returning a boolean.
+	 * @return A new Schedule.
+	 */
+	Schedule function whileInput( required function predicate ) {
 		var sourceSchedule = this;
 		var shouldContinue = arguments.predicate;
 		return Schedule::custom( ( recurrence, value, scheduledAt, nowMillis ) => {
@@ -113,7 +153,13 @@ class {
 		} );
 	}
 
-	function untilInput( required function predicate ) {
+	/**
+	 * Stops when the input predicate becomes true or the underlying policy stops.
+	 *
+	 * @predicate Callback receiving the latest expected error (retry) or success value (repeat) and returning a boolean.
+	 * @return A new Schedule.
+	 */
+	Schedule function untilInput( required function predicate ) {
 		var sourceSchedule = this;
 		var shouldStop = arguments.predicate;
 		return Schedule::custom( ( recurrence, value, scheduledAt, nowMillis ) => {
@@ -123,9 +169,16 @@ class {
 		} );
 	}
 
-	function jittered( numeric minimum = 0.8, numeric maximum = 1.2 ) {
+	/**
+	 * Scales each computed delay by a random factor in the supplied range.
+	 *
+	 * @minimum Non-negative minimum jitter multiplier; defaults to 0.8.
+	 * @maximum Maximum jitter multiplier, at least minimum; defaults to 1.2.
+	 * @return A new Schedule.
+	 */
+	Schedule function jittered( numeric minimum = 0.8, numeric maximum = 1.2 ) {
 		if ( arguments.minimum < 0 || arguments.maximum < arguments.minimum ) {
-			throw( type: "BXEffect.InvalidSchedule", message: "Schedule.jittered() requires 0 <= minimum <= maximum" );
+			throw( type: "bxeffect.InvalidScheduleException", message: "Schedule.jittered() requires 0 <= minimum <= maximum" );
 		}
 		var sourceSchedule = this;
 		var minimumFactor = arguments.minimum;
@@ -137,7 +190,13 @@ class {
 		} );
 	}
 
-	static function coerce( required any policy ) {
+	/**
+	 * Accepts a next-capable policy or converts the shorthand times struct.
+	 *
+	 * @policy Schedule-compatible object or shorthand struct with a times count.
+	 * @return A Schedule-compatible policy; invalid input throws InvalidScheduleException.
+	 */
+	static any function coerce( required any policy ) {
 		if ( isObject( arguments.policy ) && structKeyExists( arguments.policy, "next" ) ) {
 			return arguments.policy;
 		}
@@ -145,11 +204,20 @@ class {
 			return Schedule::recurs( arguments.policy.times );
 		}
 		throw(
-			type: "BXEffect.InvalidSchedule",
+			type: "bxeffect.InvalidScheduleException",
 			message: "Schedule policy must be a Schedule or a { times: number } struct"
 		);
 	}
 
+	/**
+	 * Computes one recurrence decision without sleeping or mutating policy state.
+	 *
+	 * @recurrence Zero-based count of recurrences already performed, excluding the initial run.
+	 * @value Latest expected error for retry, or latest success value for repeat.
+	 * @scheduledAt Previous recurrence start target in Clock milliseconds.
+	 * @nowMillis Current Clock time in milliseconds after the previous run completes.
+	 * @return A struct with continue, delay, unit, and nextScheduledAt (null for completion-relative timing).
+	 */
 	struct function next(
 		required numeric recurrence,
 		any value,
@@ -171,7 +239,9 @@ class {
 		}
 		if ( variables.scheduleKind == "Fixed" ) {
 			var intervalMillis = toMillis( variables.delay, variables.timeUnit );
-			var nextScheduledAt = arguments.scheduledAt + intervalMillis;
+			// Restart immediately after an overrun, then anchor the next interval
+			// to that restart instead of replaying stale recurrence targets.
+			var nextScheduledAt = max( arguments.scheduledAt + intervalMillis, arguments.nowMillis );
 			return {
 				continue : shouldContinue,
 				delay : max( 0, nextScheduledAt - arguments.nowMillis ),
@@ -187,18 +257,48 @@ class {
 		};
 	}
 
-	private static numeric function validateDelay( required numeric duration ) {
+	/**
+	 * Validates a non-negative duration and supported unit before storing a delay policy.
+	 *
+	 * @scheduleKind Internal Recurs, Spaced, Fixed, Exponential, or Custom discriminator.
+	 * @duration Non-negative delay or elapsed amount in the supplied unit.
+	 * @unit Required time unit for the stored delay.
+	 * @return A Schedule.
+	 */
+	private static Schedule function delayed(
+		required string scheduleKind,
+		required numeric duration,
+		required string unit
+	) {
 		if ( arguments.duration < 0 ) {
-			throw( type: "BXEffect.InvalidSchedule", message: "Schedule delays must be non-negative" );
+			throw( type: "bxeffect.InvalidScheduleException", message: "Schedule delays must be non-negative" );
 		}
-		return arguments.duration;
+		toMillis( arguments.duration, arguments.unit );
+		return new Schedule(
+			scheduleKind: arguments.scheduleKind,
+			delay: arguments.duration,
+			timeUnit: arguments.unit
+		);
 	}
 
-	private static function custom( required function decision ) {
+	/**
+	 * Stores a composed decision callback as a Schedule.
+	 *
+	 * @decision Callback receiving recurrence, value, scheduledAt, and nowMillis and returning a decision struct.
+	 * @return A custom Schedule.
+	 */
+	private static Schedule function custom( required function decision ) {
 		return new Schedule( scheduleKind: "Custom", decision: arguments.decision );
 	}
 
-	private static function firstScheduledAt( required struct leftDecision, required struct rightDecision ) {
+	/**
+	 * Preserves the left non-null timing anchor, falling back to the right anchor.
+	 *
+	 * @leftDecision Decision from the left composed Schedule.
+	 * @rightDecision Decision from the right composed Schedule.
+	 * @return The next scheduled time, or null.
+	 */
+	private static any function firstScheduledAt( required struct leftDecision, required struct rightDecision ) {
 		return structKeyExists( arguments.leftDecision, "nextScheduledAt" )
 			&& !isNull( arguments.leftDecision.nextScheduledAt )
 			? arguments.leftDecision.nextScheduledAt
@@ -209,6 +309,13 @@ class {
 			);
 	}
 
+	/**
+	 * Converts supported singular/plural/short time units into milliseconds.
+	 *
+	 * @duration Non-negative delay or elapsed amount in the supplied unit.
+	 * @unit Required time unit to convert to milliseconds.
+	 * @return The converted duration; invalid units throw InvalidTimeUnitException.
+	 */
 	private static numeric function toMillis( required numeric duration, required string unit ) {
 		switch ( lCase( arguments.unit ) ) {
 			case "millisecond":
@@ -233,7 +340,7 @@ class {
 				return arguments.duration * 86400000;
 		}
 
-		throw( type: "BXEffect.InvalidTimeUnit", message: "Unsupported Schedule unit [#arguments.unit#]" );
+		throw( type: "bxeffect.InvalidTimeUnitException", message: "Unsupported Schedule unit [#arguments.unit#]" );
 	}
 
 }

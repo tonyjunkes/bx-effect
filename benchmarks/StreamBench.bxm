@@ -1,7 +1,7 @@
 <bx:script>
-import models.effect.Effect@bxEffect;
-import models.effect.Queue@bxEffect;
-import models.effect.Stream@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Queue@bxeffect;
+import models.effect.Stream@bxeffect;
 import java.lang.Runtime;
 import java.lang.System;
 import benchmarks.BenchmarkSupport;
@@ -66,7 +66,7 @@ if (
 	|| collected.len() != 100000
 ) {
 	throw(
-		type: "BXEffect.BenchmarkFailure",
+		type: "bxeffect.benchmarks.BenchmarkFailureException",
 		message: "Stream benchmark correctness check failed"
 	);
 }

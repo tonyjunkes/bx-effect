@@ -1,66 +1,122 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
-    tags:
-      - "*"
+    branches:
+      - main
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  publish-forgebox:
-    # Disable for now
-    if: false
-    name: Verify and publish ForgeBox package
-    runs-on: ubuntu-latest
+  release:
+    name: Verify and publish release
+    # workflow_dispatch has no branch filter; guard manual runs as well.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate release version and tag
+        id: release
+        # env:
+          # FORGEBOX_API_TOKEN: ${{ secrets.FORGEBOX_API_TOKEN }}
+        run: |
+          # test -n "$FORGEBOX_API_TOKEN" || { echo '::error::FORGEBOX_API_TOKEN is required'; exit 1; }
+          package_version="$(jq -er '.version' box.json)"
+          # SemVer, including prereleases and build metadata; tags have no v prefix.
+          number='(0|[1-9][0-9]*)'
+          identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+          if ! [[ "$package_version" =~ ^$number\.$number\.$number(-$identifier(\.$identifier)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo '::error::box.json must contain a valid semantic version'
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/$package_version"; then
+            test "$(git rev-parse "refs/tags/$package_version^{commit}")" = "$(git rev-parse HEAD)" || {
+              echo '::error::Existing release tag points to a different commit'
+              exit 1
+            }
+          fi
+          echo "tag=$package_version" >> "$GITHUB_OUTPUT"
 
       - name: Set up BoxLang
         uses: ortus-boxlang/setup-boxlang@main
         with:
-          version: "1.16.0"
+          version: latest
           with-commandbox: true
 
       - name: Install development dependencies
         run: box install
 
       - name: Run TestBox
-        run: >-
-          boxlang --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx
-          --directory=tests.specs
-          --stream
-          --write-report=false
-          --properties-summary=false
-          --stacktrace=short
+        run: |
+          boxlang --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx \
+            --directory=tests.specs --stream --write-report=true --write-json-report=true \
+            --reportpath="$RUNNER_TEMP/release-tests" --properties-summary=false --stacktrace=short
+          # The runner can exit zero even when specs fail; inspect the actual totals.
+          jq -e '.totalFail == 0 and .totalError == 0 and .totalPass > 0' \
+            "$RUNNER_TEMP/release-tests/report.json"
 
       - name: Verify module setting override
-        run: >-
-          boxlang --bx-config tests/boxlang.executor-override.json testbox/system/runners/BoxLangRunner.bx
-          --directory=tests.specs.module
-          --stream
-          --write-report=false
-          --properties-summary=false
-          --stacktrace=short
+        run: |
+          boxlang --bx-home .boxlang/test --bx-config tests/boxlang.executor-override.json testbox/system/runners/BoxLangRunner.bx \
+            --directory=tests.specs.module --stream --write-report=true --write-json-report=true \
+            --reportpath="$RUNNER_TEMP/release-override" --properties-summary=false --stacktrace=short
+          jq -e '.totalFail == 0 and .totalError == 0 and .totalPass > 0' \
+            "$RUNNER_TEMP/release-override/report.json"
 
       - name: Validate package descriptor
         run: box package show
 
-      - name: Verify release tag matches package version
+      - name: Create release tag on the tested commit
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          package_version="$(box package show | jq -r '.version')"
-          test "$package_version" = "$RELEASE_TAG"
+          if ! git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG" HEAD
+          fi
+          git push origin "refs/tags/$RELEASE_TAG"
 
+      # Temporarily paused; remove this guard to resume ForgeBox publishing.
       - name: Publish to ForgeBox
+        if: ${{ false }}
         env:
           FORGEBOX_API_TOKEN: ${{ secrets.FORGEBOX_API_TOKEN }}
         run: |
-          test -n "$FORGEBOX_API_TOKEN"
           box config set nonInteractiveShell=true
           box config set endpoints.forgebox.APIToken="$FORGEBOX_API_TOKEN"
-          box publish
+          box publish endpointName=forgebox
+
+      - name: Create release if absent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; leaving it unchanged."
+            exit 0
+          fi
+          flags=()
+          if [[ "${RELEASE_TAG%%+*}" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes \
+            --title "$RELEASE_TAG" "${flags[@]}"

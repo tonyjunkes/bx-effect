@@ -5,8 +5,8 @@ reusable: every consumer opens a fresh cursor, requests one batch at a time,
 and closes the source after success, failure, defect, or interruption.
 
 ```boxlang
-import models.effect.Effect@bxEffect;
-import models.effect.Stream@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Stream@bxeffect;
 
 program = Stream::fromArray( users )
 	.filter( user -> user.active )
@@ -54,6 +54,11 @@ keeps services visible during source acquisition, every pull, and release.
 
 ## Queue and PubSub bridges
 
+Every consumer closes its cursor before returning to following Effect work or
+outer error recovery, including early `take` completion. Resource acquisition
+also registers an idempotent fallback for interruption or failure during cursor
+opening. Releases run once; a release failure remains in the consumer's Cause.
+
 `Stream::fromQueue(queue)` requests one value at a time and does not own the
 Queue. After shutdown, buffered values drain and `QueueShutdown` becomes normal
 stream completion.
@@ -66,4 +71,3 @@ slowest active Stream consumer.
 
 The MVP deliberately has no Channel, Sink, Chunk, replay, merge, concurrent
 flatMap, dropping/sliding buffer, or Java Stream wrapper.
-

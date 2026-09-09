@@ -9,8 +9,8 @@ JDBC, logging, files, or Scheduler.
 Use the optional adapter with an existing logger object or named BoxLang logger:
 
 ```boxlang
-import models.effect.EffectRuntime@bxEffect;
-import models.effect.observability.LoggingObserver@bxEffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.observability.LoggingObserver@bxeffect;
 
 runtime = new EffectRuntime( {
 	observer : LoggingObserver::make( "application", {

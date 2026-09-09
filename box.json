@@ -1,16 +1,19 @@
 {
-    "name":"bx-effect",
-    "version":"0.1.0",
+    "name":"BX Effect",
+    "version":"1.0.0",
     "location":"",
     "author":"Tony Junkes",
     "homepage":"https://github.com/tonyjunkes/bx-effect",
     "documentation":"https://github.com/tonyjunkes/bx-effect",
+    "bugs": "https://github.com/tonyjunkes/bx-effect/issues",
     "repository":{
         "type":"git",
         "URL":"https://github.com/tonyjunkes/bx-effect"
     },
+    "changelog": "https://github.com/tonyjunkes/bx-effect/blob/main/CHANGELOG.md",
     "slug":"bx-effect",
-    "shortDescription":"A BoxLang-native structured effect system inspired by Effect.",
+    "shortDescription":"A structured effect system for BoxLang, inspired by Effect.",
+    "description": "BX Effect is a BoxLang module for combining operations such as HTTP requests, database queries, and file processing into reusable programs. Define the work, choose how failures should be handled, and run it synchronously or asynchronously.",
     "type":"boxlang-modules",
     "keywords":[
         "boxlang",
@@ -29,17 +32,18 @@
             "URL":"https://opensource.org/licenses/MIT"
         }
     ],
-    "devDependencies":{
-        "testbox":"^7.0.0+19"
-    },
     "scripts":{
-        "test":"boxlang cli --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs --stream --write-report=false --properties-summary=false --stacktrace=short"
+        "test":"boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs --stream --write-report=false --properties-summary=false --stacktrace=short"
+    },
+    "devDependencies":{
+        "testbox":"^7.1.0-snapshot"
     },
     "installPaths":{
         "testbox":"testbox/"
     },
     "ignore":[
         "**/.*",
+        "build/**",
         "settings.gradle",
         "gradlew.bat",
         "gradlew",

@@ -1,11 +1,11 @@
-import models.effect.Effect@bxEffect;
-import models.effect.ManagedRuntime@bxEffect;
-import models.effect.Queue@bxEffect;
-import models.effect.Semaphore@bxEffect;
-import models.effect.context.Context@bxEffect;
-import models.effect.context.Layer@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
-import models.effect.testing.TestClock@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.ManagedRuntime@bxeffect;
+import models.effect.Queue@bxeffect;
+import models.effect.Semaphore@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
 import java.util.concurrent.atomic.AtomicInteger;
 import tests.resources.AsyncTestSupport;
 
@@ -103,7 +103,7 @@ class extends="testbox.system.BaseSpec" {
 					).flatMap( ( acquiredAttempt ) => {
 						if ( acquiredAttempt == 1 ) {
 							return Effect::sync( () => {
-								throw( type: "BXEffect.ManagedBuildDefect", message: "broken build" );
+								throw( type: "bxeffect.testing.ManagedBuildDefectException", message: "broken build" );
 							} );
 						}
 						return Effect::succeed( baseContext.add( tagToUse, acquiredAttempt ) );
@@ -159,7 +159,7 @@ class extends="testbox.system.BaseSpec" {
 				expect( runtime.runSync( Effect::service( tagToUse ).provide( localContext ) ) ).toBe( "local" );
 				expect( runtime.runSyncExit( Effect::fail( "expected" ) ).cause().kind() ).toBe( "Fail" );
 				expect( runtime.runSyncExit( Effect::sync( () => {
-					throw( type: "BXEffect.ManagedRunDefect", message: "broken run" );
+					throw( type: "bxeffect.testing.ManagedRunDefectException", message: "broken run" );
 				} ) ).cause().kind() ).toBe( "Die" );
 				expect( runtime.runSync( Effect::service( tagToUse ) ) ).toBe( "managed" );
 				expect( releases ).toBe( 0 );
@@ -341,7 +341,7 @@ class extends="testbox.system.BaseSpec" {
 						)
 					),
 					{ observer: ( eventName, details ) => {
-						throw( type: "BXEffect.ManagedObserverFailure", message: eventName );
+						throw( type: "bxeffect.testing.ManagedObserverFailureException", message: eventName );
 					} }
 				);
 
@@ -378,7 +378,7 @@ class extends="testbox.system.BaseSpec" {
 
 			it( "rejects values that are not Layers", () => {
 				expect( () => ManagedRuntime::make( {} ) )
-					.toThrow( type: "BXEffect.InvalidManagedLayer" );
+					.toThrow( type: "bxeffect.InvalidManagedLayerException" );
 			} );
 
 		} );

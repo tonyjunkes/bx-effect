@@ -6,12 +6,18 @@ policies—rather than attempting a source-compatible port of TypeScript APIs.
 
 ## Current upstream check
 
-Checked 2026-08-23 against Effect main at commit
-[`1144032cedda7b5eacc1ebf980d06957c7a59ddf`](https://github.com/Effect-TS/effect/tree/1144032cedda7b5eacc1ebf980d06957c7a59ddf).
-The Effect API site identified v4 as release candidate `4.0.0-rc.111` at that
-review point. BX Effect tracks stable concepts rather than beta/RC spellings,
+Checked 2026-09-05 against Effect main at commit
+[`a29b8f4de5aee58dd9ee645365c04cfe1ea6fa9f`](https://github.com/Effect-TS/effect/tree/a29b8f4de5aee58dd9ee645365c04cfe1ea6fa9f).
+The pinned package identifies v4 as release candidate `4.0.0-rc.112`.
+BX Effect tracks stable concepts rather than beta/RC spellings,
 does not promise source compatibility, and pins each comparison so future
 upstream changes are explicit.
+
+The [2026-09-05 feature and implementation audit](effect-v4-audit.md) records
+the complete feature-family comparison, native-platform choices, reproducible
+timing/resource/Layer defects, and their completed corrections. Focused
+regression specs now cover those edge cases; alignment is not an exhaustive
+correctness or performance certification.
 
 ## Deliberate differences
 
@@ -20,6 +26,17 @@ upstream changes are explicit.
   runtime through `Exit`, `Cause`, and `Context`.
 - BoxLang lambdas replace `pipe` and generator-based `Effect.gen`; `map`,
   `flatMap`, and `tap` are the direct, idiomatic composition surface.
+- Effect v4 flattens Cause reasons and combines them with `Cause.combine`.
+  BX Effect deliberately retains immutable sequential/parallel trees and their
+  diagnostic distinction. See the [v4 Cause guide](https://effect.website/docs/v4/data-types/cause).
+- BX `all` defaults to unbounded concurrency, whereas upstream `all` defaults
+  to sequential execution. BX `forEach` defaults to concurrency one. BX `race`
+  selects the first completion (upstream `raceFirst`/`raceAllFirst`), while
+  `firstSuccessOf` selects the first concurrent success. See
+  [v4 concurrency](https://effect.website/docs/v4/concurrency/basic-concurrency).
+- BX `runSync` can block on async instructions. It does not have upstream's
+  restriction to synchronously completing Effects. Use `runFuture` or `runFork`
+  when caller-thread blocking is inappropriate.
 - Native `BoxFuture`, `asyncAll`, `asyncAny`, and named BoxLang executors power
   async work. The iterative interpreter blocks only its `io-tasks` virtual
   thread while it awaits a nested BoxFuture; `runFuture` remains non-blocking to
@@ -58,6 +75,6 @@ platform facilities.
 ## Sources
 
 - [Effect home and documentation](https://effect.website/)
-- [Pinned Effect source review](https://github.com/Effect-TS/effect/tree/1144032cedda7b5eacc1ebf980d06957c7a59ddf)
+- [Pinned Effect source review](https://github.com/Effect-TS/effect/tree/a29b8f4de5aee58dd9ee645365c04cfe1ea6fa9f)
 - [BoxLang asynchronous programming](https://boxlang.ortusbooks.com/boxlang-framework/asynchronous-programming)
 - [BoxLang module configuration](https://boxlang.ortusbooks.com/boxlang-framework/module-development/configuration)

@@ -5,10 +5,16 @@ class {
 
 	variables.tagKey = "";
 
-	function init( required string tagKey ) {
+	/**
+	 * Stores a nonblank service key; whitespace is validated but not trimmed from the stored key.
+	 *
+	 * @tagKey Nonblank stable service key, preserved as supplied.
+	 * @return This ServiceTag.
+	 */
+	ServiceTag function init( required string tagKey ) {
 		if ( arguments.tagKey.trim().len() == 0 ) {
 			throw(
-				type: "BXEffect.InvalidServiceTag",
+				type: "bxeffect.context.InvalidServiceTagException",
 				message: "A ServiceTag key must not be blank"
 			);
 		}
@@ -16,14 +22,31 @@ class {
 		return this;
 	}
 
-	static function of( required string key ) {
+	/**
+	 * Creates a service identity from a nonblank key.
+	 *
+	 * @key Nonblank stable service key.
+	 * @return A ServiceTag.
+	 */
+	static ServiceTag function of( required string key ) {
 		return new ServiceTag( arguments.key );
 	}
 
+	/**
+	 * Reads the service lookup key.
+	 *
+	 * @return The original key string.
+	 */
 	string function key() {
 		return variables.tagKey;
 	}
 
+	/**
+	 * Compares another tag-like object's key using BoxLang equality.
+	 *
+	 * @other Value to compose or compare with this instance.
+	 * @return Whether the other object exposes key/hashCode and has an equal key.
+	 */
 	boolean function equals( required any other ) {
 		return isObject( arguments.other )
 			&& structKeyExists( arguments.other, "key" )
@@ -31,10 +54,20 @@ class {
 			&& variables.tagKey == arguments.other.key();
 	}
 
+	/**
+	 * Delegates hashing to the stored key.
+	 *
+	 * @return The native string hash code.
+	 */
 	numeric function hashCode() {
 		return variables.tagKey.hashCode();
 	}
 
+	/**
+	 * Formats the service identity for diagnostics.
+	 *
+	 * @return ServiceTag(key).
+	 */
 	string function toString() {
 		return "ServiceTag(" & variables.tagKey & ")";
 	}

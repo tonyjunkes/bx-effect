@@ -1,0 +1,127 @@
+import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.Scope@bxeffect;
+import models.effect.Stream@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Acquisition handoffs", () => {
+			it( "registers nested releases through Context restoration before interruption", () => {
+				var entered = new CountDownLatch( 1 );
+				var proceed = new CountDownLatch( 1 );
+				var continued = new AtomicBoolean( false );
+				var released = new java.util.concurrent.CopyOnWriteArrayList();
+				var label = ServiceTag::of( "handoff/Label" );
+				var acquiring = Effect::sync( () => {
+					entered.countDown();
+					if ( !proceed.await( 5, TimeUnit::SECONDS ) ) {
+						throw( type: "bxeffect.testing.TestTimeoutException", message: "Acquisition gate timed out" );
+					}
+					return "resource";
+				} ).provideService( label, "acquiring" );
+				var inner = Effect::acquireRelease( acquiring, ( resource ) =>
+					Effect::service( label ).map( ( value ) => released.add( "inner:#value#:#resource#" ) )
+				);
+				var program = Effect::acquireRelease( inner, ( resource ) =>
+					Effect::sync( () => released.add( "outer:#resource#" ) )
+				).flatMap( ( resource ) => Effect::sync( () => continued.set( true ) ) )
+					.provideService( label, "outer" );
+				var fiber = Effect::runFork( program );
+				try {
+					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					fiber.interrupt();
+				} finally {
+					proceed.countDown();
+				}
+				var outcome = fiber._terminationFuture().get( 5000 );
+				expect( outcome.cause().kind() ).toBe( "Interrupt" );
+				expect( continued.get() ).toBeFalse();
+				expect( released.toArray() ).toBe( [ "outer:resource", "inner:outer:resource" ] );
+			} );
+
+			it( "retains cleanup failure when interrupted acquisition returns a resource", () => {
+				var entered = new CountDownLatch( 1 );
+				var proceed = new CountDownLatch( 1 );
+				var fiber = Effect::runFork( Effect::acquireRelease( Effect::sync( () => {
+					entered.countDown();
+					if ( !proceed.await( 5, TimeUnit::SECONDS ) ) {
+						throw( type: "bxeffect.testing.TestTimeoutException", message: "Acquisition gate timed out" );
+					}
+					return "resource";
+				} ), ( resource ) => Effect::fail( "release-failed" ) ) );
+				try {
+					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					fiber.interrupt();
+				} finally {
+					proceed.countDown();
+				}
+				var outcome = fiber._terminationFuture().get( 5000 );
+				expect( outcome.cause().kind() ).toBe( "Sequential" );
+				expect( outcome.cause().left().kind() ).toBe( "Interrupt" );
+				expect( outcome.cause().right().error() ).toBe( "release-failed" );
+			} );
+
+			it( "keeps pending async acquisition interruptible without releasing an absent resource", () => {
+				var pending = futureNew();
+				var entered = new CountDownLatch( 1 );
+				var releases = new AtomicInteger( 0 );
+				var fiber = Effect::runFork( Effect::acquireRelease(
+					Effect::fromBoxFuture( () => { entered.countDown(); return pending; } ),
+					( resource ) => Effect::sync( () => releases.incrementAndGet() )
+				) );
+				try {
+					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+				} finally {
+					fiber.interrupt();
+				}
+				expect( fiber._terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
+				expect( pending.isCancelled() ).toBeTrue();
+				expect( releases.get() ).toBe( 0 );
+			} );
+
+			it( "releases a resource rejected by an explicitly closed Scope", () => {
+				var activeScope = new Scope();
+				activeScope.close();
+				var releases = 0;
+				var runtime = new EffectRuntime();
+				var outcome = runtime._runSyncExitWithContext( Effect::acquireRelease(
+					Effect::succeed( "resource" ),
+					( resource ) => Effect::sync( () => releases++ )
+				), Context::empty(), null, activeScope );
+				expect( outcome.cause().kind() ).toBe( "Die" );
+				expect( outcome.cause().defect().type ).toBe( "bxeffect.ScopeClosedException" );
+				expect( releases ).toBe( 1 );
+			} );
+
+			it( "releases a Stream resource interrupted before cursor construction", () => {
+				var entered = new CountDownLatch( 1 );
+				var proceed = new CountDownLatch( 1 );
+				var releases = new AtomicInteger( 0 );
+				var source = Stream::acquireRelease( Effect::sync( () => {
+					entered.countDown();
+					if ( !proceed.await( 5, TimeUnit::SECONDS ) ) {
+						throw( type: "bxeffect.testing.TestTimeoutException", message: "Acquisition gate timed out" );
+					}
+					return "resource";
+				} ), ( resource ) => Effect::sync( () => releases.incrementAndGet() ),
+				( resource ) => Stream::succeed( resource ) );
+				var fiber = Effect::runFork( source.runCollect() );
+				try {
+					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					fiber.interrupt();
+				} finally {
+					proceed.countDown();
+				}
+				expect( fiber._terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
+				expect( releases.get() ).toBe( 1 );
+			} );
+		} );
+	}
+}

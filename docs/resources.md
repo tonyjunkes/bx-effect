@@ -4,6 +4,13 @@
 run exactly once in LIFO order after success, expected failure, defects, or a
 timeout/fiber interruption request.
 
+A successful acquisition installs its release before the runtime observes a
+pending interruption. Acquisition waits remain interruptible. Wrap the actual
+resource-producing Effect with `acquireRelease` before adding user `map` or
+`flatMap` work, so cleanup already owns the resource if that work fails. If a
+closing Scope rejects registration, the runtime releases the resource immediately
+and retains any cleanup failure alongside the registration defect.
+
 ```boxlang
 connection = Effect::acquireRelease(
     Effect::sync( () => datasource.getConnection() ),

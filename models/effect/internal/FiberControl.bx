@@ -12,53 +12,105 @@ class {
 	variables.fiberId = "";
 	variables.interrupted = new java.util.concurrent.atomic.AtomicBoolean( false );
 
-	function init( required string fiberId ) {
+	/**
+	 * Stores the identity for runtime-private cancellation state.
+	 *
+	 * @fiberId Logical Fiber identifier used in interruption and diagnostics.
+	 * @return This control object.
+	 */
+	FiberControl function init( required string fiberId ) {
 		variables.fiberId = arguments.fiberId;
 		return this;
 	}
 
-	function setActiveFuture( required any future ) {
+	/**
+	 * Registers the current native wait and cancels it immediately if interruption was already requested.
+	 *
+	 * @future Native BoxFuture currently representing execution or a registered wait.
+	 * @return This control object.
+	 */
+	FiberControl function setActiveFuture( required any future ) {
 		variables.activeFuture.set( arguments.future );
+		// Close the race where interruption arrived before the wait was registered.
 		if ( variables.interrupted.get() ) {
 			cancelActiveFuture();
 		}
 		return this;
 	}
 
-	function clearActiveFuture( required any future ) {
+	/**
+	 * Clears only the matching wait so stale cleanup cannot erase a newer registration.
+	 *
+	 * @future Native BoxFuture currently representing execution or a registered wait.
+	 * @return This control object.
+	 */
+	FiberControl function clearActiveFuture( required any future ) {
 		variables.activeFuture.compareAndSet( arguments.future, null );
 		return this;
 	}
 
-	function setActiveThread( required any workerThread ) {
+	/**
+	 * Registers the worker only inside a known interruptible instruction and honors pending interruption.
+	 *
+	 * @workerThread Worker registered only during a known interruptible native instruction.
+	 * @return This control object.
+	 */
+	FiberControl function setActiveThread( required any workerThread ) {
 		variables.activeThread.set( arguments.workerThread );
+		// A cancellation before registration must still wake the imminent wait.
 		if ( variables.interrupted.get() ) {
 			interruptActiveThread();
 		}
 		return this;
 	}
 
-	function clearActiveThread( required any workerThread ) {
+	/**
+	 * Clears only the matching worker registration after the blocking instruction exits.
+	 *
+	 * @workerThread Worker registered only during a known interruptible native instruction.
+	 * @return This control object.
+	 */
+	FiberControl function clearActiveThread( required any workerThread ) {
 		variables.activeThread.compareAndSet( arguments.workerThread, null );
 		return this;
 	}
 
-	function interrupt() {
+	/**
+	 * Records interruption and requests cancellation of the active future and registered blocking thread.
+	 *
+	 * @return This control object.
+	 */
+	FiberControl function interrupt() {
 		variables.interrupted.set( true );
 		cancelActiveFuture();
 		interruptActiveThread();
 		return this;
 	}
 
+	/**
+	 * Reads the monotonic interruption flag.
+	 *
+	 * @return Whether cancellation has been requested.
+	 */
 	boolean function isInterrupted() {
 		return variables.interrupted.get();
 	}
 
+	/**
+	 * Reads the logical identity used for interruption Causes.
+	 *
+	 * @return The Fiber identifier.
+	 */
 	string function fiberId() {
 		return variables.fiberId;
 	}
 
-	private function cancelActiveFuture() {
+	/**
+	 * Best-effort cancels an active incomplete native future.
+	 *
+	 * @return No value; unsupported cancellation is ignored.
+	 */
+	private void function cancelActiveFuture() {
 		var currentFuture = variables.activeFuture.get();
 		if ( isNull( currentFuture ) || currentFuture.isDone() ) {
 			return;
@@ -71,7 +123,12 @@ class {
 		}
 	}
 
-	private function interruptActiveThread() {
+	/**
+	 * Best-effort interrupts only the registered blocking-instruction worker.
+	 *
+	 * @return No value.
+	 */
+	private void function interruptActiveThread() {
 		var workerThread = variables.activeThread.get();
 		if ( isNull( workerThread ) ) {
 			return;

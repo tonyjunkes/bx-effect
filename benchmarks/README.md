@@ -5,6 +5,11 @@ timing gates. Each scenario performs one warmup followed by five measured
 samples and reports minimum and median elapsed milliseconds using
 `java.lang.System.nanoTime()`.
 
+Async and concurrency scenarios also require elapsed time to reach the requested
+delay (with 1 ms rounding tolerance). Results from before the live Clock fix are
+not valid delay baselines. Use an isolated `BOXLANG_HOME` when an installed copy
+of bx-effect would otherwise shadow the checkout's module imports.
+
 Run them from the repository root with the commands listed in `AGENTS.md`, for
 example:
 

@@ -1,8 +1,8 @@
 <bx:script>
-import models.effect.Effect@bxEffect;
-import models.effect.ManagedRuntime@bxEffect;
-import models.effect.context.Layer@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.ManagedRuntime@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
 import java.util.concurrent.atomic.AtomicInteger;
 import benchmarks.BenchmarkSupport;
 
@@ -40,7 +40,7 @@ if (
 	|| closeExit.isFailure()
 ) {
 	throw(
-		type: "BXEffect.BenchmarkFailure",
+		type: "bxeffect.benchmarks.BenchmarkFailureException",
 		message: "ManagedRuntime did not share one build across repeated boundaries or release it once"
 	);
 }

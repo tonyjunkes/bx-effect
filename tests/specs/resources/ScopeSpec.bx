@@ -1,10 +1,10 @@
-import models.effect.Effect@bxEffect;
-import models.effect.EffectRuntime@bxEffect;
-import models.effect.Scope@bxEffect;
-import models.effect.context.Context@bxEffect;
-import models.effect.context.Layer@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
-import models.effect.testing.TestClock@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.Scope@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import tests.resources.AsyncTestSupport;
@@ -28,11 +28,11 @@ class extends="testbox.system.BaseSpec" {
 				expect( activeScope.isClosed() ).toBeTrue();
 				expect( activeScope.close() ).toBe( [] );
 				expect( () => activeScope.addFinalizer( () => {}, Context::empty() ) )
-					.toThrow( type: "BXEffect.ScopeClosed" );
+					.toThrow( type: "bxeffect.ScopeClosedException" );
 				expect( () => activeScope.addChild( {
 					isDone : () => true,
 					interrupt : () => null
-				} ) ).toThrow( type: "BXEffect.ScopeClosed" );
+				} ) ).toThrow( type: "bxeffect.ScopeClosedException" );
 			} );
 
 			it( "runs ensuring finalizers for success, expected failure, and defects", () => {
@@ -45,7 +45,7 @@ class extends="testbox.system.BaseSpec" {
 					.toBe( "bad" );
 				Effect::runSyncExit(
 					Effect::sync( () => {
-						throw( type: "BXEffect.TestDefect", message: "boom" );
+						throw( type: "bxeffect.testing.TestDefectException", message: "boom" );
 					} ).ensuring( finalizer )
 				);
 
@@ -56,7 +56,7 @@ class extends="testbox.system.BaseSpec" {
 				var cleaned = false;
 				var program = Effect::succeed( "value" )
 					.onExit( ( ignoredExit ) => {
-						throw( type: "BXEffect.ThrowingFinalizer", message: "broken cleanup" );
+						throw( type: "bxeffect.testing.ThrowingFinalizerException", message: "broken cleanup" );
 					} )
 					.ensuring( Effect::sync( () => {
 						cleaned = true;
@@ -134,7 +134,7 @@ class extends="testbox.system.BaseSpec" {
 					Effect::succeed( "second" ),
 					( ignored ) => Effect::sync( () => {
 						events.append( "release-2" );
-						throw( type: "BXEffect.TestCleanup", message: "cleanup failed" );
+						throw( type: "bxeffect.testing.TestCleanupException", message: "cleanup failed" );
 					} )
 				);
 				var exit = Effect::runSyncExit(

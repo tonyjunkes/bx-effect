@@ -8,10 +8,17 @@ class {
 	variables.target = null;
 	variables.levels = {};
 
-	function init( required any loggerOrName, struct levels = {} ) {
+	/**
+	 * Configures an existing logger target and event levels without creating a logging lifecycle.
+	 *
+	 * @loggerOrName Existing logger object or named writeLog target.
+	 * @levels Event-to-level overrides; the asterisk key supplies the fallback level.
+	 * @return This observer.
+	 */
+	LoggingObserver function init( required any loggerOrName, struct levels = {} ) {
 		if ( !isObject( arguments.loggerOrName ) && !isSimpleValue( arguments.loggerOrName ) ) {
 			throw(
-				type: "BXEffect.InvalidLoggingObserverTarget",
+				type: "bxeffect.observability.InvalidLoggingObserverTargetException",
 				message: "LoggingObserver requires a logger object or logger name"
 			);
 		}
@@ -28,11 +35,25 @@ class {
 		return this;
 	}
 
-	static function make( required any loggerOrName, struct levels = {} ) {
+	/**
+	 * Creates an optional runtime observer adapter for an existing logger.
+	 *
+	 * @loggerOrName Existing logger object or named writeLog target.
+	 * @levels Event-to-level overrides; the asterisk key supplies the fallback level.
+	 * @return A LoggingObserver.
+	 */
+	static LoggingObserver function make( required any loggerOrName, struct levels = {} ) {
 		return new LoggingObserver( arguments.loggerOrName, arguments.levels );
 	}
 
-	function onEvent( required string eventName, struct details = {} ) {
+	/**
+	 * Writes one diagnostic event at its configured level, suppressing adapter failures.
+	 *
+	 * @eventName Runtime diagnostic event name.
+	 * @details Event-specific diagnostic fields; defaults to an empty struct.
+	 * @return No value.
+	 */
+	void function onEvent( required string eventName, struct details = {} ) {
 		try {
 			var level = structKeyExists( variables.levels, arguments.eventName )
 				? variables.levels[ arguments.eventName ]
@@ -52,6 +73,12 @@ class {
 		}
 	}
 
+	/**
+	 * Serializes event data without letting serialization failure escape.
+	 *
+	 * @details Event-specific diagnostic fields; defaults to an empty struct.
+	 * @return JSON text, or a details-unavailable marker.
+	 */
 	private string function renderDetails( required struct details ) {
 		try {
 			return JSONSerialize( arguments.details );
@@ -60,17 +87,29 @@ class {
 		}
 	}
 
+	/**
+	 * Validates and lowercases a configured logger level.
+	 *
+	 * @level Logger level to validate or translate.
+	 * @return trace, debug, info, warn, or error.
+	 */
 	private string function normalizeLevel( required any level ) {
 		var requested = lCase( arguments.level.toString() );
 		if ( listFindNoCase( "trace,debug,info,warn,error", requested ) == 0 ) {
 			throw(
-				type: "BXEffect.InvalidLoggingObserverLevel",
+				type: "bxeffect.observability.InvalidLoggingObserverLevelException",
 				message: "LoggingObserver levels must be trace, debug, info, warn, or error"
 			);
 		}
 		return requested;
 	}
 
+	/**
+	 * Maps logger method names to native writeLog level names.
+	 *
+	 * @level Logger level to validate or translate.
+	 * @return The native level string.
+	 */
 	private string function writeLogLevel( required string level ) {
 		switch ( arguments.level ) {
 			case "trace":

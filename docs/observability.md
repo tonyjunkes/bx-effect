@@ -7,7 +7,7 @@ or telemetry dependency.
 Pass an observer function when constructing an `EffectRuntime`:
 
 ```boxlang
-import models.effect.EffectRuntime@bxEffect;
+import models.effect.EffectRuntime@bxeffect;
 
 runtime = new EffectRuntime( {
     observer: ( eventName, details ) => writeLog(
@@ -44,7 +44,7 @@ This keeps observability diagnostic-only.
 
 ## Native logger adapter
 
-`models.effect.observability.LoggingObserver@bxEffect` maps events to either an
+`models.effect.observability.LoggingObserver@bxeffect` maps events to either an
 existing logger object (`trace`, `debug`, `info`, `warn`, and `error` methods)
 or a named BoxLang `writeLog` target. `LoggingObserver::make(target, levels)`
 accepts per-event levels plus `"*"` for the default. It configures no appenders

@@ -1,5 +1,5 @@
 <bx:script>
-import models.effect.Effect@bxEffect;
+import models.effect.Effect@bxeffect;
 import benchmarks.BenchmarkSupport;
 
 delayMs = 20;
@@ -15,10 +15,10 @@ for ( size in sizes ) {
 		() => Effect::runSync( Effect::all( programs, { concurrency: "unbounded" } ) )
 	);
 	result = measurement.value;
-	if ( result.len() != size ) {
+	if ( result.len() != size || measurement.minimumMs < delayMs - 1 ) {
 		throw(
-			type: "BXEffect.BenchmarkFailure",
-			message: "Expected #size# concurrent results but received #result.len()#"
+			type: "bxeffect.benchmarks.BenchmarkFailureException",
+			message: "Expected #size# results after at least #delayMs# ms; received #result.len()# in #measurement.minimumMs# ms"
 		);
 	}
 	writeOutput( "size=#size# delayMs=#delayMs# samples=5 minimumMs=#measurement.minimumMs# medianMs=#measurement.medianMs# " );

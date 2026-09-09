@@ -1,7 +1,7 @@
-import models.effect.Effect@bxEffect;
-import models.effect.Cause@bxEffect;
-import models.effect.Deferred@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Cause@bxeffect;
+import models.effect.Deferred@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
 import tests.resources.AsyncTestSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -26,7 +26,7 @@ class extends="testbox.system.BaseSpec" {
 			it( "represents failed BoxFutures as defects", () => {
 				var exit = Effect::runSyncExit(
 					Effect::fromBoxFuture( () => futureNew( () => {
-						throw( type: "BXEffect.AsyncDefect", message: "future failed" );
+						throw( type: "bxeffect.testing.AsyncDefectException", message: "future failed" );
 					} ) )
 				);
 
@@ -151,7 +151,7 @@ class extends="testbox.system.BaseSpec" {
 				var exit = Effect::runSyncExit( Effect::all( [
 					Effect::fail( "expected" ),
 					Effect::sync( () => {
-						throw( type: "BXEffect.AccumulatedDefect", message: "broken" );
+						throw( type: "bxeffect.testing.AccumulatedDefectException", message: "broken" );
 					} ),
 					Effect::_halt( Cause::interrupt( "fiber-input" ) )
 				], { mode: "accumulate" } ) );
@@ -181,11 +181,11 @@ class extends="testbox.system.BaseSpec" {
 
 			it( "rejects unsupported all options before it can start work", () => {
 				expect( () => Effect::all( [], { concurrency: 0 } ) )
-					.toThrow( type: "BXEffect.InvalidConcurrency" );
+					.toThrow( type: "bxeffect.InvalidConcurrencyException" );
 				expect( () => Effect::all( [], { mode: "firstSuccess" } ) )
-					.toThrow( type: "BXEffect.InvalidAllMode" );
+					.toThrow( type: "bxeffect.InvalidAllModeException" );
 				expect( () => Effect::all( [], { workers: 2 } ) )
-					.toThrow( type: "BXEffect.InvalidAllOption" );
+					.toThrow( type: "bxeffect.InvalidAllOptionException" );
 			} );
 
 			it( "traverses values lazily and preserves mapped result order", () => {
@@ -289,7 +289,7 @@ class extends="testbox.system.BaseSpec" {
 			} );
 
 			it( "rejects empty races at construction", () => {
-				expect( () => Effect::race( [] ) ).toThrow( type: "BXEffect.EmptyRace" );
+				expect( () => Effect::race( [] ) ).toThrow( type: "bxeffect.EmptyRaceException" );
 			} );
 
 			it( "waits past failures until firstSuccessOf receives a success", () => {
@@ -319,7 +319,7 @@ class extends="testbox.system.BaseSpec" {
 				expect( listFindNoCase( "first,second", errors[ 1 ] ) > 0 ).toBeTrue();
 				expect( listFindNoCase( "first,second", errors[ 2 ] ) > 0 ).toBeTrue();
 				expect( () => Effect::firstSuccessOf( [] ) )
-					.toThrow( type: "BXEffect.EmptyFirstSuccess" );
+					.toThrow( type: "bxeffect.EmptyFirstSuccessException" );
 			} );
 
 			it( "interrupts and finalizes running all siblings after fail-fast failure", () => {

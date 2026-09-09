@@ -1,3 +1,4 @@
+import ortus.boxlang.runtime.dynamic.Attempt;
 import bxModules.bxEffect.models.effect.Effect;
 import bxModules.bxEffect.models.effect.PubSubSubscription;
 
@@ -6,6 +7,8 @@ import bxModules.bxEffect.models.effect.PubSubSubscription;
  *
  * Bounded capacity is governed by the slowest active subscription. The hub is
  * mutable, application-owned coordination state; it is not a Stream or Scope.
+ * Subscription buffers receive no replay. Shutdown clears those buffers and
+ * wakes blocked publishers and consumers; unsubscribe affects one consumer.
  */
 class {
 
@@ -16,10 +19,20 @@ class {
 	variables.notFull = variables.lock.newCondition();
 	variables.shutdown = false;
 
-	function init( numeric capacity = -1 ) {
-		if ( arguments.capacity == 0 || arguments.capacity < -1 || int( arguments.capacity ) != arguments.capacity ) {
+	/**
+	 * Creates an application-owned broadcast hub with explicit subscription lifetimes.
+	 *
+	 * @capacity Positive whole buffer capacity; internal constructors also accept -1 for unbounded.
+	 * @return This PubSub.
+	 */
+	PubSub function init( numeric capacity = -1 ) {
+		if (
+			arguments.capacity == 0
+			|| arguments.capacity < -1
+			|| int( arguments.capacity ) != arguments.capacity
+		) {
 			throw(
-				type: "BXEffect.InvalidPubSubCapacity",
+				type: "bxeffect.InvalidPubSubCapacityException",
 				message: "PubSub capacity must be a positive whole number or unbounded"
 			);
 		}
@@ -27,39 +40,77 @@ class {
 		return this;
 	}
 
-	static function bounded( required numeric capacity ) {
+	/**
+	 * Creates a hub whose publishers wait for capacity in every active subscription.
+	 *
+	 * @capacity Positive whole maximum number of buffered values per consumer.
+	 * @return A new bounded PubSub.
+	 */
+	static PubSub function bounded( required numeric capacity ) {
 		if ( arguments.capacity <= 0 || int( arguments.capacity ) != arguments.capacity ) {
 			throw(
-				type: "BXEffect.InvalidPubSubCapacity",
+				type: "bxeffect.InvalidPubSubCapacityException",
 				message: "PubSub capacity must be a positive whole number"
 			);
 		}
 		return new PubSub( arguments.capacity );
 	}
 
-	static function unbounded() {
+	/**
+	 * Creates a hub without publication backpressure.
+	 *
+	 * @return A new unbounded PubSub.
+	 */
+	static PubSub function unbounded() {
 		return new PubSub();
 	}
 
-	function publish( any value ) {
+	/**
+	 * Describes a broadcast to all active subscribers; a closed hub fails with PubSubShutdown.
+	 *
+	 * @value Value carried by this operation; may be null.
+	 * @return An Effect yielding null when accepted, including when there are no subscribers.
+	 */
+	Effect function publish( any value ) {
 		return Effect::_publishPubSub( this, arguments.value );
 	}
 
-	function subscribe() {
+	/**
+	 * Describes acquisition of a fresh subscription with no replay of earlier values.
+	 *
+	 * @return An Effect yielding the subscription or failing with PubSubShutdown.
+	 */
+	Effect function subscribe() {
 		return Effect::_subscribePubSub( this );
 	}
 
-	function withSubscription( required function use ) {
+	/**
+	 * Acquires a subscription and unsubscribes after the use Effect on every outcome.
+	 *
+	 * @use Callback receiving the subscription and returning the Effect to run before unsubscribe.
+	 * @return An Effect yielding the use result.
+	 */
+	Effect function withSubscription( required function use ) {
 		var useSubscription = arguments.use;
-		return subscribe().flatMap( ( subscription ) =>
-			useSubscription( subscription ).ensuring( subscription.unsubscribe() )
+		return Effect::_acquireUseRelease(
+			subscribe(), useSubscription, ( subscription ) => subscription.unsubscribe()
 		);
 	}
 
-	function shutdown() {
+	/**
+	 * Describes idempotent hub shutdown, clearing subscription buffers and waking all waiters.
+	 *
+	 * @return An Effect yielding true only for the first shutdown.
+	 */
+	Effect function shutdown() {
 		return Effect::sync( () => shutdownNative() );
 	}
 
+	/**
+	 * Reads hub shutdown state under the lock.
+	 *
+	 * @return Whether the hub has shut down.
+	 */
 	boolean function isShutdown() {
 		variables.lock.lock();
 		try {
@@ -69,10 +120,20 @@ class {
 		}
 	}
 
+	/**
+	 * Reads the per-subscription capacity.
+	 *
+	 * @return A positive capacity, or -1 for unbounded.
+	 */
 	numeric function capacity() {
 		return variables.capacity;
 	}
 
+	/**
+	 * Counts active subscriptions under the hub lock.
+	 *
+	 * @return The current count, which may change concurrently.
+	 */
 	numeric function subscriberCount() {
 		variables.lock.lock();
 		try {
@@ -82,8 +143,14 @@ class {
 		}
 	}
 
-	/** Runtime-private interruptible publication. */
-	function _publishNative( any value, any controlState = null ) {
+	/**
+	 * Waits for all active subscriptions to have room, then broadcasts under one lock.
+	 *
+	 * @value Value carried by this operation; may be null.
+	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
+	 * @return An outcome struct with isInterrupted and isShutdown flags.
+	 */
+	struct function _publishNative( any value, any controlState = null ) {
 		variables.lock.lockInterruptibly();
 		try {
 			while ( !variables.shutdown && isFull() ) {
@@ -100,6 +167,8 @@ class {
 			}
 			for ( var subscription in variables.subscriptions ) {
 				subscription._enqueueNative( arguments.value );
+				// Membership and every enqueue share the lock: publication cannot be
+				// partially accepted by only some active subscriptions.
 			}
 			variables.notEmpty.signalAll();
 			return { isInterrupted: false, isShutdown: false };
@@ -108,8 +177,13 @@ class {
 		}
 	}
 
-	/** Runtime-private lazy subscription creation. */
-	function _subscribeNative( any controlState = null ) {
+	/**
+	 * Registers a new subscription unless canceled or shut down.
+	 *
+	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
+	 * @return An outcome struct with flags and the subscription on success.
+	 */
+	struct function _subscribeNative( any controlState = null ) {
 		variables.lock.lockInterruptibly();
 		try {
 			if ( wasInterrupted( arguments.controlState ) ) {
@@ -130,8 +204,15 @@ class {
 		}
 	}
 
-	/** Runtime-private interruptible subscription take. */
-	function _takeNative( required any subscription, any controlState = null ) {
+	/**
+	 * Waits for a subscription value while distinguishing hub closure, unsubscribe, and
+	 * interruption.
+	 *
+	 * @subscription Consumer registered with this parent hub.
+	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
+	 * @return An outcome struct with three status flags and a value on success.
+	 */
+	struct function _takeNative( required any subscription, any controlState = null ) {
 		variables.lock.lockInterruptibly();
 		try {
 			while (
@@ -166,11 +247,20 @@ class {
 		}
 	}
 
-	/** Runtime-private non-blocking subscription poll. */
-	function _pollNative( required any subscription ) {
+	/**
+	 * Immediately dequeues from an active subscription and wakes blocked publishers.
+	 *
+	 * @subscription Consumer registered with this parent hub.
+	 * @return A native Attempt, empty for an empty or closed subscription.
+	 */
+	Attempt function _pollNative( required any subscription ) {
 		variables.lock.lock();
 		try {
-			if ( variables.shutdown || !isSubscriptionActive( arguments.subscription ) || arguments.subscription._isEmptyNative() ) {
+			if (
+				variables.shutdown
+				|| !isSubscriptionActive( arguments.subscription )
+				|| arguments.subscription._isEmptyNative()
+			) {
 				return attempt();
 			}
 			var entry = arguments.subscription._dequeueNative();
@@ -181,14 +271,21 @@ class {
 		}
 	}
 
-	/** Runtime-private explicit subscription release. */
-	function _unsubscribeNative( required any subscription ) {
+	/**
+	 * Removes a subscription, clears its buffer, and wakes consumers and publishers.
+	 *
+	 * @subscription Consumer registered with this parent hub.
+	 * @return True if it was active, otherwise false.
+	 */
+	boolean function _unsubscribeNative( required any subscription ) {
 		variables.lock.lock();
 		try {
 			if ( !variables.subscriptions.remove( arguments.subscription ) ) {
 				return false;
 			}
 			arguments.subscription._shutdownNative();
+			// Removing the slowest subscriber may free publication capacity, while
+			// its own blocked consumer must wake to observe unsubscribe.
 			variables.notEmpty.signalAll();
 			variables.notFull.signalAll();
 			return true;
@@ -197,6 +294,11 @@ class {
 		}
 	}
 
+	/**
+	 * Checks all active buffers while the caller holds the hub lock.
+	 *
+	 * @return Whether any subscription has reached bounded capacity.
+	 */
 	private boolean function isFull() {
 		if ( variables.capacity < 0 ) {
 			return false;
@@ -209,14 +311,31 @@ class {
 		return false;
 	}
 
+	/**
+	 * Checks hub membership while the caller holds the hub lock.
+	 *
+	 * @subscription Consumer registered with this parent hub.
+	 * @return Whether the subscription remains registered.
+	 */
 	private boolean function isSubscriptionActive( required any subscription ) {
 		return variables.subscriptions.contains( arguments.subscription );
 	}
 
+	/**
+	 * Checks optional Fiber cancellation state.
+	 *
+	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
+	 * @return Whether interruption was requested.
+	 */
 	private boolean function wasInterrupted( any controlState = null ) {
 		return !isNull( arguments.controlState ) && arguments.controlState.isInterrupted();
 	}
 
+	/**
+	 * Encodes a canceled subscription wait without using the error channel.
+	 *
+	 * @return An internal status struct marking interruption only.
+	 */
 	private struct function interruptionOutcome() {
 		return {
 			isInterrupted: true,
@@ -225,6 +344,11 @@ class {
 		};
 	}
 
+	/**
+	 * Encodes a take rejected by hub shutdown.
+	 *
+	 * @return An internal status struct marking hub shutdown only.
+	 */
 	private struct function pubSubShutdownOutcome() {
 		return {
 			isInterrupted: false,
@@ -233,6 +357,11 @@ class {
 		};
 	}
 
+	/**
+	 * Encodes a take rejected by explicit unsubscribe.
+	 *
+	 * @return An internal status struct marking subscription shutdown only.
+	 */
 	private struct function subscriptionShutdownOutcome() {
 		return {
 			isInterrupted: false,
@@ -241,6 +370,11 @@ class {
 		};
 	}
 
+	/**
+	 * Closes the hub, discards all subscription buffers, and wakes every waiter.
+	 *
+	 * @return True on the first shutdown, otherwise false.
+	 */
 	private boolean function shutdownNative() {
 		variables.lock.lock();
 		try {

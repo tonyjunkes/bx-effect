@@ -1,3 +1,4 @@
+import ortus.boxlang.runtime.dynamic.Attempt;
 import bxModules.bxEffect.models.effect.Effect;
 
 /**
@@ -5,6 +6,9 @@ import bxModules.bxEffect.models.effect.Effect;
  *
  * Mutable queue state is guarded by JDK ReentrantLock conditions. Blocking
  * operations run as interruptible runtime instructions, never worker futures.
+ * Shutdown rejects offers and wakes waiters, but existing values remain
+ * available until drained. poll/size/isShutdown inspect state immediately;
+ * offer/take/shutdown describe lazy Effects.
  */
 class {
 
@@ -15,10 +19,20 @@ class {
 	variables.notFull = variables.lock.newCondition();
 	variables.shutdown = false;
 
-	function init( numeric capacity = -1 ) {
-		if ( arguments.capacity == 0 || arguments.capacity < -1 || int( arguments.capacity ) != arguments.capacity ) {
+	/**
+	 * Creates an application-owned FIFO buffer with explicit shutdown.
+	 *
+	 * @capacity Positive whole buffer capacity; internal constructors also accept -1 for unbounded.
+	 * @return This Queue.
+	 */
+	Queue function init( numeric capacity = -1 ) {
+		if (
+			arguments.capacity == 0
+			|| arguments.capacity < -1
+			|| int( arguments.capacity ) != arguments.capacity
+		) {
 			throw(
-				type: "BXEffect.InvalidQueueCapacity",
+				type: "bxeffect.InvalidQueueCapacityException",
 				message: "Queue capacity must be a positive whole number or unbounded"
 			);
 		}
@@ -26,29 +40,56 @@ class {
 		return this;
 	}
 
-	static function bounded( required numeric capacity ) {
+	/**
+	 * Creates a Queue whose offers wait when its positive capacity is reached.
+	 *
+	 * @capacity Positive whole maximum number of buffered values per consumer.
+	 * @return A new bounded Queue.
+	 */
+	static Queue function bounded( required numeric capacity ) {
 		if ( arguments.capacity <= 0 || int( arguments.capacity ) != arguments.capacity ) {
 			throw(
-				type: "BXEffect.InvalidQueueCapacity",
+				type: "bxeffect.InvalidQueueCapacityException",
 				message: "Queue capacity must be a positive whole number"
 			);
 		}
 		return new Queue( arguments.capacity );
 	}
 
-	static function unbounded() {
+	/**
+	 * Creates a Queue without capacity backpressure.
+	 *
+	 * @return A new unbounded Queue.
+	 */
+	static Queue function unbounded() {
 		return new Queue();
 	}
 
-	function offer( any value ) {
+	/**
+	 * Describes an interruptible offer; offers after shutdown fail with QueueShutdown.
+	 *
+	 * @value Value carried by this operation; may be null.
+	 * @return An Effect yielding null when accepted.
+	 */
+	Effect function offer( any value ) {
 		return Effect::_offerQueue( this, arguments.value );
 	}
 
-	function take() {
+	/**
+	 * Describes an interruptible FIFO take; a shut down Queue drains before failing with QueueShutdown.
+	 *
+	 * @return An Effect yielding the next value.
+	 */
+	Effect function take() {
 		return Effect::_takeQueue( this );
 	}
 
-	function poll() {
+	/**
+	 * Immediately removes the oldest buffered value, including after shutdown, without waiting.
+	 *
+	 * @return A native Attempt, empty when no value is buffered.
+	 */
+	Attempt function poll() {
 		variables.lock.lock();
 		try {
 			if ( variables.items.isEmpty() ) {
@@ -62,10 +103,20 @@ class {
 		}
 	}
 
-	function shutdown() {
+	/**
+	 * Describes idempotent shutdown, waking waiters while retaining buffered values for draining.
+	 *
+	 * @return An Effect yielding true only for the first shutdown.
+	 */
+	Effect function shutdown() {
 		return Effect::sync( () => shutdownNative() );
 	}
 
+	/**
+	 * Reads the shutdown flag under the Queue lock.
+	 *
+	 * @return Whether shutdown has begun.
+	 */
 	boolean function isShutdown() {
 		variables.lock.lock();
 		try {
@@ -75,6 +126,11 @@ class {
 		}
 	}
 
+	/**
+	 * Reads the buffered item count under the Queue lock.
+	 *
+	 * @return The current size, which may change concurrently.
+	 */
 	numeric function size() {
 		variables.lock.lock();
 		try {
@@ -84,11 +140,19 @@ class {
 		}
 	}
 
-	/** Runtime-private blocking offer. */
-	function _offerNative( any value, any controlState = null ) {
+	/**
+	 * Waits under the Queue lock for capacity and enqueues one value unless interrupted or closed.
+	 *
+	 * @value Value carried by this operation; may be null.
+	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
+	 * @return An outcome struct with isShutdown and isInterrupted flags.
+	 */
+	struct function _offerNative( any value, any controlState = null ) {
 		variables.lock.lockInterruptibly();
 		try {
 			while ( !variables.shutdown && isFull() ) {
+				// Conditions can wake spuriously or lose capacity to another producer.
+				// Recheck both capacity and shutdown under the lock on every wake.
 				if ( wasInterrupted( arguments.controlState ) ) {
 					return { isShutdown: false, isInterrupted: true };
 				}
@@ -101,6 +165,7 @@ class {
 				return { isShutdown: true, isInterrupted: false };
 			}
 			variables.items.addLast( { value: arguments.value } );
+			// The wrapper lets ArrayDeque carry a null user value without a null entry.
 			variables.notEmpty.signal();
 			return { isShutdown: false, isInterrupted: false };
 		} finally {
@@ -108,8 +173,13 @@ class {
 		}
 	}
 
-	/** Runtime-private blocking take. Drained values remain available after shutdown. */
-	function _takeNative( any controlState = null ) {
+	/**
+	 * Waits under the Queue lock for an item or shutdown, preserving buffered values for draining.
+	 *
+	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
+	 * @return An outcome struct with flags and a value on success.
+	 */
+	struct function _takeNative( any controlState = null ) {
 		variables.lock.lockInterruptibly();
 		try {
 			while ( variables.items.isEmpty() && !variables.shutdown ) {
@@ -124,6 +194,7 @@ class {
 			if ( variables.items.isEmpty() ) {
 				return { isShutdown: true, isInterrupted: false };
 			}
+			// Shutdown ends takes only after the buffer is empty.
 			var entry = variables.items.removeFirst();
 			variables.notFull.signal();
 			return { isShutdown: false, isInterrupted: false, value: entry.value };
@@ -132,14 +203,30 @@ class {
 		}
 	}
 
+	/**
+	 * Checks capacity while the caller holds the Queue lock.
+	 *
+	 * @return Whether a bounded Queue has reached capacity.
+	 */
 	private boolean function isFull() {
 		return variables.capacity > 0 && variables.items.size() >= variables.capacity;
 	}
 
+	/**
+	 * Checks optional Fiber cancellation state.
+	 *
+	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
+	 * @return Whether interruption was requested.
+	 */
 	private boolean function wasInterrupted( any controlState = null ) {
 		return !isNull( arguments.controlState ) && arguments.controlState.isInterrupted();
 	}
 
+	/**
+	 * Closes admission atomically and wakes both producers and consumers.
+	 *
+	 * @return True on the first shutdown, otherwise false.
+	 */
 	private boolean function shutdownNative() {
 		variables.lock.lock();
 		try {

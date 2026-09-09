@@ -1,34 +1,56 @@
 import bxModules.bxEffect.models.effect.Effect;
 
-/** Runtime-private, single-consumption Stream cursor. */
+/**
+ * Runtime-private, single-consumption Stream cursor.
+ *
+ * Pulls yield Effects of native Attempt<Array>; absence marks normal completion.
+ * Close is lazy and idempotent, including failed cleanup. Mutable progress is
+ * private to one consumer; this cursor is not a concurrent broadcast source.
+ */
 class {
 
 	variables.pullFactory = null;
 	variables.closeFactory = null;
 	variables.closed = new java.util.concurrent.atomic.AtomicBoolean( false );
 
-	function init( required function pullFactory, function closeFactory = () => Effect::succeed( null ) ) {
+	/**
+	 * Stores per-consumption pull and close factories with an initially open state.
+	 *
+	 * @pullFactory Zero-argument factory returning an Effect of native Attempt<Array>; empty means completion.
+	 * @closeFactory Zero-argument cleanup Effect factory; defaults to a successful no-op.
+	 * @return This internal cursor.
+	 */
+	StreamCursor function init(
+		required function pullFactory,
+		function closeFactory = () => Effect::succeed( null )
+	) {
 		variables.pullFactory = arguments.pullFactory;
 		variables.closeFactory = arguments.closeFactory;
 		return this;
 	}
 
-	function pull() {
+	/**
+	 * Defers one batch request; a closed cursor completes normally without calling its factory.
+	 *
+	 * @return An Effect yielding native Attempt<Array>; empty Attempt means completion.
+	 */
+	Effect function pull() {
 		return Effect::suspend( () => variables.closed.get()
 			? Effect::succeed( attempt() )
 			: variables.pullFactory()
 		);
 	}
 
-	function close() {
+	/**
+	 * Defers an atomic close claim so the cleanup factory runs at most once, even if it fails.
+	 *
+	 * @return An Effect yielding the cleanup result, or null on repeated close.
+	 */
+	Effect function close() {
 		return Effect::suspend( () => variables.closed.compareAndSet( false, true )
 			? variables.closeFactory()
 			: Effect::succeed( null )
 		);
-	}
-
-	boolean function isClosed() {
-		return variables.closed.get();
 	}
 
 }

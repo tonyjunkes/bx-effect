@@ -5,6 +5,8 @@ import bxModules.bxEffect.models.effect.context.Context;
  *
  * Finalizers are returned in LIFO order on close. A closed Scope rejects new
  * finalizers so resource acquisition cannot silently leak after completion.
+ * Child admission closes separately so shutdown can await child finalization
+ * before the runtime drains and executes the finalizer entries.
  */
 class {
 
@@ -14,7 +16,14 @@ class {
 	variables.acceptingChildren = new java.util.concurrent.atomic.AtomicBoolean( true );
 	variables.lock = new java.util.concurrent.locks.ReentrantLock();
 
-	function addFinalizer( required function finalizer, required Context finalizerContext ) {
+	/**
+	 * Registers cleanup and its Context atomically; closed Scopes reject registration.
+	 *
+	 * @finalizer Zero-argument callback returning the cleanup Effect.
+	 * @finalizerContext Context captured at the cleanup boundary or registration site.
+	 * @return This Scope.
+	 */
+	Scope function addFinalizer( required function finalizer, required Context finalizerContext ) {
 		var finalizerToAdd = arguments.finalizer;
 		var contextToAdd = arguments.finalizerContext;
 		withOpenScope( () => variables.finalizers.push( {
@@ -24,7 +33,15 @@ class {
 		return this;
 	}
 
-	function addRelease(
+	/**
+	 * Registers a successfully acquired resource with its release callback and Context.
+	 *
+	 * @release Callback receiving the acquired resource and returning its cleanup Effect.
+	 * @resource Successfully acquired value captured for use or release.
+	 * @finalizerContext Context captured at the cleanup boundary or registration site.
+	 * @return This Scope.
+	 */
+	Scope function addRelease(
 		required function release,
 		any resource,
 		required Context finalizerContext
@@ -41,14 +58,25 @@ class {
 		return this;
 	}
 
-	function addChild( required any fiber ) {
+	/**
+	 * Admits an existing Fiber while child admission remains open.
+	 *
+	 * @fiber Existing child Fiber to admit into the Scope.
+	 * @return This Scope.
+	 */
+	Scope function addChild( required any fiber ) {
 		var childToAdd = arguments.fiber;
 		withChildAdmission( () => variables.children.add( childToAdd ) );
 		return this;
 	}
 
-	/** Runtime-private atomic child creation and admission. */
-	function _forkChild( required function factory ) {
+	/**
+	 * Creates and registers a child under the admission lock to prevent escape during shutdown.
+	 *
+	 * @factory Zero-argument callback that starts and returns the new child Fiber.
+	 * @return The newly admitted Fiber.
+	 */
+	any function _forkChild( required function factory ) {
 		var childFactory = arguments.factory;
 		return withChildAdmission( () => {
 			var childFiber = childFactory();
@@ -62,7 +90,12 @@ class {
 		} );
 	}
 
-	function interruptChildren() {
+	/**
+	 * Requests best-effort interruption of current children without closing admission or awaiting termination.
+	 *
+	 * @return This Scope.
+	 */
+	Scope function interruptChildren() {
 		for ( var childFiber in variables.children ) {
 			if ( !childFiber.isDone() ) {
 				childFiber.interrupt();
@@ -72,11 +105,11 @@ class {
 	}
 
 	/**
-	 * Runtime-private structured-concurrency boundary. New children are rejected,
-	 * admitted children are interrupted together, and resource cleanup waits for
-	 * their interpreters and ensuring handlers to terminate.
+	 * Stops child admission, interrupts admitted children, and waits for interpreter finalization.
+	 *
+	 * @return This Scope.
 	 */
-	function _shutdownChildren() {
+	Scope function _shutdownChildren() {
 		variables.lock.lock();
 		try {
 			variables.acceptingChildren.set( false );
@@ -94,11 +127,17 @@ class {
 			}
 		}
 		for ( var childFiber in childrenToStop ) {
+			// Never wait while holding the admission lock: child cleanup may need it.
 			childFiber._awaitTermination();
 		}
 		return this;
 	}
 
+	/**
+	 * Atomically closes admission and drains finalizer entries in LIFO order; the caller executes those entries.
+	 *
+	 * @return Finalizer entries on first close, otherwise an empty array.
+	 */
 	array function close() {
 		variables.lock.lock();
 		try {
@@ -121,16 +160,27 @@ class {
 		}
 	}
 
+	/**
+	 * Reads finalizer-registration closure state.
+	 *
+	 * @return Whether close has run.
+	 */
 	boolean function isClosed() {
 		return variables.closed.get();
 	}
 
-	private function withOpenScope( required function operation ) {
+	/**
+	 * Runs a registration operation under the lock or throws ScopeClosedException.
+	 *
+	 * @operation Zero-argument callback executed while the Scope lock and admission check are held.
+	 * @return The operation result.
+	 */
+	private any function withOpenScope( required function operation ) {
 		variables.lock.lock();
 		try {
 			if ( variables.closed.get() ) {
 				throw(
-					type: "BXEffect.ScopeClosed",
+					type: "bxeffect.ScopeClosedException",
 					message: "Cannot add work to a closed Scope"
 				);
 			}
@@ -140,12 +190,18 @@ class {
 		}
 	}
 
-	private function withChildAdmission( required function operation ) {
+	/**
+	 * Runs child creation/admission under the lock or throws ScopeClosedException if closing.
+	 *
+	 * @operation Zero-argument callback executed while the Scope lock and admission check are held.
+	 * @return The operation result.
+	 */
+	private any function withChildAdmission( required function operation ) {
 		variables.lock.lock();
 		try {
 			if ( variables.closed.get() || !variables.acceptingChildren.get() ) {
 				throw(
-					type: "BXEffect.ScopeClosed",
+					type: "bxeffect.ScopeClosedException",
 					message: "Cannot add work to a closing or closed Scope"
 				);
 			}

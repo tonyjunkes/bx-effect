@@ -6,10 +6,10 @@ client or connection-like resource. Ordinary `EffectRuntime` remains the right
 boundary when each run should acquire and release everything independently.
 
 ```boxlang
-import models.effect.Effect@bxEffect;
-import models.effect.ManagedRuntime@bxEffect;
-import models.effect.context.Layer@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.ManagedRuntime@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
 
 Database = ServiceTag::of( "app/Database" );
 ApplicationLive = Layer::scoped(

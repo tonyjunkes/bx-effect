@@ -3,6 +3,12 @@
  */
 class {
 
+	/**
+	 * Walks native throwable causes for VM errors, thread death, linkage errors, or InterruptedException.
+	 *
+	 * @throwableValue Thrown value or native throwable wrapper to inspect.
+	 * @return Whether the throwable must escape ordinary defect normalization.
+	 */
 	static boolean function isFatal( required any throwableValue ) {
 		var candidate = arguments.throwableValue;
 
@@ -26,7 +32,13 @@ class {
 		return false;
 	}
 
-	static function rethrowIfFatal( required any throwableValue ) {
+	/**
+	 * Rethrows the original wrapper if any nested cause is a fatal platform condition.
+	 *
+	 * @throwableValue Thrown value or native throwable wrapper to inspect.
+	 * @return No value for nonfatal inputs.
+	 */
+	static void function rethrowIfFatal( required any throwableValue ) {
 		if ( isFatal( arguments.throwableValue ) ) {
 			throw( object: arguments.throwableValue );
 		}

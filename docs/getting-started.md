@@ -4,10 +4,10 @@ Install and enable BX Effect as a BoxLang module, then import public classes
 from the module mapping:
 
 ```boxlang
-import models.effect.Effect@bxEffect;
+import models.effect.Effect@bxeffect;
 ```
 
-Application code should prefer the explicit `@bxEffect` suffix; it avoids
+Application code should prefer the explicit `@bxeffect` suffix; it avoids
 ambiguity when several modules expose similarly named classes. Library code
 within BX Effect uses the module's internal mapping instead:
 
@@ -34,7 +34,7 @@ but the BX Effect kernel does not depend on WireBox.
 
 The repository test suite supplies `tests/boxlang.json`, which points the
 runtime at the workspace's parent module directory. Run tests with the command
-shown in the README so `@bxEffect` resolution exercises the installed-module
+shown in the README so `@bxeffect` resolution exercises the installed-module
 topology rather than a test-only source mapping.
 
 Effects are lazy descriptions. Nothing runs until a runtime boundary:
@@ -48,7 +48,7 @@ program = Effect::try(
 exit = Effect::runSyncExit( program );
 ```
 
-Use `runSync` when a failed program should throw `BXEffect.EffectFailure`. Use
+Use `runSync` when a failed program should throw `bxeffect.EffectFailureException`. Use
 `runSyncExit` when both success and failure should remain values. For an async
 boundary, use `runFuture` or `runFutureExit`, both of which return a native
 BoxFuture.

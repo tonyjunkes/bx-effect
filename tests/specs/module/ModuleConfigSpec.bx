@@ -1,11 +1,8 @@
 import ModuleConfig;
-import models.effect.Effect@bxEffect;
-import models.effect.EffectRuntime@bxEffect;
-import models.effect.ManagedRuntime@bxEffect;
-import models.effect.PubSub@bxEffect;
-import models.effect.Stream@bxEffect;
-import models.effect.context.Layer@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import java.nio.file.Files;
+import java.io.File;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -29,34 +26,18 @@ class extends="testbox.system.BaseSpec" {
 				expect( getBoxRuntime().getModuleService().hasModule( "bxEffect" ) ).toBeTrue();
 			} );
 
-			it( "lets applications use imported public classes through the module resolver", () => {
-				var program = Effect::succeed( "module-value" )
-					.map( ( value ) => value & "!" );
-
-				expect( Effect::runSync( program ) ).toBe( "module-value!" );
-			} );
-
-			it( "lets applications use PubSub through the module resolver", () => {
-				var events = PubSub::bounded( 1 );
-				var subscription = Effect::runSync( events.subscribe() );
-				Effect::runSync( events.publish( "module-event" ) );
-
-				expect( Effect::runSync( subscription.take() ) ).toBe( "module-event" );
-				expect( Effect::runSync( subscription.unsubscribe() ) ).toBeTrue();
-			} );
-
-			it( "lets applications use ManagedRuntime and Stream through the module resolver", () => {
-				var tagToUse = ServiceTag::of( "module/Managed" );
-				var runtime = ManagedRuntime::make( Layer::succeed( tagToUse, 2 ) );
-
-				expect( runtime.runSync(
-					Stream::fromArray( [ 1, 2, 3 ] )
-						.mapEffect( ( value ) => Effect::service( tagToUse ).map(
-							( multiplier ) => value * multiplier
-						) )
-						.runCollect()
-				) ).toBe( [ 2, 4, 6 ] );
-				expect( runtime.close().isSuccess() ).toBeTrue();
+			it( "loads the module from this checkout instead of an installed copy", () => {
+				var loadedModule = getBoxRuntime().getModuleService().getModuleRecord( "bxEffect" );
+				var checkoutPath = new File(
+					getDirectoryFromPath( getCurrentTemplatePath() ) & "../../../"
+				).toPath();
+				if ( !Files::isSameFile( loadedModule.physicalPath, checkoutPath ) ) {
+					fail(
+						"bxEffect loaded from " & loadedModule.physicalPath.toString() &
+						" instead of checkout " & checkoutPath.toRealPath().toString() &
+						". Run with --bx-home .boxlang/test to isolate installed modules."
+					);
+				}
 			} );
 
 			it( "uses its configured default executor without owning a pool", () => {

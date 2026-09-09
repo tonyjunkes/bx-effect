@@ -1,8 +1,8 @@
 import java.lang.LinkageError;
-import models.effect.Cause@bxEffect;
-import models.effect.Effect@bxEffect;
-import models.effect.Result@bxEffect;
-import models.effect.internal.ThrowablePolicy@bxEffect;
+import models.effect.Cause@bxeffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Result@bxeffect;
+import models.effect.internal.ThrowablePolicy@bxeffect;
 import tests.resources.AnnotatedError;
 
 class extends="testbox.system.BaseSpec" {
@@ -47,7 +47,7 @@ class extends="testbox.system.BaseSpec" {
 			it( "keeps tapError out of defect and interruption channels", () => {
 				var calls = 0;
 				var defectExit = Effect::runSyncExit(
-					Effect::sync( () => throw( type: "BXEffect.TapDefect", message: "broken" ) )
+					Effect::sync( () => throw( type: "bxeffect.testing.TapDefectException", message: "broken" ) )
 						.tapError( ( error ) => {
 							calls++;
 							return Effect::succeed( null );
@@ -75,7 +75,7 @@ class extends="testbox.system.BaseSpec" {
 				var exit = Effect::runSyncExit(
 					Effect::_halt( original ).tapCause( ( failureCause ) => {
 						observedKinds.append( failureCause.kind() );
-						throw( type: "BXEffect.TapCauseHandler", message: "handler defect" );
+						throw( type: "bxeffect.testing.TapCauseHandlerException", message: "handler defect" );
 					} )
 				);
 
@@ -89,7 +89,7 @@ class extends="testbox.system.BaseSpec" {
 				var successExit = Effect::runSync( Effect::succeed( 42 ).exit() );
 				var failureExit = Effect::runSync( Effect::fail( "no" ).exit() );
 				var defectExit = Effect::runSync(
-					Effect::sync( () => throw( type: "BXEffect.ExitDefect", message: "broken" ) ).exit()
+					Effect::sync( () => throw( type: "bxeffect.testing.ExitDefectException", message: "broken" ) ).exit()
 				);
 
 				expect( successExit.isSuccess() ).toBeTrue();
@@ -195,7 +195,7 @@ class extends="testbox.system.BaseSpec" {
 					boundaryError = error;
 				}
 
-				expect( boundaryError.type ).toBe( "BXEffect.EffectFailure" );
+				expect( boundaryError.type ).toBe( "bxeffect.EffectFailureException" );
 				expect( boundaryError.extendedInfo.kind() ).toBe( "Fail" );
 				expect( boundaryError.extendedInfo.error() ).toBe( "not-found" );
 			} );

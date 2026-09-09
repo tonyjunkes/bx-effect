@@ -7,19 +7,35 @@ import bxModules.bxEffect.models.effect.context.ServiceTag;
  *
  * `scoped()` is a semantic alias for a resource-producing Layer. The supplied
  * Effect registers its release action with the enclosing runtime Scope.
+ * Recipes are ordered builder closures, not a declared dependency graph.
+ * Runtime provisioning shares builds by Layer instance identity within a root
+ * lifetime; direct build calls invoke the recipe without that memo boundary.
  */
 class {
 
 	variables.builder = null;
 	variables.layerId = "";
 
+	/**
+	 * Stores a service-building recipe and assigns its runtime-local memoization identity.
+	 *
+	 * @builder Callback receiving a base Context and returning an Effect that produces a Context.
+	 * @return This Layer; the builder is not invoked here.
+	 */
 	Layer function init( required function builder ) {
 		variables.builder = arguments.builder;
 		variables.layerId = createUUID();
 		return this;
 	}
 
-	static function succeed( required ServiceTag tag, any service ) {
+	/**
+	 * Describes a binding for an already available service.
+	 *
+	 * @tag ServiceTag identifying the binding.
+	 * @service Service implementation stored by reference.
+	 * @return A Layer producing the supplied binding.
+	 */
+	static Layer function succeed( required ServiceTag tag, any service ) {
 		var providedTag = arguments.tag;
 		var providedService = arguments.service;
 		return new Layer( ( baseContext ) =>
@@ -27,7 +43,14 @@ class {
 		);
 	}
 
-	static function effect( required ServiceTag tag, required Effect effectProducingService ) {
+	/**
+	 * Describes a service built by an Effect using the input Context.
+	 *
+	 * @tag ServiceTag identifying the binding.
+	 * @effectProducingService Effect yielding the service; resource Effects register release with the runtime Scope.
+	 * @return A Layer producing the service binding.
+	 */
+	static Layer function effect( required ServiceTag tag, required Effect effectProducingService ) {
 		var providedTag = arguments.tag;
 		var serviceProgram = arguments.effectProducingService;
 		return new Layer( ( baseContext ) => serviceProgram
@@ -36,11 +59,24 @@ class {
 		);
 	}
 
-	static function scoped( required ServiceTag tag, required Effect effectProducingService ) {
+	/**
+	 * Aliases effect for a resource-producing Effect; acquisition must register its own release.
+	 *
+	 * @tag ServiceTag identifying the binding.
+	 * @effectProducingService Effect yielding the service; resource Effects register release with the runtime Scope.
+	 * @return A Layer whose resources belong to the enclosing Scope.
+	 */
+	static Layer function scoped( required ServiceTag tag, required Effect effectProducingService ) {
 		return Layer::effect( arguments.tag, arguments.effectProducingService );
 	}
 
-	static function merge( required array layers ) {
+	/**
+	 * Composes recipes in input order so later Layers can use and override earlier services.
+	 *
+	 * @layers Ordered Layer recipes; later builders receive earlier outputs.
+	 * @return A Layer with a copied recipe array.
+	 */
+	static Layer function merge( required array layers ) {
 		var layersToMerge = [];
 		for ( var suppliedLayer in arguments.layers ) {
 			layersToMerge.append( suppliedLayer );
@@ -48,20 +84,43 @@ class {
 		return new Layer( ( baseContext ) => Layer::buildMerged( baseContext, layersToMerge ) );
 	}
 
-	function build( required Context baseContext ) {
+	/**
+	 * Invokes the stored builder with the supplied Context; runtime provisioning supplies memoization.
+	 *
+	 * @baseContext Input service bindings available to the Layer build.
+	 * @return The builder's Effect producing a Context.
+	 */
+	any function build( required Context baseContext ) {
 		return variables.builder( arguments.baseContext );
 	}
 
-	function provide( required Effect program ) {
+	/**
+	 * Builds this Layer during program execution and restores outer bindings afterward.
+	 *
+	 * @program Effect to execute within this operation's boundary.
+	 * @return An Effect yielding the program result.
+	 */
+	Effect function provide( required Effect program ) {
 		return Effect::_provideLayer( arguments.program, this );
 	}
 
-	/** Internal stable identity for runtime-local Layer memoization. */
+	/**
+	 * Reads the stable identity used by runtime-private build sharing.
+	 *
+	 * @return The Layer identifier.
+	 */
 	string function _identity() {
 		return variables.layerId;
 	}
 
-	private static function buildMerged( required Context baseContext, required array layers ) {
+	/**
+	 * Builds an iterative Effect chain for the ordered recipes.
+	 *
+	 * @baseContext Input service bindings available to the Layer build.
+	 * @layers Ordered Layer recipes; later builders receive earlier outputs.
+	 * @return An Effect yielding the accumulated Context.
+	 */
+	private static Effect function buildMerged( required Context baseContext, required array layers ) {
 		var buildProgram = Effect::succeed( arguments.baseContext );
 		for ( var layerValue in arguments.layers ) {
 			buildProgram = appendLayer( buildProgram, layerValue );
@@ -69,7 +128,14 @@ class {
 		return buildProgram;
 	}
 
-	private static function appendLayer( required Effect accumulated, required Layer nextLayer ) {
+	/**
+	 * Adds a memoized build step using the preceding Context.
+	 *
+	 * @accumulated Effect yielding the Context built by preceding Layers.
+	 * @nextLayer Next recipe to build with the accumulated Context.
+	 * @return An Effect yielding the next accumulated Context.
+	 */
+	private static Effect function appendLayer( required Effect accumulated, required Layer nextLayer ) {
 		var layerToBuild = arguments.nextLayer;
 		return arguments.accumulated.flatMap(
 			( buildContext ) => Effect::_buildLayer( layerToBuild, buildContext )

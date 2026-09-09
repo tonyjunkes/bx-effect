@@ -1,4 +1,4 @@
-import models.effect.Result@bxEffect;
+import models.effect.Result@bxeffect;
 
 class extends="testbox.system.BaseSpec" {
 

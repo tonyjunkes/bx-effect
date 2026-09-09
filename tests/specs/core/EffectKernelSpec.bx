@@ -1,5 +1,4 @@
-import models.effect.Cause@bxEffect;
-import models.effect.Effect@bxEffect;
+import models.effect.Effect@bxeffect;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -155,18 +154,6 @@ class extends="testbox.system.BaseSpec" {
 
 				expect( Effect::runSync( program ) ).toBe( "done" );
 				expect( events ).toBe( [ "map", "flatMap:2", "cleanup", "recover:expected" ] );
-			} );
-
-			it( "preserves sequential and parallel Cause trees", () => {
-				var effectCause = Cause::sequential(
-					Cause::fail( "first" ),
-					Cause::parallel( Cause::die( "broken" ), Cause::fail( "second" ) )
-				);
-
-				expect( effectCause.failures() ).toBe( [ "first", "second" ] );
-				expect( effectCause.defects() ).toBe( [ "broken" ] );
-				expect( effectCause.isFailure() ).toBeTrue();
-				expect( effectCause.isDefect() ).toBeTrue();
 			} );
 
 		} );

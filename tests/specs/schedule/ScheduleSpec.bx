@@ -1,5 +1,5 @@
-import models.effect.Effect@bxEffect;
-import models.effect.Schedule@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Schedule@bxeffect;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -41,7 +41,7 @@ class extends="testbox.system.BaseSpec" {
 				expect( decision.delay >= 50 ).toBeTrue();
 				expect( decision.delay <= 150 ).toBeTrue();
 				expect( () => Schedule::spaced( 1 ).jittered( 2, 1 ) )
-					.toThrow( type: "BXEffect.InvalidSchedule" );
+					.toThrow( type: "bxeffect.InvalidScheduleException" );
 			} );
 
 			it( "retries expected failures without retrying defects", () => {
@@ -57,7 +57,7 @@ class extends="testbox.system.BaseSpec" {
 				var defectAttempts = 0;
 				var defect = Effect::sync( () => {
 					defectAttempts++;
-					throw( type: "BXEffect.Defect", message: "do not retry" );
+					throw( type: "bxeffect.testing.DefectException", message: "do not retry" );
 				} ).retry( { times: 3 } );
 				var exit = Effect::runSyncExit( defect );
 				expect( exit.cause().kind() ).toBe( "Die" );

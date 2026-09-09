@@ -1,5 +1,8 @@
+import ortus.boxlang.runtime.async.BoxFuture;
 /**
- * Deterministic Clock for TestBox. Sleep futures complete only when time moves.
+ * Published deterministic Clock. Positive sleeps complete when time moves.
+ * Starts at zero milliseconds and implements the runtime Clock contract without
+ * TestBox dependencies. Tests advance time explicitly; no scheduler runs here.
  */
 class {
 
@@ -7,10 +10,19 @@ class {
 	variables.pending = [];
 	variables.lock = new java.util.concurrent.locks.ReentrantLock();
 
-	function sleep( required numeric duration, string unit = "milliseconds" ) {
+	/**
+	 * Registers a deterministic wait; positive delays require advance, while zero completes immediately.
+	 *
+	 * @duration Non-negative delay or elapsed amount in the supplied unit.
+	 * @unit Time unit; defaults to milliseconds when omitted.
+	 * @return A native BoxFuture completing with null at its due time.
+	 */
+	BoxFuture function sleep( required numeric duration, string unit = "milliseconds" ) {
 		var delayMillis = toMillis( arguments.duration, arguments.unit );
 		if ( delayMillis == 0 ) {
-			return futureNew( null );
+			var completed = futureNew();
+			completed.complete( null );
+			return completed;
 		}
 		var delayed = futureNew();
 		variables.lock.lock();
@@ -25,7 +37,14 @@ class {
 		return delayed;
 	}
 
-	function advance( required numeric duration, string unit = "milliseconds" ) {
+	/**
+	 * Moves simulated time forward, removes canceled waits, and completes due futures outside the lock.
+	 *
+	 * @duration Non-negative delay or elapsed amount in the supplied unit.
+	 * @unit Time unit; defaults to milliseconds when omitted.
+	 * @return The number of due futures selected for completion.
+	 */
+	numeric function advance( required numeric duration, string unit = "milliseconds" ) {
 		var futuresToComplete = [];
 		variables.lock.lock();
 		try {
@@ -46,11 +65,18 @@ class {
 			variables.lock.unlock();
 		}
 		for ( var pendingFuture in futuresToComplete ) {
+			// Completion may invoke dependent callbacks that schedule another sleep.
+			// Keep those callbacks outside the lock and this advance's pending scan.
 			pendingFuture.complete( null );
 		}
 		return futuresToComplete.len();
 	}
 
+	/**
+	 * Reads simulated time under the Clock lock.
+	 *
+	 * @return Milliseconds elapsed from the initial zero time.
+	 */
 	numeric function now() {
 		variables.lock.lock();
 		try {
@@ -60,6 +86,11 @@ class {
 		}
 	}
 
+	/**
+	 * Prunes completed/canceled waits and counts outstanding sleeps.
+	 *
+	 * @return The number of pending sleeps.
+	 */
 	numeric function pendingCount() {
 		variables.lock.lock();
 		try {
@@ -76,9 +107,16 @@ class {
 		}
 	}
 
+	/**
+	 * Validates a non-negative duration and converts supported time units.
+	 *
+	 * @duration Non-negative delay or elapsed amount in the supplied unit.
+	 * @unit Required time unit to convert to milliseconds.
+	 * @return Milliseconds; invalid input throws InvalidDurationException or InvalidTimeUnitException.
+	 */
 	private numeric function toMillis( required numeric duration, required string unit ) {
 		if ( arguments.duration < 0 ) {
-			throw( type: "BXEffect.InvalidDuration", message: "TestClock requires a non-negative duration" );
+			throw( type: "bxeffect.InvalidDurationException", message: "TestClock requires a non-negative duration" );
 		}
 
 		switch ( lCase( arguments.unit ) ) {
@@ -104,7 +142,7 @@ class {
 				return arguments.duration * 86400000;
 		}
 
-		throw( type: "BXEffect.InvalidTimeUnit", message: "Unsupported TestClock unit [#arguments.unit#]" );
+		throw( type: "bxeffect.InvalidTimeUnitException", message: "Unsupported TestClock unit [#arguments.unit#]" );
 	}
 
 }

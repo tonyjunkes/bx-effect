@@ -1,3 +1,5 @@
+import ortus.boxlang.runtime.dynamic.Attempt;
+import ortus.boxlang.runtime.async.BoxFuture;
 import bxModules.bxEffect.models.effect.Cause;
 import bxModules.bxEffect.models.effect.Exit;
 import bxModules.bxEffect.models.effect.internal.FiberControl;
@@ -16,6 +18,15 @@ class {
 	variables.control = null;
 	variables.terminationFuture = null;
 
+	/**
+	 * Attaches a handle to runtime completion, cancellation state, and interpreter termination.
+	 *
+	 * @future Native BoxFuture currently representing execution or a registered wait.
+	 * @fiberId Logical Fiber identifier used in interruption and diagnostics.
+	 * @control Runtime-private cancellation state for this Fiber.
+	 * @terminationFuture Optional future resolved by interpreter finalization, independently of public cancellation.
+	 * @return This Fiber.
+	 */
 	Fiber function init(
 		required any future,
 		required string fiberId,
@@ -31,7 +42,12 @@ class {
 		return this;
 	}
 
-	function await() {
+	/**
+	 * Blocks on public completion and normalizes nonfatal wait errors into an Exit.
+	 *
+	 * @return The Exit; cancellation can be observed before interpreter cleanup finishes.
+	 */
+	any function await() {
 		try {
 			return variables.future.get();
 		} catch ( any error ) {
@@ -42,24 +58,39 @@ class {
 		}
 	}
 
-	function join() {
+	/**
+	 * Blocks and unwraps success; failure throws EffectFailureException with the Cause.
+	 *
+	 * @return The success value.
+	 */
+	any function join() {
 		var completedExit = this.await();
 		if ( completedExit.isSuccess() ) {
 			return completedExit.value();
 		}
 
 		throw(
-			type: "BXEffect.EffectFailure",
+			type: "bxeffect.EffectFailureException",
 			message: completedExit.cause().pretty(),
 			extendedInfo: completedExit.cause()
 		);
 	}
 
-	function poll() {
+	/**
+	 * Checks public completion immediately without waiting.
+	 *
+	 * @return A native Attempt containing the Exit, or empty while pending.
+	 */
+	Attempt function poll() {
 		return isDone() ? attempt( await() ) : attempt();
 	}
 
-	function interrupt() {
+	/**
+	 * Requests cancellation of the active wait and outer runtime task without awaiting cleanup.
+	 *
+	 * @return This Fiber.
+	 */
+	Fiber function interrupt() {
 		variables.control.interrupt();
 		if ( !isDone() ) {
 			try {
@@ -71,29 +102,48 @@ class {
 		return this;
 	}
 
+	/**
+	 * Checks public future completion, which may precede cleanup after cancellation.
+	 *
+	 * @return Whether the public future is done.
+	 */
 	boolean function isDone() {
 		return variables.future.isDone();
 	}
 
+	/**
+	 * Reads the logical execution identity.
+	 *
+	 * @return The Fiber identifier.
+	 */
 	string function id() {
 		return variables.fiberId;
 	}
 
-	/** Internal dependent completion used by runtime concurrency operators. */
-	function _completionFuture() {
+	/**
+	 * Creates a dependent view of public completion for internal concurrency operators.
+	 *
+	 * @return A native BoxFuture yielding the Exit.
+	 */
+	BoxFuture function _completionFuture() {
 		return variables.future.then( ( completedExit ) => completedExit );
 	}
 
 	/**
-	 * Internal completion that resolves only after interpretation and Scope
-	 * cleanup finish, including when the public future was canceled.
+	 * Creates an internal dependent view of actual interpreter termination.
+	 *
+	 * @return A native BoxFuture yielding the Exit after interpreter finalization.
 	 */
-	function _terminationFuture() {
+	BoxFuture function _terminationFuture() {
 		return variables.terminationFuture.then( ( completedExit ) => completedExit );
 	}
 
-	/** Internal blocking cleanup-completion wait used by managed ownership. */
-	function _awaitTermination() {
+	/**
+	 * Blocks until interpreter finalization has finished, even after public cancellation.
+	 *
+	 * @return This Fiber.
+	 */
+	Fiber function _awaitTermination() {
 		variables.terminationFuture.get();
 		return this;
 	}

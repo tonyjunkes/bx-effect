@@ -1,293 +1,182 @@
 # BX Effect
 
-Lazy, composable effects for BoxLang applications.
+Build workflows with consistent error handling, retries, concurrency, and resource cleanup.
 
-BX Effect turns side-effecting work—database calls, HTTP requests, file access,
-concurrent jobs, and resource lifecycles—into values that can be composed before
-they run. It gives BoxLang applications a consistent way to model success,
-recoverable errors, unexpected defects, interruption, retries, cleanup, and
-dependencies without introducing a separate async or scheduling platform.
+BX Effect is a BoxLang module for combining operations such as HTTP requests,
+database queries, and file processing into reusable programs. Define the work,
+choose how failures should be handled, and run it synchronously or asynchronously.
 
-BX Effect is inspired by [Effect](https://effect.website/) and designed around
-BoxLang's native runtime facilities, including `BoxFuture`, `Attempt`, named
-executors, and virtual threads.
+Use it when a workflow needs more than a single function call: retry a failed
+request, process a batch with a concurrency limit, supply services for testing,
+or release resources when work finishes or is interrupted. You can introduce it
+around one operation and build from there.
 
-## Why BX Effect?
-
-Ordinary `try`/`catch`, callbacks, and futures work well in isolation, but become
-harder to reason about when an operation also needs retries, parallelism,
-cancellation, dependency wiring, or guaranteed cleanup. BX Effect keeps those
-concerns in one lazy, fluent program:
-
-- **Lazy execution** — describe work now and run it only at an explicit boundary.
-- **Clear failure channels** — distinguish expected errors, defects, and interruption.
-- **Composable workflows** — transform and sequence work with `map`, `flatMap`, and `tap`.
-- **Resource safety** — guarantee LIFO cleanup across every exit path.
-- **Structured concurrency** — run, bound, race, and interrupt work with BoxLang-native futures.
-- **Resilience policies** — retry, repeat, delay, and time out operations with reusable schedules.
-- **Explicit dependencies** — provide services through isolated `Context` and `Layer` values.
-- **Application-lived Layers** — reuse scoped services through an explicitly closed `ManagedRuntime`.
-- **Coordination primitives** — use `Deferred`, `Semaphore`, `Queue`, and `PubSub` in Effect programs.
-- **Pull-based streams** — consume effectful values with demand, resource safety, and bounded backpressure.
-- **Stack-safe interpretation** — compose deeply without growing the JVM call stack.
+Inspired by [Effect](https://effect.website/), BX Effect provides its own API for
+BoxLang applications.
 
 ## Requirements
 
-- BoxLang 1.16.0 or newer
-- Java 21 or newer
+- BoxLang 1.16.0+
+- Java 21+
+
+## Supported Features
+
+| Capability | What you can do |
+| --- | --- |
+| Workflow composition | Transform results with `map`, chain operations with `flatMap`, and observe values with `tap`. |
+| Error handling | Recover from expected errors while keeping unexpected defects and interruption distinguishable. Inspect complete outcomes with `Exit` and `Cause`. |
+| Retries and timing | Retry failed operations, repeat successful ones, add delays, and set timeouts with reusable `Schedule` policies. |
+| Concurrency | Run batches with a concurrency limit, race operations, and manage running work through Fibers. Integrate existing `BoxFuture` APIs. |
+| Resource cleanup | Pair acquisition with release and run finalizers on success, failure, or interruption. |
+| Dependency management | Supply services through `Context` and `Layer`, and reuse services across runs with `ManagedRuntime`. |
+| Coordination | Signal completion with `Deferred`, limit access with `Semaphore`, buffer work with `Queue`, and broadcast through `PubSub`. |
+| Streams | Transform and consume sequences on demand, including Queue and PubSub sources, with cleanup when consumption ends. |
+| Testing and diagnostics | Control time with `TestClock` and observe runtime events with an optional observer or logging adapter. |
 
 ## Installation
 
-For a BoxLang CLI application, install the module globally:
+> You can refer to the [official BoxLang modules docs](https://boxlang.ortusbooks.com/getting-started/installation/modules) for which runtime option may best suit your needs.
+
+### BoxLang CLI
 
 ```bash
 install-bx-module bx-effect
 ```
 
-To keep the module local to the current application:
-
-```bash
-install-bx-module bx-effect --local
-```
-
-For a CommandBox-managed application:
+### CommandBox CLI
 
 ```bash
 box install bx-effect
 ```
 
-Import BX Effect classes through the module mapping in each file that uses them:
+## Usage
+
+### Example workflow
 
 ```boxlang
-import models.effect.Effect@bxEffect;
+import models.effect.Effect@bxeffect;
+
+program = Effect::sync( () => jsonDeserialize( '{"name":"Sam"}' ) )
+	.map( user => "Hello, " & user.name & "!" );
+
+println( Effect::runSync( program ) ); // Hello, Sam!
 ```
 
-## Quick start
+An **Effect** describes an operation and how to handle its result. `sync` wraps
+a function, `map` transforms its success value, and `runSync` executes the
+program. The supplied functions run when you execute the program; building the
+chain does not call them.
 
-An Effect is a description of work. Creating or transforming it does not execute
-the supplied functions:
+Use `flatMap` when the next step returns another Effect, and `tap` when you want
+to run an Effect without replacing the current success value.
 
-```boxlang
-import models.effect.Effect@bxEffect;
+### Handle expected errors
 
-program = Effect::sync( () -> {
-	println( "Running the effect" );
-	return 21;
-} ).map( value -> value * 2 );
-
-// Nothing above has run yet.
-result = Effect::runSync( program );
-println( result ); // 42
-```
-
-Execution begins at a runtime boundary such as `runSync`, `runSyncExit`,
-`runFuture`, or `runFork`.
-
-## Expected errors and defects
-
-Use `Effect::fail()` for recoverable domain errors. Use `Effect::try()` when an
-exception from existing code should be mapped into that expected-error channel:
+Use `Effect::try()` to turn exceptions from an operation into errors your
+application can handle. This complete example falls back to a guest user when
+JSON parsing fails:
 
 ```boxlang
-import models.effect.Effect@bxEffect;
+import models.effect.Effect@bxeffect;
 
 program = Effect::try(
-	try: () -> userGateway.find( userId ),
-	catch: error -> {
-		_tag : "UserLookupFailed",
-		message : error.message
-	}
-)
-	.filterOrFail(
-		user -> user.active,
-		user -> { _tag: "InactiveUser", id: user.id }
+		try: () => jsonDeserialize( "invalid JSON" ),
+		catch: error => { _tag: "InvalidUserData", message: error.message }
 	)
-	.catchTag(
-		"InactiveUser",
-		error -> Effect::succeed( anonymousUser )
-	);
+	.catchTag( "InvalidUserData", error => Effect::succeed( { name: "Guest" } ) )
+	.map( user => user.name );
 
-exit = Effect::runSyncExit( program );
+println( Effect::runSync( program ) ); // Guest
 ```
 
-Exceptions thrown by `sync`, mappers, or handlers are retained as defects.
-`catchAll` and `catchTag` recover expected errors only; `catchCause` is the
-explicit boundary for handling the complete failure cause.
+The `_tag` field identifies an error for `catchTag`. Use `Effect::fail()` to
+report an expected error directly, or `catchAll` to recover from any expected
+error. Exceptions thrown by `sync`, transformations, or handlers are **defects**;
+`catchAll` and `catchTag` do not recover them. `catchCause` explicitly handles the
+complete failure, including defects and interruption.
 
-## Concurrency and async work
+Add `.retry( Schedule::recurs( 3 ) )` before recovery to allow up to three retries
+after the initial attempt, importing `models.effect.Schedule@bxeffect` first.
+Retry applies to expected errors only. The [schedules guide](docs/schedules.md)
+covers delays, backoff, repeat, and timeout policies.
 
-BX Effect runs asynchronous work through native BoxLang executors and returns
-native `BoxFuture` values at async boundaries:
+### Process a batch concurrently
+
+`forEach` creates an Effect for each input and limits how many run at once.
+This example normalizes names and returns the results in input order:
 
 ```boxlang
-import models.effect.Effect@bxEffect;
+import models.effect.Effect@bxeffect;
 
 program = Effect::forEach(
-	users,
-	( user, index ) -> saveUserEffect( user ),
-	{ concurrency: 4 }
+	[ "sam", "alex", "jordan" ],
+	( name, index ) => Effect::sync( () => uCase( name ) ),
+	{ concurrency: 2 }
 );
 
 future = Effect::runFuture( program );
-savedUsers = future.get();
+println( arrayToList( future.get() ) ); // SAM,ALEX,JORDAN
 ```
 
-`Effect::all()` preserves input order and fails fast by default. Use
-`{ mode: "accumulate" }` to wait for every branch and retain all failures. Use
-`race`, `firstSuccessOf`, `fork`, and Fiber interruption for other structured
-concurrency patterns.
+`runFuture` returns a `BoxFuture` without waiting for the program to finish;
+`get()` waits for its result. Replace the per-item operation with your own
+Effect to process files, make requests, or save records.
 
-Existing asynchronous APIs remain lazy by supplying a future factory:
+`all` and `forEach` fail fast by default. Set `mode: "accumulate"` in the options
+to wait for all branches and retain their failures in input order. See the
+[concurrency guide](docs/concurrency.md) for cancellation and coordination.
 
-```boxlang
-request = Effect::fromBoxFuture(
-	() -> futureNew( () -> httpClient.get( url ) )
-);
-```
+### Choose how to run a program
 
-`forEach` accepts the same `mode: "failFast" | "accumulate"` policy as
-`all`. Sequential composition also includes `zip`/`zipWith`; `tapError` observes
-pure expected failures, `tapCause` observes complete Causes, and `exit()`
-captures any outcome as a successful `Exit` value.
-
-## Retry, repeat, and timeout
-
-Schedules are reusable policies for in-process recurrence:
-
-```boxlang
-import models.effect.Schedule@bxEffect;
-
-policy = Schedule::exponential( 100, "milliseconds" )
-	.jittered( 0.8, 1.2 )
-	.whileInput( error -> error.retryable );
-
-response = request
-	.retry( policy )
-	.timeout( 5, "seconds" );
-```
-
-`retry` retries expected failures only. `repeat` recurs after successful work,
-and `timeout` fails with a tagged `TimeoutError`.
-
-## Safe resource lifecycles
-
-`acquireRelease` ties a resource to the running Scope. Its release action runs
-exactly once after success, expected failure, defect, or interruption:
-
-```boxlang
-connection = Effect::acquireRelease(
-	Effect::sync( () -> datasource.getConnection() ),
-	db -> Effect::sync( () -> db.close() )
-);
-
-program = connection.flatMap(
-	db -> Effect::sync( () -> db.query( "select * from users" ) )
-);
-```
-
-Use `ensuring` for unconditional cleanup and `onExit` when cleanup needs the
-program's complete `Exit`.
-
-## Services and layers
-
-`ServiceTag` identifies an application dependency, while a `Layer` describes
-how to build and provide it:
-
-```boxlang
-import models.effect.Effect@bxEffect;
-import models.effect.context.Layer@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
-
-Database = ServiceTag::of( "app/Database" );
-
-DatabaseLive = Layer::effect(
-	Database,
-	Effect::sync( () -> datasource.getConnection() )
-);
-
-program = Effect::service( Database )
-	.flatMap( db -> Effect::sync( () -> db.query( "select 1" ) ) )
-	.provide( DatabaseLive );
-```
-
-Provisioned contexts are isolated and restored after the nested program
-finishes. Layers can be merged into ordered service recipes and scoped when a
-service owns resources.
-
-For application-lived services, build the Layer lazily once and close it at an
-explicit lifecycle boundary:
-
-```boxlang
-import models.effect.ManagedRuntime@bxEffect;
-
-runtime = ManagedRuntime::make( ApplicationLive );
-try {
-	result = runtime.runSync( program );
-} finally {
-	runtime.close();
-}
-```
-
-Each run still receives its own Scope; only the Layer services remain live
-until close.
-
-## Pull-based streams
-
-Streams are reusable descriptions whose consumers return Effects:
-
-```boxlang
-import models.effect.Stream@bxEffect;
-
-saved = Effect::runSync(
-	Stream::fromArray( users )
-		.filter( user -> user.active )
-		.mapEffect( user -> saveUser( user ) )
-		.take( 100 )
-		.runCollect()
-);
-```
-
-The consumer controls demand. Source acquisition and cleanup are Scope-safe,
-and Queue/PubSub bridges retain native backpressure and interruption behavior.
-
-## Runtime boundaries
-
-| Boundary | Result |
+| Method | Result |
 | --- | --- |
-| `Effect::runSync( program )` | Returns the success value or throws `BXEffect.EffectFailure`. |
-| `Effect::runSyncExit( program )` | Returns an `Exit` containing either the value or full `Cause`. |
-| `Effect::runFuture( program )` | Returns a native `BoxFuture` of the success value. |
-| `Effect::runFutureExit( program )` | Returns a native `BoxFuture` that resolves to an `Exit`. |
-| `Effect::runFork( program )` | Returns a logical `Fiber` for polling, joining, or interruption. |
+| `Effect::runSync( program )` | The success value, or a thrown `bxeffect.EffectFailureException`. |
+| `Effect::runSyncExit( program )` | An `Exit` containing the success value or complete failure `Cause`. |
+| `Effect::runFuture( program )` | A `BoxFuture` that completes with the success value or exceptionally on failure. |
+| `Effect::runFutureExit( program )` | A `BoxFuture` that completes with an `Exit`. |
+| `Effect::runFork( program )` | A `Fiber` you can poll, join, or request to interrupt. |
+
+Choose an `Exit` method when you want to inspect failure as a value instead of
+catching an exception. Fiber interruption is best effort; scoped cleanup still
+runs. For services shared across repeated runs, use
+[`ManagedRuntime`](docs/managed-runtime.md) and close it when their lifetime ends.
 
 ## Guides
 
-- [Getting started](docs/getting-started.md)
-- [Expected errors, defects, and Exit](docs/error-model.md)
-- [Services and Layers](docs/services-and-layers.md)
-- [Managed Runtime](docs/managed-runtime.md)
-- [Resource safety](docs/resources.md)
-- [BoxFutures, Fibers, and coordination](docs/concurrency.md)
-- [Pull-based Streams](docs/streams.md)
-- [Schedules, retry, repeat, and timeout](docs/schedules.md)
-- [Runtime observability](docs/observability.md)
-- [Native BoxLang integration recipes](docs/native-integrations.md)
-- [Public API inventory and compatibility policy](docs/public-api.md)
-- [Incremental migration](docs/migration-from-imperative-code.md)
+Start with [Getting started](docs/getting-started.md), then choose a guide for
+the next concern in your application:
 
-## Contributing
+| Guide | Learn how to… |
+| --- | --- |
+| [Error handling and outcomes](docs/error-model.md) | Distinguish expected errors, defects, and interruption; work with `Exit`, `Cause`, and `Attempt`. |
+| [Resources and cleanup](docs/resources.md) | Acquire resources, register release actions, and handle cleanup failures. |
+| [Services and Layers](docs/services-and-layers.md) | Declare dependencies, provide implementations, and compose service setup. |
+| [ManagedRuntime](docs/managed-runtime.md) | Reuse application services across runs and shut them down safely. |
+| [Concurrency and coordination](docs/concurrency.md) | Use BoxFutures, Fibers, Deferred, Semaphore, Queue, and PubSub. |
+| [Streams](docs/streams.md) | Build and consume sequences with demand-driven processing and resource cleanup. |
+| [Schedules and timeouts](docs/schedules.md) | Configure retries, repeats, and timeouts, and test timing with `TestClock`. |
+| [Runtime observability](docs/observability.md) | Observe runtime events and connect an existing logger. |
+| [BoxLang integration recipes](docs/native-integrations.md) | Wrap HTTP, database, file, and asynchronous operations. |
+| [Incremental adoption](docs/migration-from-imperative-code.md) | Introduce Effects into existing application code. |
+| [Public API and compatibility](docs/public-api.md) | Find supported classes and methods and understand the pre-1.0 compatibility policy. |
+| [Relationship to Effect](docs/effect-alignment.md) | Understand the shared concepts and deliberate API differences. |
 
-Clone the repository and install its development dependency:
+## Contributing & Testing
+
+Bug reports, documentation improvements, and pull requests are welcome through
+[GitHub](https://github.com/tonyjunkes/bx-effect). Include a small reproduction and
+your BoxLang and Java versions when reporting a bug. Add focused tests for
+behavior changes and update the relevant guide when public behavior changes.
+
+After cloning the repository, install the development dependencies and run the
+TestBox suite from the repository root:
 
 ```bash
+# Using CommandBox
 box install
-```
-
-Run the TestBox suite from the repository root:
-
-```console
 box run-script test
 ```
 
-The package script runs TestBox through BoxLang's CLI runtime and does not
-require a web server.
+The suite runs through the BoxLang CLI (via CommandBox or an OS install of BoxLang if preferred). CI tests BoxLang
+`latest` and `snapshot`, including module configuration and an isolated installed
+consumer. For performance work, see the [benchmarks](benchmarks/README.md).

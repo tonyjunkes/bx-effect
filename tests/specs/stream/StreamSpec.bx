@@ -1,18 +1,81 @@
-import models.effect.Cause@bxEffect;
-import models.effect.Effect@bxEffect;
-import models.effect.EffectRuntime@bxEffect;
-import models.effect.PubSub@bxEffect;
-import models.effect.Queue@bxEffect;
-import models.effect.Stream@bxEffect;
-import models.effect.context.Context@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
-import models.effect.testing.TestClock@bxEffect;
+import models.effect.Cause@bxeffect;
+import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.PubSub@bxeffect;
+import models.effect.Queue@bxeffect;
+import models.effect.Stream@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
 import tests.resources.AsyncTestSupport;
 
 class extends="testbox.system.BaseSpec" {
 
 	function run() {
 		describe( "Stream MVP", () => {
+
+			it( "closes consumers before following work and outer failure recovery", () => {
+				var releases = 0;
+				var source = Stream::acquireRelease( Effect::succeed( "handle" ),
+					( resource ) => Effect::sync( () => releases++ ),
+					( resource ) => Stream::fromArray( [ 1, 2 ] ) );
+				var program = source.take( 1 ).runCollect().flatMap( ( values ) => {
+					expect( values ).toBe( [ 1 ] );
+					expect( releases ).toBe( 1 );
+					return source.runForEach( ( value ) => Effect::fail( "consumer-failed" ) )
+						.catchAll( ( error ) => Effect::sync( () => {
+							expect( error ).toBe( "consumer-failed" );
+							expect( releases ).toBe( 2 );
+							return "recovered";
+						} ) );
+				} );
+				expect( Effect::runSync( program ) ).toBe( "recovered" );
+				expect( releases ).toBe( 2 );
+			} );
+
+			it( "preserves early release failure once before outer recovery", () => {
+				var releases = 0;
+				var source = Stream::acquireRelease( Effect::succeed( "handle" ),
+					( resource ) => Effect::sync( () => releases++ ).flatMap( () => Effect::fail( "cleanup" ) ),
+					( resource ) => Stream::fail( "source" ) );
+				var recovered = Effect::runSync( source.runCollect().catchCause( ( failureCause ) => {
+					expect( failureCause.kind() ).toBe( "Sequential" );
+					expect( failureCause.failures() ).toBe( [ "source", "cleanup" ] );
+					return Effect::succeed( "recovered" );
+				} ) );
+				expect( recovered ).toBe( "recovered" );
+				expect( releases ).toBe( 1 );
+			} );
+
+			it( "does not retain a completed PubSub consumer in bounded backpressure", () => {
+				var pubSubSource = PubSub::bounded( 1 );
+				try {
+					var program = Stream::fromPubSub( pubSubSource ).take( 0 ).runDrain().flatMap( () => {
+						expect( pubSubSource.subscriberCount() ).toBe( 0 );
+						return pubSubSource.publish( 1 ).zip( pubSubSource.publish( 2 ) );
+					} );
+					var fiber = Effect::runFork( program );
+					try {
+						expect( fiber._terminationFuture().get( 3000 ).isSuccess() ).toBeTrue();
+					} finally {
+						fiber.interrupt();
+						fiber._terminationFuture().get( 3000 );
+					}
+				} finally {
+					Effect::runSync( pubSubSource.shutdown() );
+				}
+			} );
+
+			it( "releases resources when the Stream use factory throws", () => {
+				var releases = 0;
+				var outcome = Effect::runSyncExit( Stream::acquireRelease(
+					Effect::succeed( "handle" ), ( resource ) => Effect::sync( () => releases++ ),
+					( resource ) => { throw( type: "bxeffect.testing.StreamFactoryDefectException", message: "bad factory" ); }
+				).runCollect() );
+				expect( outcome.cause().kind() ).toBe( "Die" );
+				expect( outcome.cause().defect().type ).toBe( "bxeffect.testing.StreamFactoryDefectException" );
+				expect( releases ).toBe( 1 );
+			} );
 
 			it( "constructs lazily and opens a fresh cursor for every consumption", () => {
 				var constructions = 0;
@@ -77,7 +140,7 @@ class extends="testbox.system.BaseSpec" {
 					( error ) => Stream::succeed( "recovered:#error#" )
 				);
 				var defect = Stream::fromEffect( Effect::sync( () => {
-					throw( type: "BXEffect.StreamDefect", message: "broken" );
+					throw( type: "bxeffect.testing.StreamDefectException", message: "broken" );
 				} ) );
 
 				expect( Effect::runSync( expected.runCollect() ) ).toBe( [ "recovered:missing" ] );
@@ -144,7 +207,7 @@ class extends="testbox.system.BaseSpec" {
 				var defectExit = Effect::runSyncExit(
 					Stream::acquireRelease(
 						Effect::sync( () => {
-							throw( type: "BXEffect.StreamAcquireDefect", message: "broken acquire" );
+							throw( type: "bxeffect.testing.StreamAcquireDefectException", message: "broken acquire" );
 						} ),
 						( ignored ) => Effect::sync( () => releases++ ),
 						( ignored ) => Stream::succeed( "unused" )
@@ -272,7 +335,7 @@ class extends="testbox.system.BaseSpec" {
 				var defectFuture = Effect::runFutureExit(
 					Stream::fromPubSub( defectHub ).runForEach(
 						( ignored ) => Effect::sync( () => {
-							throw( type: "BXEffect.StreamConsumerDefect", message: "broken consumer" );
+							throw( type: "bxeffect.testing.StreamConsumerDefectException", message: "broken consumer" );
 						} )
 					)
 				);

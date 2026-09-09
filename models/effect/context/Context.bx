@@ -7,16 +7,34 @@ class {
 
 	variables.services = {};
 
+	/**
+	 * Copies the binding map while sharing service implementations.
+	 *
+	 * @services Internal map of tag keys to tag/service entry structs; copied shallowly.
+	 * @return This Context.
+	 */
 	Context function init( struct services = {} ) {
 		variables.services = arguments.services.copy();
 		return this;
 	}
 
-	static function empty() {
+	/**
+	 * Creates a Context with no services.
+	 *
+	 * @return An empty Context.
+	 */
+	static Context function empty() {
 		return new Context();
 	}
 
-	function add( required ServiceTag tag, any service ) {
+	/**
+	 * Creates a Context with one added or replaced binding.
+	 *
+	 * @tag ServiceTag identifying the binding.
+	 * @service Service implementation stored by reference.
+	 * @return A new Context; existing bindings remain unchanged.
+	 */
+	Context function add( required ServiceTag tag, any service ) {
 		var nextServices = variables.services.copy();
 		nextServices[ arguments.tag.key() ] = {
 			tag : arguments.tag,
@@ -25,16 +43,19 @@ class {
 		return new Context( nextServices );
 	}
 
+	/**
+	 * Looks up a tag; missing services throw context.MissingServiceException with sorted available tags.
+	 *
+	 * @tag ServiceTag identifying the binding.
+	 * @return The bound service implementation.
+	 */
 	any function get( required ServiceTag tag ) {
 		var serviceKey = arguments.tag.key();
 		if ( !structKeyExists( variables.services, serviceKey ) ) {
-			var availableTags = [];
-			for ( var providedKey in variables.services ) {
-				availableTags.append( providedKey );
-			}
+			var availableTags = variables.services.keyArray();
 			availableTags.sort();
 			throw(
-				type: "BXEffect.MissingService",
+				type: "bxeffect.context.MissingServiceException",
 				message: "No service is available for [#serviceKey#]. Available tags: [#availableTags.toList()#]",
 				extendedInfo: {
 					requestedTag : serviceKey,
@@ -45,20 +66,63 @@ class {
 		return variables.services[ serviceKey ].service;
 	}
 
+	/**
+	 * Checks whether a tag is bound without retrieving the service.
+	 *
+	 * @tag ServiceTag identifying the binding.
+	 * @return Whether the binding exists.
+	 */
 	boolean function has( required ServiceTag tag ) {
 		return structKeyExists( variables.services, arguments.tag.key() );
 	}
 
-	function merge( required Context otherContext ) {
+	/**
+	 * Combines bindings with the supplied Context taking precedence on collisions.
+	 *
+	 * @otherContext Context whose bindings take precedence over existing bindings.
+	 * @return A new Context.
+	 */
+	Context function merge( required Context otherContext ) {
 		var nextServices = variables.services.copy();
 		var otherServices = arguments.otherContext._services();
 		for ( var serviceKey in otherServices ) {
-			nextServices[ serviceKey ] = otherServices[ serviceKey ];
+			// A merge is an explicit provision, even if this binding already exists.
+			nextServices[ serviceKey ] = {
+				tag : otherServices[ serviceKey ].tag,
+				service : otherServices[ serviceKey ].service
+			};
 		}
 		return new Context( nextServices );
 	}
 
-	/** Internal read-only interpreter/layer access. */
+	/**
+	 * Selects explicit binding writes by entry identity, excluding inherited entries for Layer memoization.
+	 *
+	 * @inputContext Original input Context whose inherited entries must be excluded.
+	 * @return A Context containing only produced bindings.
+	 */
+	Context function _outputsFrom( required Context inputContext ) {
+		// add/merge preserve inherited entry identity and create new entries for
+		// explicit writes, even when the service value itself is unchanged.
+		var inheritedEntries = new java.util.IdentityHashMap();
+		var inputServices = arguments.inputContext._services();
+		for ( var serviceKey in inputServices ) {
+			inheritedEntries.put( inputServices[ serviceKey ], true );
+		}
+		var outputs = {};
+		for ( var serviceKey in variables.services ) {
+			if ( !inheritedEntries.containsKey( variables.services[ serviceKey ] ) ) {
+				outputs[ serviceKey ] = variables.services[ serviceKey ];
+			}
+		}
+		return new Context( outputs );
+	}
+
+	/**
+	 * Provides internal binding access without exposing the mutable outer map.
+	 *
+	 * @return A shallow copy; entry structs must be treated as read-only.
+	 */
 	struct function _services() {
 		return variables.services.copy();
 	}

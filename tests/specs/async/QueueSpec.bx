@@ -1,5 +1,5 @@
-import models.effect.Effect@bxEffect;
-import models.effect.Queue@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Queue@bxeffect;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -91,9 +91,9 @@ class extends="testbox.system.BaseSpec" {
 			} );
 
 			it( "rejects invalid bounded capacities before constructing native state", () => {
-				expect( () => Queue::bounded( 0 ) ).toThrow( type: "BXEffect.InvalidQueueCapacity" );
-				expect( () => Queue::bounded( -1 ) ).toThrow( type: "BXEffect.InvalidQueueCapacity" );
-				expect( () => Queue::bounded( 1.5 ) ).toThrow( type: "BXEffect.InvalidQueueCapacity" );
+				expect( () => Queue::bounded( 0 ) ).toThrow( type: "bxeffect.InvalidQueueCapacityException" );
+				expect( () => Queue::bounded( -1 ) ).toThrow( type: "bxeffect.InvalidQueueCapacityException" );
+				expect( () => Queue::bounded( 1.5 ) ).toThrow( type: "bxeffect.InvalidQueueCapacityException" );
 			} );
 
 		} );

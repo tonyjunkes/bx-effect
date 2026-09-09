@@ -1,13 +1,110 @@
-import models.effect.Effect@bxEffect;
-import models.effect.context.Context@bxEffect;
-import models.effect.context.Layer@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
 import java.util.concurrent.atomic.AtomicInteger;
 
 class extends="testbox.system.BaseSpec" {
 
 	function run() {
 		describe( "Context and Layers", () => {
+
+			it( "rejects blank service tags with a context exception", () => {
+				expect( () => ServiceTag::of( "   " ) )
+					.toThrow( type: "bxeffect.context.InvalidServiceTagException" );
+			} );
+
+			it( "memoizes only Layer outputs across different ordered recipes", () => {
+				var prefix = ServiceTag::of( "memo/Prefix" );
+				var sharedTag = ServiceTag::of( "memo/Shared" );
+				var releases = new AtomicInteger( 0 );
+				var builds = new AtomicInteger( 0 );
+				var shared = Layer::scoped( sharedTag, Effect::acquireRelease(
+					Effect::sync( () => { builds.incrementAndGet(); return "shared"; } ),
+					( resource ) => Effect::sync( () => releases.incrementAndGet() )
+				) );
+				var first = Layer::merge( [ Layer::succeed( prefix, "first" ), shared ] );
+				var second = Layer::merge( [ Layer::succeed( prefix, "second" ), shared ] );
+				for ( var concurrencyLimit in [ 1, 2 ] ) {
+					var values = Effect::runSync( Effect::all( [
+						Effect::service( prefix ).zip( Effect::service( sharedTag ) ).provide( first ),
+						Effect::service( prefix ).zip( Effect::service( sharedTag ) ).provide( second )
+					], { concurrency: concurrencyLimit } ) );
+					expect( values ).toBe( [ [ "first", "shared" ], [ "second", "shared" ] ] );
+				}
+				expect( builds.get() ).toBe( 2 );
+				expect( releases.get() ).toBe( 2 );
+			} );
+
+			it( "preserves explicit equal-value outputs and first-build dependency sharing", () => {
+				var prefix = ServiceTag::of( "memo/Input" );
+				var output = ServiceTag::of( "memo/Output" );
+				var dependent = Layer::effect( output, Effect::service( prefix ) );
+				var sameValueWriter = new Layer( ( baseContext ) =>
+					Effect::succeed( baseContext.add( prefix, "first" ) )
+				);
+				var first = Layer::merge( [ Layer::succeed( prefix, "first" ), dependent, sameValueWriter ] );
+				var second = Layer::merge( [ Layer::succeed( prefix, "second" ), dependent ] );
+				var third = Layer::merge( [ Layer::succeed( prefix, "third" ), sameValueWriter ] );
+				var values = Effect::runSync( Effect::service( prefix ).provide( first ).flatMap( ( firstValue ) =>
+					Effect::service( prefix ).zip( Effect::service( output ) ).provide( second ).flatMap( ( secondValues ) =>
+						Effect::service( prefix ).provide( third ).map( ( thirdValue ) =>
+							[ firstValue, secondValues, thirdValue ]
+						)
+					)
+				) );
+				expect( values ).toBe( [ "first", [ "second", "first" ], "first" ] );
+			} );
+
+			it( "preserves custom builder input Context without memoizing inherited entries", () => {
+				var inputTag = ServiceTag::of( "memo/CustomInput" );
+				var resultTag = ServiceTag::of( "memo/CustomResult" );
+				var custom = new Layer( ( baseContext ) => Effect::succeed(
+					baseContext.merge( Context::empty().add( resultTag, "result" ) )
+				) );
+				var baseContext = Context::empty().add( inputTag, "base" );
+				var built = Effect::runSync( custom.build( baseContext ) );
+				expect( built.get( inputTag ) ).toBe( "base" );
+				expect( built.get( resultTag ) ).toBe( "result" );
+				var first = Layer::merge( [ Layer::succeed( inputTag, "first" ), custom ] );
+				var second = Layer::merge( [ Layer::succeed( inputTag, "second" ), custom ] );
+				expect( Effect::runSync( Effect::service( inputTag ).provide( first ).flatMap( ( firstValue ) =>
+					Effect::service( inputTag ).provide( second ).map( ( secondValue ) => [ firstValue, secondValue ] )
+				) ) ).toBe( [ "first", "second" ] );
+				expect( baseContext.has( resultTag ) ).toBeFalse();
+			} );
+
+			it( "retains an explicit merge of a binding already present in the build input", () => {
+				var tagToUse = ServiceTag::of( "memo/Reprovided" );
+				var explicitContext = Context::empty().add( tagToUse, "explicit" );
+				var shared = new Layer( ( baseContext ) => Effect::succeed( baseContext.merge( explicitContext ) ) );
+				var first = new Layer( ( ignored ) => Effect::succeed( explicitContext ) );
+				var firstRecipe = Layer::merge( [ first, shared ] );
+				var secondRecipe = Layer::merge( [ Layer::succeed( tagToUse, "replacement" ), shared ] );
+				var values = Effect::runSync( Effect::service( tagToUse ).provide( firstRecipe ).flatMap( ( firstValue ) =>
+					Effect::service( tagToUse ).provide( secondRecipe ).map( ( secondValue ) => [ firstValue, secondValue ] )
+				) );
+				expect( values ).toBe( [ "explicit", "explicit" ] );
+			} );
+
+			it( "cleans up and permits retry when a custom builder returns an invalid Context", () => {
+				var releases = 0;
+				var builds = 0;
+				var resultTag = ServiceTag::of( "memo/InvalidOutput" );
+				var custom = new Layer( ( baseContext ) => Effect::acquireRelease(
+					Effect::sync( () => ++builds ),
+					( resource ) => Effect::sync( () => releases++ )
+				).map( ( buildNumber ) => buildNumber == 1 ? "invalid" : baseContext.add( resultTag, "ok" ) ) );
+				var requested = Effect::service( resultTag ).provide( custom );
+				var outcome = Effect::runSyncExit( requested.catchCause( ( failureCause ) => {
+					expect( failureCause.kind() ).toBe( "Die" );
+					return requested;
+				} ) );
+				expect( outcome.isSuccess() ).toBeTrue();
+				expect( outcome.value() ).toBe( "ok" );
+				expect( builds ).toBe( 2 );
+				expect( releases ).toBe( 2 );
+			} );
 
 			it( "uses stable service tag identities", () => {
 				var firstTag = ServiceTag::of( "app/Repository" );
@@ -66,7 +163,7 @@ class extends="testbox.system.BaseSpec" {
 			it( "restores the outer Context before defect recovery", () => {
 				var label = ServiceTag::of( "app/DefectLabel" );
 				var program = Effect::sync( () => {
-					throw( type: "BXEffect.TestDefect", message: "bad" );
+					throw( type: "bxeffect.testing.TestDefectException", message: "bad" );
 				} ).provideService( label, "inner" )
 					.catchCause( ( failureCause ) => Effect::service( label ) )
 					.provideService( label, "outer" );
@@ -86,7 +183,7 @@ class extends="testbox.system.BaseSpec" {
 
 				expect( exit.isFailure() ).toBeTrue();
 				expect( exit.cause().kind() ).toBe( "Die" );
-				expect( exit.cause().defect().type ).toBe( "BXEffect.MissingService" );
+				expect( exit.cause().defect().type ).toBe( "bxeffect.context.MissingServiceException" );
 				expect( detailExit.cause().defect().extendedInfo.requestedTag ).toBe( "app/Missing" );
 				expect( detailExit.cause().defect().extendedInfo.availableTags )
 					.toBe( [ "app/Logger", "app/Repository" ] );
@@ -234,7 +331,7 @@ class extends="testbox.system.BaseSpec" {
 				var defectiveLayer = Layer::effect(
 					repository,
 					Effect::sync( () => {
-						throw( type: "BXEffect.LayerDefect", message: "broken" );
+						throw( type: "bxeffect.testing.LayerDefectException", message: "broken" );
 					} )
 				);
 
@@ -243,7 +340,7 @@ class extends="testbox.system.BaseSpec" {
 				);
 				expect( layerExit.isFailure() ).toBeTrue();
 				expect( layerExit.cause().kind() ).toBe( "Die" );
-				expect( layerExit.cause().defect().type ).toBe( "BXEffect.LayerDefect" );
+				expect( layerExit.cause().defect().type ).toBe( "bxeffect.testing.LayerDefectException" );
 			} );
 
 			it( "releases a memoized scoped Layer resource once", () => {

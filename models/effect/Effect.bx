@@ -1,3 +1,5 @@
+import bxModules.bxEffect.models.effect.Fiber;
+import ortus.boxlang.runtime.async.BoxFuture;
 import bxModules.bxEffect.models.effect.Cause;
 import bxModules.bxEffect.models.effect.EffectRuntime;
 import bxModules.bxEffect.models.effect.Exit;
@@ -17,26 +19,50 @@ class {
 
 	variables.instruction = {};
 
-	function init( required struct instruction ) {
+	/**
+	 * Stores an internal instruction node without evaluating it.
+	 *
+	 * @instruction Internal instruction node consumed by EffectRuntime; treat as read-only.
+	 * @return This Effect description.
+	 */
+	Effect function init( required struct instruction ) {
 		variables.instruction = arguments.instruction;
 		return this;
 	}
 
-	static function succeed( any value ) {
+	/**
+	 * Describes a computation that succeeds with the supplied value.
+	 *
+	 * @value Value carried by this operation; may be null.
+	 * @return A lazy Effect.
+	 */
+	static Effect function succeed( any value ) {
 		return new Effect( {
 			kind : "Succeed",
 			value : arguments.value
 		} );
 	}
 
-	static function fail( required any error ) {
+	/**
+	 * Describes an expected failure, recoverable with catchAll.
+	 *
+	 * @error Expected application error value.
+	 * @return A lazy failed Effect.
+	 */
+	static Effect function fail( required any error ) {
 		return new Effect( {
 			kind : "Fail",
 			error : arguments.error
 		} );
 	}
 
-	static function sync( required function thunk ) {
+	/**
+	 * Defers a value-producing callback until execution; thrown exceptions become defects.
+	 *
+	 * @thunk Zero-argument callback returning a value; executed once per run.
+	 * @return A lazy Effect.
+	 */
+	static Effect function sync( required function thunk ) {
 		return new Effect( {
 			kind : "Sync",
 			thunk : arguments.thunk
@@ -44,11 +70,13 @@ class {
 	}
 
 	/**
-	 * Lazily executes throwing code and maps a thrown exception into the
-	 * expected error channel. BoxLang 1.16 accepts `try` as both a static method
-	 * name and a named argument.
+	 * Maps exceptions from the supplied callback into expected failures; mapper exceptions are defects.
+	 *
+	 * @try Zero-argument throwing callback returning the success value.
+	 * @catch Exception-to-expected-error mapper; defaults to returning the exception unchanged.
+	 * @return A lazy Effect.
 	 */
-	static function try( required function try, function catch = ( error ) -> error ) {
+	static Effect function try( required function try, function catch = ( error ) -> error ) {
 		return new Effect( {
 			kind : "Try",
 			thunk : arguments.try,
@@ -56,14 +84,27 @@ class {
 		} );
 	}
 
-	static function suspend( required function thunk ) {
+	/**
+	 * Defers construction of the next Effect until each execution.
+	 *
+	 * @thunk Zero-argument callback returning the next Effect; executed once per evaluation.
+	 * @return A lazy Effect whose factory is evaluated by the interpreter.
+	 */
+	static Effect function suspend( required function thunk ) {
 		return new Effect( {
 			kind : "Suspend",
 			thunk : arguments.thunk
 		} );
 	}
 
-	static function fromAttempt( required any valueAttempt, required function onEmpty ) {
+	/**
+	 * Converts presence to success and lazily creates an expected error for absence.
+	 *
+	 * @valueAttempt Native Attempt representing presence or absence.
+	 * @onEmpty Zero-argument callback producing the expected error when the Attempt is empty.
+	 * @return A lazy Effect.
+	 */
+	static Effect function fromAttempt( required any valueAttempt, required function onEmpty ) {
 		var sourceAttempt = arguments.valueAttempt;
 		var emptyHandler = arguments.onEmpty;
 		return Effect::suspend( () => sourceAttempt.isPresent()
@@ -72,20 +113,39 @@ class {
 		);
 	}
 
-	static function fromResult( required Result outcome ) {
+	/**
+	 * Lifts a Result into success or expected failure without executing work.
+	 *
+	 * @outcome Result whose success or expected error is lifted.
+	 * @return An Effect preserving the Result branch.
+	 */
+	static Effect function fromResult( required Result outcome ) {
 		return arguments.outcome.isSuccess()
 			? Effect::succeed( arguments.outcome.value() )
 			: Effect::fail( arguments.outcome.error() );
 	}
 
-	static function service( required ServiceTag tag ) {
+	/**
+	 * Looks up a service at execution time; a missing binding is a wiring defect.
+	 *
+	 * @tag ServiceTag identifying the binding.
+	 * @return An Effect yielding the requested service.
+	 */
+	static Effect function service( required ServiceTag tag ) {
 		return new Effect( {
 			kind : "AccessService",
 			tag : arguments.tag
 		} );
 	}
 
-	static function acquireRelease( required Effect acquire, required function release ) {
+	/**
+	 * Acquires a resource and registers release in the current Scope before observing pending interruption.
+	 *
+	 * @acquire Effect producing the resource; failed acquisition does not register release.
+	 * @release Callback receiving the acquired resource and returning its cleanup Effect.
+	 * @return An Effect yielding the acquired resource; release runs at Scope cleanup.
+	 */
+	static Effect function acquireRelease( required Effect acquire, required function release ) {
 		return new Effect( {
 			kind : "AcquireRelease",
 			acquire : arguments.acquire,
@@ -93,23 +153,61 @@ class {
 		} );
 	}
 
-	static function fromBoxFuture( required function futureFactory ) {
+	/**
+	 * Creates and awaits a native BoxFuture only when executed; rejected futures become defects unless interrupted.
+	 *
+	 * @futureFactory Zero-argument factory returning a native BoxFuture at execution time.
+	 * @return A lazy Effect yielding the future value.
+	 */
+	static Effect function fromBoxFuture( required function futureFactory ) {
 		return new Effect( {
 			kind : "AsyncFuture",
 			futureFactory : arguments.futureFactory
 		} );
 	}
 
-	/** Internal interruptible permit-acquisition instruction. */
-	static function _acquireSemaphore( required any permitSource ) {
+	/**
+	 * Builds the internal acquisition/use boundary with release after every use outcome.
+	 *
+	 * @acquire Effect producing the resource; failed acquisition does not register release.
+	 * @use Callback receiving the resource and returning the Effect to run before release.
+	 * @release Callback receiving the acquired resource and returning its cleanup Effect.
+	 * @return An Effect yielding the use result.
+	 */
+	static Effect function _acquireUseRelease(
+		required Effect acquire,
+		required function use,
+		required function release
+	) {
+		return new Effect( {
+			kind : "AcquireUseRelease",
+			acquire : arguments.acquire,
+			use : arguments.use,
+			release : arguments.release
+		} );
+	}
+
+	/**
+	 * Builds a runtime-private interruptible permit acquisition.
+	 *
+	 * @permitSource Internal Semaphore exposing native interruptible acquisition.
+	 * @return An Effect yielding null after acquiring one permit.
+	 */
+	static Effect function _acquireSemaphore( required any permitSource ) {
 		return new Effect( {
 			kind : "SemaphoreAcquire",
 			permitSource : arguments.permitSource
 		} );
 	}
 
-	/** Internal interruptible Queue-offer instruction. */
-	static function _offerQueue( required any queueSource, any value ) {
+	/**
+	 * Builds a runtime-private interruptible Queue offer.
+	 *
+	 * @queueSource Application-owned Queue; this operation does not transfer ownership.
+	 * @value Value carried by this operation; may be null.
+	 * @return An Effect yielding null, or the expected QueueShutdown error.
+	 */
+	static Effect function _offerQueue( required any queueSource, any value ) {
 		return new Effect( {
 			kind : "QueueOffer",
 			queueSource : arguments.queueSource,
@@ -117,16 +215,27 @@ class {
 		} );
 	}
 
-	/** Internal interruptible Queue-take instruction. */
-	static function _takeQueue( required any queueSource ) {
+	/**
+	 * Builds a runtime-private interruptible Queue take.
+	 *
+	 * @queueSource Application-owned Queue; this operation does not transfer ownership.
+	 * @return An Effect yielding the next value, or the expected QueueShutdown error.
+	 */
+	static Effect function _takeQueue( required any queueSource ) {
 		return new Effect( {
 			kind : "QueueTake",
 			queueSource : arguments.queueSource
 		} );
 	}
 
-	/** Internal interruptible PubSub-publication instruction. */
-	static function _publishPubSub( required any pubSubSource, any value ) {
+	/**
+	 * Builds a runtime-private interruptible broadcast.
+	 *
+	 * @pubSubSource Parent PubSub hub coordinating subscription state and waits.
+	 * @value Value carried by this operation; may be null.
+	 * @return An Effect yielding null, or the expected PubSubShutdown error.
+	 */
+	static Effect function _publishPubSub( required any pubSubSource, any value ) {
 		return new Effect( {
 			kind : "PubSubPublish",
 			pubSubSource : arguments.pubSubSource,
@@ -134,24 +243,40 @@ class {
 		} );
 	}
 
-	/** Internal PubSub-subscription instruction. */
-	static function _subscribePubSub( required any pubSubSource ) {
+	/**
+	 * Builds a runtime-private subscription acquisition.
+	 *
+	 * @pubSubSource Parent PubSub hub coordinating subscription state and waits.
+	 * @return An Effect yielding a subscription, or the expected PubSubShutdown error.
+	 */
+	static Effect function _subscribePubSub( required any pubSubSource ) {
 		return new Effect( {
 			kind : "PubSubSubscribe",
 			pubSubSource : arguments.pubSubSource
 		} );
 	}
 
-	/** Internal interruptible PubSub-subscription take instruction. */
-	static function _takePubSubSubscription( required any subscriptionSource ) {
+	/**
+	 * Builds a runtime-private interruptible subscription take.
+	 *
+	 * @subscriptionSource Subscription whose parent hub coordinates the wait.
+	 * @return An Effect yielding a value or a tagged shutdown failure.
+	 */
+	static Effect function _takePubSubSubscription( required any subscriptionSource ) {
 		return new Effect( {
 			kind : "PubSubTake",
 			subscriptionSource : arguments.subscriptionSource
 		} );
 	}
 
-	/** Internal Layer-provisioning instruction. */
-	static function _provideLayer( required Effect program, required any layer ) {
+	/**
+	 * Builds runtime-private Layer provisioning with Context restoration.
+	 *
+	 * @program Effect to execute within this operation's boundary.
+	 * @layer Layer recipe participating in runtime-local build sharing.
+	 * @return An Effect yielding the program result.
+	 */
+	static Effect function _provideLayer( required Effect program, required any layer ) {
 		return new Effect( {
 			kind : "ProvideLayer",
 			effect : arguments.program,
@@ -159,8 +284,14 @@ class {
 		} );
 	}
 
-	/** Internal Layer-build instruction used by Layer.merge and the runtime. */
-	static function _buildLayer( required any layer, required Context baseContext ) {
+	/**
+	 * Builds a runtime-private memoized Layer request.
+	 *
+	 * @layer Layer recipe participating in runtime-local build sharing.
+	 * @baseContext Input service bindings available to the Layer build.
+	 * @return An Effect yielding a Context containing the built services.
+	 */
+	static Effect function _buildLayer( required any layer, required Context baseContext ) {
 		return new Effect( {
 			kind : "BuildLayer",
 			layer : arguments.layer,
@@ -168,7 +299,14 @@ class {
 		} );
 	}
 
-	static function all( required array effects, struct options = {} ) {
+	/**
+	 * Runs branches with bounded or unbounded concurrency and preserves input order; accumulate mode retains all Causes.
+	 *
+	 * @effects Input Effects; array order determines result and accumulated Cause order.
+	 * @options concurrency: positive integer or unbounded (default); mode: failFast (default) or accumulate.
+	 * @return An Effect yielding an array of results, or the combined failure.
+	 */
+	static Effect function all( required array effects, struct options = {} ) {
 		return new Effect( {
 			kind : "All",
 			effects : copyEffects( arguments.effects ),
@@ -176,13 +314,25 @@ class {
 		} );
 	}
 
-	static function forEach( required array values, required function mapper, struct options = {} ) {
+	/**
+	 * Lazily maps values to Effects, sequentially by default, with optional concurrency and result discard.
+	 *
+	 * @values Input values in encounter order.
+	 * @mapper Callback receiving value and one-based index and returning an Effect.
+	 * @options concurrency defaults to 1; mode defaults to failFast; discard defaults to false.
+	 * @return An Effect yielding ordered results, or null when discard is true.
+	 */
+	static Effect function forEach(
+		required array values,
+		required function mapper,
+		struct options = {}
+	) {
 		var allOptions = { concurrency: 1 };
 		var discardResults = false;
 		for ( var optionName in arguments.options ) {
 			if ( listFindNoCase( "concurrency,discard,mode", optionName ) == 0 ) {
 				throw(
-					type: "BXEffect.InvalidForEachOption",
+					type: "bxeffect.InvalidForEachOptionException",
 					message: "Effect.forEach() does not support option [#optionName#]"
 				);
 			}
@@ -196,7 +346,7 @@ class {
 		if ( structKeyExists( arguments.options, "discard" ) ) {
 			if ( !isBoolean( arguments.options.discard ) ) {
 				throw(
-					type: "BXEffect.InvalidForEachOption",
+					type: "bxeffect.InvalidForEachOptionException",
 					message: "Effect.forEach() discard must be boolean"
 				);
 			}
@@ -204,6 +354,8 @@ class {
 		}
 
 		var programs = [];
+		// Capture each value/index now, but invoke its mapper only inside Suspend.
+		// This preserves laziness even when all() later starts branches concurrently.
 		for ( var index = 1; index <= arguments.values.len(); index++ ) {
 			programs.append( forEachProgram(
 				arguments.values[ index ],
@@ -216,10 +368,16 @@ class {
 		return discardResults ? collected.asVoid() : collected;
 	}
 
-	static function race( required array effects ) {
+	/**
+	 * Races a nonempty array for the first completion, then interrupts and awaits remaining children.
+	 *
+	 * @effects Input Effects; array order determines result and accumulated Cause order.
+	 * @return An Effect preserving the winning success or Cause.
+	 */
+	static Effect function race( required array effects ) {
 		if ( arguments.effects.len() == 0 ) {
 			throw(
-				type: "BXEffect.EmptyRace",
+				type: "bxeffect.EmptyRaceException",
 				message: "Effect.race() requires at least one Effect"
 			);
 		}
@@ -229,10 +387,16 @@ class {
 		} );
 	}
 
-	static function firstSuccessOf( required array effects ) {
+	/**
+	 * Races for the first success; if every branch fails, combines Causes in input order.
+	 *
+	 * @effects Input Effects; array order determines result and accumulated Cause order.
+	 * @return An Effect yielding the winning value or all failures.
+	 */
+	static Effect function firstSuccessOf( required array effects ) {
 		if ( arguments.effects.len() == 0 ) {
 			throw(
-				type: "BXEffect.EmptyFirstSuccess",
+				type: "bxeffect.EmptyFirstSuccessException",
 				message: "Effect.firstSuccessOf() requires at least one Effect"
 			);
 		}
@@ -242,9 +406,16 @@ class {
 		} );
 	}
 
-	static function sleep( required numeric duration, string unit = "milliseconds" ) {
+	/**
+	 * Describes an interruptible delay using the runtime Clock.
+	 *
+	 * @duration Non-negative delay or elapsed amount in the supplied unit.
+	 * @unit Time unit; defaults to milliseconds when omitted.
+	 * @return An Effect yielding null when the delay completes.
+	 */
+	static Effect function sleep( required numeric duration, string unit = "milliseconds" ) {
 		if ( arguments.duration < 0 ) {
-			throw( type: "BXEffect.InvalidDuration", message: "Effect.sleep() requires a non-negative duration" );
+			throw( type: "bxeffect.InvalidDurationException", message: "Effect.sleep() requires a non-negative duration" );
 		}
 		return new Effect( {
 			kind : "Sleep",
@@ -253,15 +424,26 @@ class {
 		} );
 	}
 
-	/** Internal runtime constructor used to preserve an existing Cause. */
-	static function _halt( required any failureCause ) {
+	/**
+	 * Builds an internal failure node without collapsing an existing Cause.
+	 *
+	 * @failureCause Complete Cause to preserve, including composite structure.
+	 * @return An Effect carrying the complete Cause.
+	 */
+	static Effect function _halt( required any failureCause ) {
 		return new Effect( {
 			kind : "Halt",
 			cause : arguments.failureCause
 		} );
 	}
 
-	function map( required function mapper ) {
+	/**
+	 * Transforms a success value lazily; callback exceptions become defects.
+	 *
+	 * @mapper Callback receiving a success value and returning its replacement.
+	 * @return A new Effect with the transformed success value.
+	 */
+	Effect function map( required function mapper ) {
 		return new Effect( {
 			kind : "Map",
 			effect : this,
@@ -269,7 +451,13 @@ class {
 		} );
 	}
 
-	function flatMap( required function mapper ) {
+	/**
+	 * Sequences a dependent Effect after success without recursive interpretation.
+	 *
+	 * @mapper Callback receiving a success value and returning the next Effect.
+	 * @return A new Effect yielding the dependent result.
+	 */
+	Effect function flatMap( required function mapper ) {
 		return new Effect( {
 			kind : "FlatMap",
 			effect : this,
@@ -277,16 +465,25 @@ class {
 		} );
 	}
 
-	function tap( required function observer ) {
+	/**
+	 * Runs an effectful observer after success and retains the original value if observation
+	 * succeeds.
+	 *
+	 * @observer Callback receiving a success value and returning an observation Effect.
+	 * @return A new Effect.
+	 */
+	Effect function tap( required function observer ) {
 		var effectfulObserver = arguments.observer;
 		return flatMap( ( value ) => effectfulObserver( value ).as( value ) );
 	}
 
 	/**
-	 * Runs an Effect for a pure expected failure and then preserves that failure.
-	 * A handler failure is appended sequentially to the original Cause.
+	 * Observes an expected failure without recovering it.
+	 *
+	 * @handler Callback receiving the expected error and returning an observation Effect.
+	 * @return A new Effect retaining the original failure and any handler failure.
 	 */
-	function tapError( required function handler ) {
+	Effect function tapError( required function handler ) {
 		var errorHandler = arguments.handler;
 		return catchAll( ( error ) => Effect::suspend( () => errorHandler( error ) )
 			.foldCause(
@@ -299,10 +496,12 @@ class {
 	}
 
 	/**
-	 * Runs an Effect for any Cause and then preserves that Cause. A handler
-	 * failure is appended sequentially to the original Cause.
+	 * Observes any failure Cause without recovering it.
+	 *
+	 * @handler Callback receiving the complete Cause and returning an observation Effect.
+	 * @return A new Effect retaining the original Cause and any handler failure.
 	 */
-	function tapCause( required function handler ) {
+	Effect function tapCause( required function handler ) {
 		var causeHandler = arguments.handler;
 		return catchCause( ( failureCause ) => Effect::suspend( () => causeHandler( failureCause ) )
 			.foldCause(
@@ -314,21 +513,36 @@ class {
 		);
 	}
 
-	/** Captures success or the complete Cause as a successful Exit value. */
-	function exit() {
+	/**
+	 * Captures the program outcome as data at this point in the instruction graph.
+	 *
+	 * @return An Effect succeeding with an Exit.
+	 */
+	Effect function exit() {
 		return foldCause(
 			( failureCause ) => Effect::succeed( Exit::failure( failureCause ) ),
 			( value ) => Effect::succeed( Exit::success( value ) )
 		);
 	}
 
-	/** Sequentially pairs this Effect with another Effect. */
-	function zip( required Effect other ) {
+	/**
+	 * Sequences another Effect and pairs the success values.
+	 *
+	 * @other Value to compose or compare with this instance.
+	 * @return An Effect yielding [left, right].
+	 */
+	Effect function zip( required Effect other ) {
 		return zipWith( arguments.other, ( left, right ) => [ left, right ] );
 	}
 
-	/** Sequentially combines this Effect and another Effect. */
-	function zipWith( required Effect other, required function combiner ) {
+	/**
+	 * Sequences another Effect and combines both success values.
+	 *
+	 * @other Value to compose or compare with this instance.
+	 * @combiner Callback receiving left and right success values and returning their combination.
+	 * @return An Effect yielding the combiner result.
+	 */
+	Effect function zipWith( required Effect other, required function combiner ) {
 		var rightProgram = arguments.other;
 		var combineValues = arguments.combiner;
 		return flatMap( ( left ) => rightProgram.map(
@@ -336,16 +550,34 @@ class {
 		) );
 	}
 
-	function as( any value ) {
+	/**
+	 * Replaces only the success value while retaining failures.
+	 *
+	 * @value Value carried by this operation; may be null.
+	 * @return A new Effect yielding the replacement on success.
+	 */
+	Effect function as( any value ) {
 		var replacement = arguments.value;
 		return map( ( ignored ) => replacement );
 	}
 
-	function asVoid() {
+	/**
+	 * Discards the success value while retaining failures.
+	 *
+	 * @return An Effect yielding null on success.
+	 */
+	Effect function asVoid() {
 		return as( null );
 	}
 
-	function foldCause( required function onFailure, required function onSuccess ) {
+	/**
+	 * Chooses an effectful continuation for success or the complete Cause.
+	 *
+	 * @onFailure Callback receiving the complete Cause and returning a recovery Effect.
+	 * @onSuccess Callback receiving the success value and returning the next Effect.
+	 * @return A new Effect yielding the selected continuation result.
+	 */
+	Effect function foldCause( required function onFailure, required function onSuccess ) {
 		return new Effect( {
 			kind : "FoldCause",
 			effect : this,
@@ -354,15 +586,26 @@ class {
 		} );
 	}
 
-	function catchCause( required function handler ) {
-		var causeHandler = arguments.handler;
+	/**
+	 * Recovers explicitly from any Cause, including defects and interruption.
+	 *
+	 * @handler Callback receiving the complete Cause and returning a recovery Effect.
+	 * @return A new Effect.
+	 */
+	Effect function catchCause( required function handler ) {
 		return foldCause(
-			( effectCause ) => causeHandler( effectCause ),
+			arguments.handler,
 			( value ) => Effect::succeed( value )
 		);
 	}
 
-	function catchAll( required function handler ) {
+	/**
+	 * Recovers only a single Fail Cause; composite Causes, defects, and interruption pass through.
+	 *
+	 * @handler Callback receiving the single expected error and returning a recovery Effect.
+	 * @return A new Effect.
+	 */
+	Effect function catchAll( required function handler ) {
 		var errorHandler = arguments.handler;
 		return foldCause(
 			( effectCause ) => effectCause.kind() == "Fail"
@@ -372,12 +615,25 @@ class {
 		);
 	}
 
-	function mapError( required function mapper ) {
+	/**
+	 * Transforms a single expected error; all other Causes pass through.
+	 *
+	 * @mapper Callback receiving a single expected error and returning its replacement.
+	 * @return A new Effect.
+	 */
+	Effect function mapError( required function mapper ) {
 		var errorMapper = arguments.mapper;
 		return catchAll( ( error ) => Effect::fail( errorMapper( error ) ) );
 	}
 
-	function catchIf( required function predicate, required function handler ) {
+	/**
+	 * Recovers a single expected error only when its predicate is true.
+	 *
+	 * @predicate Callback receiving the expected error and returning whether to recover it.
+	 * @handler Callback receiving the matching expected error and returning a recovery Effect.
+	 * @return A new Effect.
+	 */
+	Effect function catchIf( required function predicate, required function handler ) {
 		var shouldCatch = arguments.predicate;
 		var errorHandler = arguments.handler;
 		return catchAll( ( error ) => shouldCatch( error )
@@ -386,21 +642,40 @@ class {
 		);
 	}
 
-	function catchTag( required string tag, required function handler ) {
+	/**
+	 * Recovers a single expected error matching the centralized tag convention.
+	 *
+	 * @tag Expected error tag matched using ErrorTagResolver.
+	 * @handler Callback receiving the matching expected error and returning a recovery Effect.
+	 * @return A new Effect.
+	 */
+	Effect function catchTag( required string tag, required function handler ) {
 		var expectedTag = arguments.tag;
-		var taggedHandler = arguments.handler;
 		return catchIf(
 			( error ) => ErrorTagResolver::resolve( error ) == expectedTag,
-			( error ) => taggedHandler( error )
+			arguments.handler
 		);
 	}
 
-	function orElse( required Effect fallback ) {
+	/**
+	 * Runs the fallback only for a single expected failure.
+	 *
+	 * @fallback Effect executed only after an expected failure.
+	 * @return A new Effect.
+	 */
+	Effect function orElse( required Effect fallback ) {
 		var fallbackEffect = arguments.fallback;
 		return catchAll( ( ignored ) => fallbackEffect );
 	}
 
-	function filterOrFail( required function predicate, required function onFalse ) {
+	/**
+	 * Keeps a success value satisfying the predicate, otherwise creates an expected failure.
+	 *
+	 * @predicate Callback receiving the success value and returning whether to retain it.
+	 * @onFalse Callback receiving a rejected success value and producing an expected error.
+	 * @return A new Effect.
+	 */
+	Effect function filterOrFail( required function predicate, required function onFalse ) {
 		var filterPredicate = arguments.predicate;
 		var failureFactory = arguments.onFalse;
 		return flatMap( ( value ) => filterPredicate( value )
@@ -409,12 +684,24 @@ class {
 		);
 	}
 
-	function ensuring( required Effect finalizer ) {
+	/**
+	 * Runs cleanup after every outcome and appends cleanup failures sequentially to an existing Cause.
+	 *
+	 * @finalizer Effect to execute as cleanup on every outcome.
+	 * @return A new Effect whose completion includes cleanup.
+	 */
+	Effect function ensuring( required Effect finalizer ) {
 		var finalizerEffect = arguments.finalizer;
 		return onExit( ( ignoredExit ) => finalizerEffect );
 	}
 
-	function onExit( required function handler ) {
+	/**
+	 * Runs an effectful cleanup handler with the outcome before continuing or recovering outside this boundary.
+	 *
+	 * @handler Callback receiving the completed Exit and returning a cleanup Effect.
+	 * @return A new Effect whose completion includes cleanup.
+	 */
+	Effect function onExit( required function handler ) {
 		return new Effect( {
 			kind : "Ensuring",
 			effect : this,
@@ -422,14 +709,25 @@ class {
 		} );
 	}
 
-	function fork() {
+	/**
+	 * Starts a child Fiber when executed, owned by the current runtime Scope.
+	 *
+	 * @return An Effect yielding the child Fiber.
+	 */
+	Effect function fork() {
 		return new Effect( {
 			kind : "Fork",
 			effect : this
 		} );
 	}
 
-	function retry( required any policy ) {
+	/**
+	 * Re-executes only single expected failures according to a Schedule.
+	 *
+	 * @policy Schedule-compatible object or shorthand struct with a times count.
+	 * @return A new Effect yielding success or the final Cause.
+	 */
+	Effect function retry( required any policy ) {
 		return new Effect( {
 			kind : "Retry",
 			effect : this,
@@ -437,7 +735,13 @@ class {
 		} );
 	}
 
-	function repeat( required any policy ) {
+	/**
+	 * Re-executes successful runs according to a Schedule; any failure stops repetition.
+	 *
+	 * @policy Schedule-compatible object or shorthand struct with a times count.
+	 * @return A new Effect yielding the last success value.
+	 */
+	Effect function repeat( required any policy ) {
 		return new Effect( {
 			kind : "Repeat",
 			effect : this,
@@ -445,7 +749,14 @@ class {
 		} );
 	}
 
-	function timeout( required numeric duration, string unit = "milliseconds" ) {
+	/**
+	 * Races the program against a Clock delay and a tagged TimeoutError; waits for loser cleanup.
+	 *
+	 * @duration Non-negative delay or elapsed amount in the supplied unit.
+	 * @unit Time unit; defaults to milliseconds when omitted.
+	 * @return A new Effect.
+	 */
+	Effect function timeout( required numeric duration, string unit = "milliseconds" ) {
 		var sourceProgram = this;
 		var timeoutDuration = arguments.duration;
 		var timeoutUnit = arguments.unit;
@@ -459,7 +770,13 @@ class {
 		] );
 	}
 
-	function provide( required any provisioning ) {
+	/**
+	 * Supplies a Context or Layer for this program and restores the previous Context afterward.
+	 *
+	 * @provisioning Context or Layer supplying local service bindings.
+	 * @return A new Effect with local service bindings.
+	 */
+	Effect function provide( required any provisioning ) {
 		if ( isContext( arguments.provisioning ) ) {
 			return provideContext( arguments.provisioning );
 		}
@@ -468,16 +785,29 @@ class {
 		}
 
 		throw(
-			type: "BXEffect.InvalidProvision",
+			type: "bxeffect.InvalidProvisionException",
 			message: "Effect.provide() accepts a Context or Layer"
 		);
 	}
 
-	function provideService( required ServiceTag tag, any service ) {
+	/**
+	 * Adds or overrides one service for this program only.
+	 *
+	 * @tag ServiceTag identifying the binding.
+	 * @service Service implementation stored by reference.
+	 * @return A new Effect with the supplied binding.
+	 */
+	Effect function provideService( required ServiceTag tag, any service ) {
 		return provideContext( Context::empty().add( arguments.tag, arguments.service ) );
 	}
 
-	private function provideContext( required Context providedContext ) {
+	/**
+	 * Builds an internal Context merge/restoration boundary.
+	 *
+	 * @providedContext Context merged into the current bindings for the nested program.
+	 * @return A new Effect.
+	 */
+	private Effect function provideContext( required Context providedContext ) {
 		return new Effect( {
 			kind : "ProvideContext",
 			effect : this,
@@ -485,6 +815,12 @@ class {
 		} );
 	}
 
+	/**
+	 * Copies the input array while retaining the immutable Effect references.
+	 *
+	 * @effects Input Effects; array order determines result and accumulated Cause order.
+	 * @return A shallow array copy.
+	 */
 	private static array function copyEffects( required array effects ) {
 		var copiedEffects = [];
 		for ( var suppliedEffect in arguments.effects ) {
@@ -493,6 +829,12 @@ class {
 		return copiedEffects;
 	}
 
+	/**
+	 * Validates concurrency and mode and fills the all defaults.
+	 *
+	 * @options concurrency: positive integer or unbounded (default); mode: failFast (default) or accumulate.
+	 * @return A fresh options struct.
+	 */
 	private static struct function normalizeAllOptions( required struct options ) {
 		var normalized = {
 			concurrency : "unbounded",
@@ -501,7 +843,7 @@ class {
 		for ( var optionName in arguments.options ) {
 			if ( listFindNoCase( "concurrency,mode", optionName ) == 0 ) {
 				throw(
-					type: "BXEffect.InvalidAllOption",
+					type: "bxeffect.InvalidAllOptionException",
 					message: "Effect.all() does not support option [#optionName#]"
 				);
 			}
@@ -516,7 +858,7 @@ class {
 					|| requestedConcurrency != round( requestedConcurrency )
 				) {
 					throw(
-						type: "BXEffect.InvalidConcurrency",
+						type: "bxeffect.InvalidConcurrencyException",
 						message: "Effect.all() concurrency must be a positive integer or unbounded"
 					);
 				}
@@ -527,7 +869,7 @@ class {
 		if ( structKeyExists( arguments.options, "mode" ) ) {
 			if ( !listFindNoCase( "failFast,accumulate", arguments.options.mode ) ) {
 				throw(
-					type: "BXEffect.InvalidAllMode",
+					type: "bxeffect.InvalidAllModeException",
 					message: "Effect.all() mode must be failFast or accumulate"
 				);
 			}
@@ -537,7 +879,15 @@ class {
 		return normalized;
 	}
 
-	private static function forEachProgram(
+	/**
+	 * Captures one value and index so its mapper runs only during interpretation.
+	 *
+	 * @value Value carried by this operation; may be null.
+	 * @index One-based input position retained across asynchronous completion.
+	 * @mapper Callback receiving value and one-based index and returning an Effect.
+	 * @return A suspended Effect.
+	 */
+	private static Effect function forEachProgram(
 		required any value,
 		required numeric index,
 		required function mapper
@@ -548,6 +898,12 @@ class {
 		return Effect::suspend( () => mapperToRun( valueToMap, indexToMap ) );
 	}
 
+	/**
+	 * Checks the internal structural contract used to recognize Context provisioning.
+	 *
+	 * @candidate Object checked against the internal structural contract.
+	 * @return Whether the candidate exposes add, merge, and get.
+	 */
 	private static boolean function isContext( required any candidate ) {
 		return isObject( arguments.candidate )
 			&& structKeyExists( arguments.candidate, "add" )
@@ -555,6 +911,12 @@ class {
 			&& structKeyExists( arguments.candidate, "get" );
 	}
 
+	/**
+	 * Checks the internal structural contract used to recognize Layer provisioning.
+	 *
+	 * @candidate Object checked against the internal structural contract.
+	 * @return Whether the candidate exposes build and provide.
+	 */
 	private static boolean function isLayer( required any candidate ) {
 		return isObject( arguments.candidate )
 			&& structKeyExists( arguments.candidate, "build" )
@@ -562,29 +924,61 @@ class {
 	}
 
 	/**
-	 * Internal interpreter access. This is not part of the supported public API.
+	 * Exposes the instruction to the interpreter; internal callers must treat it as read-only.
+	 *
+	 * @return The internal instruction struct.
 	 */
 	struct function _instruction() {
 		return variables.instruction;
 	}
 
-	static function runSyncExit( required Effect effect ) {
+	/**
+	 * Executes immediately with a new runtime and waits for root cleanup.
+	 *
+	 * @effect Effect to execute at this runtime boundary.
+	 * @return The complete Exit.
+	 */
+	static any function runSyncExit( required Effect effect ) {
 		return new EffectRuntime().runSyncExit( arguments.effect );
 	}
 
-	static function runFuture( required Effect effect ) {
+	/**
+	 * Starts execution on a new runtime without blocking the caller.
+	 *
+	 * @effect Effect to execute at this runtime boundary.
+	 * @return A native BoxFuture yielding the value or failing with EffectFailureException.
+	 */
+	static BoxFuture function runFuture( required Effect effect ) {
 		return new EffectRuntime().runFuture( arguments.effect );
 	}
 
-	static function runFutureExit( required Effect effect ) {
+	/**
+	 * Starts execution on a new runtime without blocking the caller.
+	 *
+	 * @effect Effect to execute at this runtime boundary.
+	 * @return A native BoxFuture yielding the complete Exit.
+	 */
+	static BoxFuture function runFutureExit( required Effect effect ) {
 		return new EffectRuntime().runFutureExit( arguments.effect );
 	}
 
-	static function runFork( required Effect effect ) {
+	/**
+	 * Starts an owned root execution on a new runtime.
+	 *
+	 * @effect Effect to execute at this runtime boundary.
+	 * @return A Fiber handle.
+	 */
+	static Fiber function runFork( required Effect effect ) {
 		return new EffectRuntime().runFork( arguments.effect );
 	}
 
-	static function runSync( required Effect effect ) {
+	/**
+	 * Executes immediately and unwraps success; a failed Exit throws EffectFailureException.
+	 *
+	 * @effect Effect to execute at this runtime boundary.
+	 * @return The success value.
+	 */
+	static any function runSync( required Effect effect ) {
 		return new EffectRuntime().runSync( arguments.effect );
 	}
 

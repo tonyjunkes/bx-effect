@@ -1,7 +1,7 @@
 <bx:script>
-import models.effect.Effect@bxEffect;
-import models.effect.context.Layer@bxEffect;
-import models.effect.context.ServiceTag@bxEffect;
+import models.effect.Effect@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
 import java.util.concurrent.atomic.AtomicInteger;
 import benchmarks.BenchmarkSupport;
 
@@ -25,7 +25,7 @@ result = measurement.value;
 
 if ( result.len() != branches || builds.get() != 6 ) {
 	throw(
-		type: "BXEffect.BenchmarkFailure",
+		type: "bxeffect.benchmarks.BenchmarkFailureException",
 		message: "Expected #branches# results and one shared build per run; got #result.len()# results and #builds.get()# builds"
 	);
 }

@@ -1,7 +1,7 @@
-import models.effect.Cause@bxEffect;
-import models.effect.Deferred@bxEffect;
-import models.effect.Effect@bxEffect;
-import models.effect.Exit@bxEffect;
+import models.effect.Cause@bxeffect;
+import models.effect.Deferred@bxeffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Exit@bxeffect;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -64,7 +64,7 @@ class extends="testbox.system.BaseSpec" {
 
 				expect( completionExit.isFailure() ).toBeTrue();
 				expect( completionExit.cause().kind() ).toBe( "Die" );
-				expect( completionExit.cause().defect().type ).toBe( "BXEffect.InvalidDeferredOutcome" );
+				expect( completionExit.cause().defect().type ).toBe( "bxeffect.InvalidDeferredOutcomeException" );
 			} );
 
 		} );

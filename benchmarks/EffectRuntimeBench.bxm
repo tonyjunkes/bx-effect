@@ -1,5 +1,5 @@
 <bx:script>
-import models.effect.Effect@bxEffect;
+import models.effect.Effect@bxeffect;
 import benchmarks.BenchmarkSupport;
 
 iterations = 100000;
@@ -32,7 +32,7 @@ if (
 	|| flatMapMeasurement.value != iterations
 ) {
 	throw(
-		type: "BXEffect.BenchmarkFailure",
+		type: "bxeffect.benchmarks.BenchmarkFailureException",
 		message: "Expected direct, map, and flatMap results to equal #iterations#"
 	);
 }
