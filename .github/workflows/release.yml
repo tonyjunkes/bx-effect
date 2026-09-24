@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release
+  group: release-main
   cancel-in-progress: false
 
 defaults:
@@ -18,41 +18,18 @@ defaults:
     shell: bash
 
 jobs:
-  release:
-    name: Verify and publish release
+  tests:
+    name: Verify BoxLang latest
     # workflow_dispatch has no branch filter; guard manual runs as well.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
-
-      - name: Validate release version and tag
-        id: release
-        # env:
-          # FORGEBOX_API_TOKEN: ${{ secrets.FORGEBOX_API_TOKEN }}
-        run: |
-          # test -n "$FORGEBOX_API_TOKEN" || { echo '::error::FORGEBOX_API_TOKEN is required'; exit 1; }
-          package_version="$(jq -er '.version' box.json)"
-          # SemVer, including prereleases and build metadata; tags have no v prefix.
-          number='(0|[1-9][0-9]*)'
-          identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
-          if ! [[ "$package_version" =~ ^$number\.$number\.$number(-$identifier(\.$identifier)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo '::error::box.json must contain a valid semantic version'
-            exit 1
-          fi
-          if git show-ref --verify --quiet "refs/tags/$package_version"; then
-            test "$(git rev-parse "refs/tags/$package_version^{commit}")" = "$(git rev-parse HEAD)" || {
-              echo '::error::Existing release tag points to a different commit'
-              exit 1
-            }
-          fi
-          echo "tag=$package_version" >> "$GITHUB_OUTPUT"
+          persist-credentials: false
 
       - name: Set up BoxLang
         uses: ortus-boxlang/setup-boxlang@main
@@ -80,8 +57,65 @@ jobs:
           jq -e '.totalFail == 0 and .totalError == 0 and .totalPass > 0' \
             "$RUNNER_TEMP/release-override/report.json"
 
-      - name: Validate package descriptor
+      - name: Inspect package metadata
         run: box package show
+
+      - name: Verify isolated installed consumer
+        run: |
+          consumer_dir="${RUNNER_TEMP}/bx-effect-consumer"
+          export BOXLANG_HOME="${consumer_dir}/.boxlang"
+          mkdir -p "${consumer_dir}/boxlang_modules"
+          cp tests/consumer/Smoke.bxm tests/consumer/boxlang.json "${consumer_dir}/"
+          cd "${consumer_dir}"
+          box install "${GITHUB_WORKSPACE}" \
+            --directory="boxlang_modules" \
+            --production \
+            --save=false
+          boxlang --bx-config boxlang.json Smoke.bxm
+
+  publish:
+    name: Tag and publish
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read and validate release version
+        id: release
+        run: |
+          package_version="$(jq -er '.version | select(type == "string")' box.json)"
+          module_version="$(sed -n 's/.*this\.version *= *"\([^"]*\)".*/\1/p' ModuleConfig.bx)"
+          # SemVer, including prereleases and build metadata; tags have no v prefix.
+          number='(0|[1-9][0-9]*)'
+          identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+          if ! [[ "$package_version" =~ ^$number\.$number\.$number(-$identifier(\.$identifier)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo '::error::box.json must contain a valid semantic version'
+            exit 1
+          fi
+          if [[ "$package_version" != "$module_version" ]]; then
+            echo "::error::box.json version ($package_version) does not match ModuleConfig.bx ($module_version)"
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/$package_version"; then
+            test "$(git rev-parse "refs/tags/$package_version^{commit}")" = "$(git rev-parse HEAD)" || {
+              echo '::error::Existing release tag points to a different commit'
+              exit 1
+            }
+          fi
+          echo "tag=$package_version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up BoxLang
+        uses: ortus-boxlang/setup-boxlang@main
+        with:
+          version: latest
+          with-commandbox: true
 
       - name: Create release tag on the tested commit
         env:
@@ -91,15 +125,16 @@ jobs:
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG" HEAD
+            git push origin "refs/tags/$RELEASE_TAG"
           fi
-          git push origin "refs/tags/$RELEASE_TAG"
 
-      # Temporarily paused; remove this guard to resume ForgeBox publishing.
+      # ForgeBox publishing remains opt-in until the repository variable is enabled.
       - name: Publish to ForgeBox
-        if: ${{ false }}
+        if: ${{ vars.BX_EFFECT_FORGEBOX_PUBLISH_ENABLED == 'true' }}
         env:
           FORGEBOX_API_TOKEN: ${{ secrets.FORGEBOX_API_TOKEN }}
         run: |
+          test -n "$FORGEBOX_API_TOKEN" || { echo '::error::FORGEBOX_API_TOKEN is required'; exit 1; }
           box config set nonInteractiveShell=true
           box config set endpoints.forgebox.APIToken="$FORGEBOX_API_TOKEN"
           box publish endpointName=forgebox

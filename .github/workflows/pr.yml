@@ -3,15 +3,26 @@ name: PR
 on:
   pull_request:
     branches:
+      - main
       - develop
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
 
 permissions:
   contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   test:
     name: BoxLang ${{ matrix.boxlang-version }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

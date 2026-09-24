@@ -36,7 +36,7 @@
         "test":"boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs --stream --write-report=false --properties-summary=false --stacktrace=short"
     },
     "devDependencies":{
-        "testbox":"^7.1.0-snapshot"
+        "testbox":"^7.1.0+20"
     },
     "installPaths":{
         "testbox":"testbox/"
