@@ -6,8 +6,8 @@ class extends="bxModules.bxEffect.models.effect.Semaphore" {
 		return this;
 	}
 
-	function _acquireNative() {
-		super._acquireNative();
+	function acquireNative() {
+		super.acquireNative();
 		variables.testControl.interrupt();
 		return null;
 	}

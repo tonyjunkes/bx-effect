@@ -1,0 +1,46 @@
+import models.effect.Cause@bxeffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Exit@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+
+class extends="testbox.system.BaseSpec" {
+	function run() {
+		describe( "Release API interoperability", () => {
+			it( "lifts complete failure trees and nullable successes without changing channels", () => {
+				var failureTree = Cause::sequential( Cause::parallel( Cause::fail( "expected" ), Cause::die( "defect" ) ), Cause::interrupt( "fiber" ) );
+				var outcome = Effect::runSyncExit( Effect::fromExit( Exit::failure( failureTree ) ).catchAll( () => Effect::succeed( "wrong" ) ) );
+				expect( outcome.cause().pretty() ).toBe( failureTree.pretty() );
+				expect( Effect::runSyncExit( Effect::failCause( failureTree ) ).cause().pretty() ).toBe( failureTree.pretty() );
+				expect( Effect::runSyncExit( Effect::die( "defect" ) ).cause().kind() ).toBe( "Die" );
+				expect( isNull( Effect::runSync( Effect::fromExit( Exit::success( null ) ) ) ) ).toBeTrue();
+			} );
+
+			it( "copies tagged handler tables and handles only expected matching errors lazily", () => {
+				var calls = 0;
+				var handlers = { Missing: error => Effect::sync( () => { calls++; return error.id; } ) };
+				var program = Effect::fail( { _tag: "Missing", id: 42 } ).catchTags( handlers );
+				handlers.Missing = error => Effect::succeed( 0 );
+				expect( calls ).toBe( 0 );
+				expect( Effect::runSync( program ) ).toBe( 42 );
+				expect( calls ).toBe( 1 );
+				expect( Effect::runSyncExit( Effect::fail( "untagged" ).catchTags( handlers ) ).cause().error() ).toBe( "untagged" );
+				expect( Effect::runSyncExit( Effect::die( { _tag: "Missing" } ).catchTags( handlers ) ).cause().kind() ).toBe( "Die" );
+			} );
+
+			it( "aligns mixed-case and non-ASCII tag equality, hashes, and Context lookup", () => {
+				for ( var names in [ [ "App/Value", "app/value" ], [ "Service/ÉTÉ", "service/été" ] ] ) {
+					var first = ServiceTag::of( names[ 1 ] );
+					var second = ServiceTag::of( names[ 2 ] );
+					expect( first.equals( second ) ).toBeTrue();
+					expect( first.hashCode() ).toBe( second.hashCode() );
+					expect( Context::empty().add( first, 42 ).get( second ) ).toBe( 42 );
+				}
+				// Numeric-looking keys follow BoxLang's native integer-key normalization too.
+				expect( ServiceTag::of( "01" ).equals( ServiceTag::of( "1" ) ) ).toBeTrue();
+				expect( ServiceTag::of( "01" ).hashCode() ).toBe( ServiceTag::of( "1" ).hashCode() );
+				expect( Context::empty().add( ServiceTag::of( "01" ), 42 ).get( ServiceTag::of( "1" ) ) ).toBe( 42 );
+			} );
+		} );
+	}
+}

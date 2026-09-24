@@ -158,8 +158,7 @@ the next concern in your application:
 | [Runtime observability](docs/observability.md) | Observe runtime events and connect an existing logger. |
 | [BoxLang integration recipes](docs/native-integrations.md) | Wrap HTTP, database, file, and asynchronous operations. |
 | [Incremental adoption](docs/migration-from-imperative-code.md) | Introduce Effects into existing application code. |
-| [Public API and compatibility](docs/public-api.md) | Find supported classes and methods and understand the pre-1.0 compatibility policy. |
-| [Relationship to Effect](docs/effect-alignment.md) | Understand the shared concepts and deliberate API differences. |
+| [Public API and compatibility](docs/public-api.md) | Find the supported classes and methods for the 1.x API. |
 
 ## Contributing & Testing
 
@@ -177,6 +176,6 @@ box install
 box run-script test
 ```
 
-The suite runs through the BoxLang CLI (via CommandBox or an OS install of BoxLang if preferred). CI tests BoxLang
-`latest` and `snapshot`, including module configuration and an isolated installed
-consumer. For performance work, see the [benchmarks](benchmarks/README.md).
+The suite runs through the BoxLang CLI (via CommandBox or an OS install of BoxLang if preferred).
+CI runs the TestBox suite and module-setting checks on BoxLang `latest` and
+`snapshot`. For performance work, see the [benchmarks](benchmarks/README.md).

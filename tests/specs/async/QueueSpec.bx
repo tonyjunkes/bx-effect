@@ -6,6 +6,24 @@ class extends="testbox.system.BaseSpec" {
 	function run() {
 		describe( "Queue", () => {
 
+			it( "rejects null lazily without consuming capacity or disturbing FIFO polling", () => {
+				var queueSource = Queue::bounded( 1 );
+				var invalid = queueSource.offer( null );
+				expect( queueSource.size() ).toBe( 0 );
+				Effect::runSync( queueSource.offer( "first" ) );
+				var outcome = Effect::runSyncExit( invalid );
+				expect( outcome.cause().kind() ).toBe( "Die" );
+				expect( outcome.cause().defect().type ).toBe( "bxeffect.InvalidQueueValueException" );
+				expect( queueSource.size() ).toBe( 1 );
+				var producer = Effect::runFork( queueSource.offer( "second" ) );
+				expect( queueSource.poll().get() ).toBe( "first" );
+				producer.terminationFuture().get( 5000 );
+				expect( queueSource.poll().get() ).toBe( "second" );
+				Effect::runSync( queueSource.shutdown() );
+				expect( Effect::runSyncExit( invalid ).cause().kind() ).toBe( "Die" );
+				expect( queueSource.poll().isPresent() ).toBeFalse();
+			} );
+
 			it( "keeps offers lazy, delivers FIFO values, and releases a producer after poll", () => {
 				var queueSource = Queue::bounded( 1 );
 				var firstOffer = queueSource.offer( "first" );

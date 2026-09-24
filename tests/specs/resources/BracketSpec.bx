@@ -1,0 +1,65 @@
+import models.effect.Cause@bxeffect;
+import models.effect.Effect@bxeffect;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+class extends="testbox.system.BaseSpec" {
+	function run() {
+		describe( "acquireUseRelease", () => {
+			it( "acquires lazily and releases before following work with the use Exit", () => {
+				var events = [];
+				var program = Effect::acquireUseRelease(
+					Effect::sync( () => { events.append( "acquire" ); return "resource"; } ),
+					resource => Effect::succeed( resource & "-used" ),
+					( resource, outcome ) => Effect::sync( () => events.append( resource & ":" & outcome.value() ) )
+				).tap( () => Effect::sync( () => expect( events ).toBe( [ "acquire", "resource:resource-used" ] ) ) );
+				expect( events ).toBeEmpty();
+				expect( Effect::runSync( program ) ).toBe( "resource-used" );
+			} );
+
+			it( "releases after every failure channel and combines cleanup in sequence", () => {
+				for ( var failureTree in [ Cause::fail( "expected" ), Cause::die( "defect" ), Cause::interrupt( "fiber" ) ] ) {
+					var useCause = failureTree;
+					var seen = "";
+					var outcome = Effect::runSyncExit( Effect::acquireUseRelease( Effect::succeed( 1 ),
+						resource => Effect::failCause( useCause ),
+						( resource, useExit ) => { seen = useExit.cause().kind(); return Effect::fail( "release" ); }
+					) );
+					expect( seen ).toBe( useCause.kind() );
+					expect( outcome.cause().kind() ).toBe( "Sequential" );
+					expect( outcome.cause().left().kind() ).toBe( useCause.kind() );
+					expect( outcome.cause().right().error() ).toBe( "release" );
+				}
+			} );
+
+			it( "does not release failed acquisitions and releases once after a thrown use callback", () => {
+				var releases = 0;
+				var releaseResource = ( resource, outcome ) => Effect::sync( () => releases++ );
+				var failed = Effect::runSyncExit( Effect::acquireUseRelease( Effect::fail( "acquire" ), resource => Effect::succeed( resource ), releaseResource ) );
+				expect( failed.cause().kind() ).toBe( "Fail" );
+				expect( releases ).toBe( 0 );
+				var thrown = Effect::runSyncExit( Effect::acquireUseRelease( Effect::succeed( 1 ), resource => { throw( message: "use failed" ); }, releaseResource ) );
+				expect( thrown.cause().kind() ).toBe( "Die" );
+				expect( releases ).toBe( 1 );
+			} );
+
+			it( "hands successful acquisition to release before observing pending cancellation", () => {
+				var entered = new CountDownLatch( 1 );
+				var proceed = new CountDownLatch( 1 );
+				var releases = new java.util.concurrent.atomic.AtomicInteger( 0 );
+				var fiber = Effect::runFork( Effect::acquireUseRelease( Effect::sync( () => {
+					entered.countDown();
+					if ( !proceed.await( 5, TimeUnit::SECONDS ) ) { throw( message: "Acquisition timed out" ); }
+					return "resource";
+				} ), resource => Effect::die( "must not use" ), ( resource, outcome ) => Effect::sync( () => {
+					expect( outcome.cause().kind() ).toBe( "Interrupt" );
+					return releases.incrementAndGet();
+				} ) ) );
+				try { expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue(); fiber.interrupt(); }
+				finally { proceed.countDown(); }
+				expect( fiber.terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
+				expect( releases.get() ).toBe( 1 );
+			} );
+		} );
+	}
+}

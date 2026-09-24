@@ -45,6 +45,9 @@ Exit. Once closing begins, new runs do not execute user work and fail with the
 tagged expected error `ManagedRuntimeClosed`. Close requests interruption of
 active runs, waits for their Scope cleanup, then releases managed Layer
 resources once in LIFO order. Concurrent close calls share one completion.
+Failed cleanup from runs interrupted by close is retained before managed-service
+cleanup in the closing Exit. Completed runs already removed before close keep
+their own outcomes; close does not replay their business errors.
 The observer sees `scope:closing`, `scope:closed`, then `runtime:completed` for
 the managed close outcome; observer failures remain diagnostic-only.
 

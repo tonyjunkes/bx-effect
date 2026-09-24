@@ -1,0 +1,57 @@
+<bx:script>
+import models.effect.Cause@bxeffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Stream@bxeffect;
+import benchmarks.BenchmarkSupport;
+
+leafCount = 4096;
+skewed = Cause::fail( 1 );
+leaves = [ skewed ];
+for ( index = 2; index <= leafCount; index++ ) {
+	leaf = Cause::fail( index );
+	skewed = Cause::sequential( skewed, leaf );
+	leaves.append( leaf );
+}
+while ( leaves.len() > 1 ) {
+	nextLevel = [];
+	for ( index = 1; index <= leaves.len(); index += 2 ) {
+		nextLevel.append( Cause::parallel( leaves[ index ], leaves[ index + 1 ] ) );
+	}
+	leaves = nextLevel;
+}
+balanced = leaves[ 1 ];
+for ( tree in [ { label: "skewed", node: skewed }, { label: "balanced", node: balanced } ] ) {
+	currentTree = tree.node;
+	measurement = BenchmarkSupport::measure( () => {
+		var mappedTree = currentTree.mapFailures( value => value + 1 );
+		return { count: mappedTree.failures().len(), rendered: mappedTree.pretty().len(), defect: mappedTree.isDefect() };
+	} );
+	if ( measurement.value.count != leafCount || measurement.value.rendered == 0 || measurement.value.defect ) {
+		throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Cause traversal lost values" );
+	}
+	println( "cause=#tree.label# leaves=#leafCount# minMs=#measurement.minimumMs# medianMs=#measurement.medianMs#" );
+}
+
+concatCount = 2000;
+construction = BenchmarkSupport::measure( () => {
+	var source = Stream::empty();
+	for ( var item = 1; item <= concatCount; item++ ) {
+		source = source.concat( Stream::succeed( item ) );
+	}
+	return source;
+} );
+if ( Effect::runSync( construction.value.runFold( 0, ( total, value ) => total + 1 ) ) != concatCount ) {
+	throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Concat lost values" );
+}
+println( "concat=#concatCount# minMs=#construction.minimumMs# medianMs=#construction.medianMs#" );
+
+inputs = [];
+for ( index = 1; index <= 1000; index++ ) { inputs.append( index ); }
+discarded = BenchmarkSupport::measure( () => Effect::runSync( Effect::forEach(
+	inputs, value => Effect::succeed( value ), { concurrency: 16, discard: true }
+) ) );
+if ( !isNull( discarded.value ) ) {
+	throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Discard returned values" );
+}
+println( "discard=#inputs.len()# concurrency=16 minMs=#discarded.minimumMs# medianMs=#discarded.medianMs#" );
+</bx:script>

@@ -78,7 +78,7 @@ class extends="testbox.system.BaseSpec" {
 
 				expect( runs ).toBe( 0 );
 				var fiber = Effect::runSync( forkedProgram.flatMap( ( childFiber ) =>
-					Effect::fromBoxFuture( () => childFiber._completionFuture() )
+					Effect::fromBoxFuture( () => childFiber.completionFuture() )
 						.as( childFiber )
 				) );
 				expect( fiber.join() ).toBe( "value" );
@@ -153,7 +153,7 @@ class extends="testbox.system.BaseSpec" {
 					Effect::sync( () => {
 						throw( type: "bxeffect.testing.AccumulatedDefectException", message: "broken" );
 					} ),
-					Effect::_halt( Cause::interrupt( "fiber-input" ) )
+					Effect::haltInstruction( Cause::interrupt( "fiber-input" ) )
 				], { mode: "accumulate" } ) );
 
 				expect( exit.isFailure() ).toBeTrue();
@@ -222,6 +222,16 @@ class extends="testbox.system.BaseSpec" {
 
 				expect( Effect::runSync( program ) ).toBeNull();
 				expect( mapped ).toBe( 2 );
+			} );
+
+			it( "discards empty and successful output while retaining accumulated failures in input order", () => {
+				expect( isNull( Effect::runSync( Effect::forEach( [], value => Effect::succeed( value ), { discard: true } ) ) ) ).toBeTrue();
+				var outcome = Effect::runSyncExit( Effect::forEach( [ 1, 2, 3, 4 ], value =>
+					value % 2 == 0 ? Effect::fail( value ) : Effect::succeed( value ),
+					{ concurrency: 2, discard: true, mode: "accumulate" }
+				) );
+				expect( outcome.cause().failures() ).toBe( [ 2, 4 ] );
+				expect( outcome.cause().isDefect() ).toBeFalse();
 			} );
 
 			it( "accumulates forEach mapper failures in input order", () => {

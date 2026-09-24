@@ -54,7 +54,7 @@ class extends="testbox.system.BaseSpec" {
 						} )
 				);
 				var interruptedExit = Effect::runSyncExit(
-					Effect::_halt( Cause::interrupt( "tap-fiber" ) )
+					Effect::haltInstruction( Cause::interrupt( "tap-fiber" ) )
 						.tapError( ( error ) => {
 							calls++;
 							return Effect::succeed( null );
@@ -73,7 +73,7 @@ class extends="testbox.system.BaseSpec" {
 					Cause::interrupt( "fiber-a" )
 				);
 				var exit = Effect::runSyncExit(
-					Effect::_halt( original ).tapCause( ( failureCause ) => {
+					Effect::haltInstruction( original ).tapCause( ( failureCause ) => {
 						observedKinds.append( failureCause.kind() );
 						throw( type: "bxeffect.testing.TapCauseHandlerException", message: "handler defect" );
 					} )

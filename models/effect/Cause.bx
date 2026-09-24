@@ -1,3 +1,5 @@
+import java.util.ArrayDeque;
+
 /**
  * Describes why an Effect failed.
  *
@@ -18,7 +20,6 @@ class {
 	 * @causeValue Leaf payload: expected error, defect, or Fiber identifier.
 	 * @leftCause First child of a composite Cause; absent for a leaf.
 	 * @rightCause Second child of a composite Cause; absent for a leaf.
-	 * @return This Cause.
 	 */
 	Cause function init(
 		required string causeKind,
@@ -43,7 +44,6 @@ class {
 	 * Creates an expected-error leaf.
 	 *
 	 * @error Expected application error value.
-	 * @return A Fail Cause.
 	 */
 	static Cause function fail( required any error ) {
 		return new Cause( causeKind: "Fail", causeValue: arguments.error );
@@ -53,7 +53,6 @@ class {
 	 * Creates a defect leaf for an unexpected failure.
 	 *
 	 * @defect Unexpected failure value retained in the defect channel.
-	 * @return A Die Cause.
 	 */
 	static Cause function die( required any defect ) {
 		return new Cause( causeKind: "Die", causeValue: arguments.defect );
@@ -63,7 +62,6 @@ class {
 	 * Creates an interruption leaf identifying the affected Fiber.
 	 *
 	 * @fiberId Logical Fiber identifier used in interruption and diagnostics.
-	 * @return An Interrupt Cause.
 	 */
 	static Cause function interrupt( required any fiberId ) {
 		return new Cause( causeKind: "Interrupt", causeValue: arguments.fiberId );
@@ -74,7 +72,6 @@ class {
 	 *
 	 * @left First Cause branch, retained in order.
 	 * @right Second Cause branch, retained in order.
-	 * @return A Sequential Cause preserving both branches.
 	 */
 	static Cause function sequential( required Cause left, required Cause right ) {
 		return new Cause(
@@ -89,7 +86,6 @@ class {
 	 *
 	 * @left First Cause branch, retained in order.
 	 * @right Second Cause branch, retained in order.
-	 * @return A Parallel Cause preserving both branches.
 	 */
 	static Cause function parallel( required Cause left, required Cause right ) {
 		return new Cause(
@@ -101,8 +97,6 @@ class {
 
 	/**
 	 * Reads the node discriminator without traversing children.
-	 *
-	 * @return Fail, Die, Interrupt, Sequential, or Parallel.
 	 */
 	string function kind() {
 		return variables.causeKind;
@@ -110,8 +104,6 @@ class {
 
 	/**
 	 * Reads an expected-error leaf.
-	 *
-	 * @return The error for Fail, otherwise null.
 	 */
 	any function error() {
 		return variables.causeKind == "Fail" ? variables.causeValue : null;
@@ -119,8 +111,6 @@ class {
 
 	/**
 	 * Reads a defect leaf.
-	 *
-	 * @return The defect for Die, otherwise null.
 	 */
 	any function defect() {
 		return variables.causeKind == "Die" ? variables.causeValue : null;
@@ -128,8 +118,6 @@ class {
 
 	/**
 	 * Reads an interruption leaf.
-	 *
-	 * @return The Fiber identifier for Interrupt, otherwise null.
 	 */
 	any function fiberId() {
 		return variables.causeKind == "Interrupt" ? variables.causeValue : null;
@@ -137,8 +125,6 @@ class {
 
 	/**
 	 * Reads the first branch of a composite.
-	 *
-	 * @return The left Cause, or null for a leaf.
 	 */
 	any function left() {
 		return variables.leftCause;
@@ -146,8 +132,6 @@ class {
 
 	/**
 	 * Reads the second branch of a composite.
-	 *
-	 * @return The right Cause, or null for a leaf.
 	 */
 	any function right() {
 		return variables.rightCause;
@@ -155,8 +139,6 @@ class {
 
 	/**
 	 * Searches the whole tree for an expected-error leaf.
-	 *
-	 * @return Whether any Fail node exists.
 	 */
 	boolean function isFailure() {
 		return containsKind( "Fail" );
@@ -164,8 +146,6 @@ class {
 
 	/**
 	 * Searches the whole tree for a defect leaf.
-	 *
-	 * @return Whether any Die node exists.
 	 */
 	boolean function isDefect() {
 		return containsKind( "Die" );
@@ -173,8 +153,6 @@ class {
 
 	/**
 	 * Searches the whole tree for an interruption leaf.
-	 *
-	 * @return Whether any Interrupt node exists.
 	 */
 	boolean function isInterrupted() {
 		return containsKind( "Interrupt" );
@@ -182,8 +160,6 @@ class {
 
 	/**
 	 * Collects expected errors without flattening other channels into errors.
-	 *
-	 * @return An array of error values in left-to-right order.
 	 */
 	array function failures() {
 		return collectValues( "Fail" );
@@ -191,8 +167,6 @@ class {
 
 	/**
 	 * Collects defects from the whole tree.
-	 *
-	 * @return An array of defect values in left-to-right order.
 	 */
 	array function defects() {
 		return collectValues( "Die" );
@@ -202,20 +176,20 @@ class {
 	 * Rebuilds expected-error leaves iteratively while retaining all other nodes and tree structure.
 	 *
 	 * @mapper Callback receiving each expected error and returning its replacement; other leaves are untouched.
-	 * @return A mapped Cause; callback exceptions propagate to the caller.
 	 */
 	Cause function mapFailures( required function mapper ) {
-		var pending = [ { node: this, visited: false } ];
+		var pending = new ArrayDeque();
+		pending.addLast( { node: this, visited: false } );
 		// The visited frame rebuilds its parent only after both children have
 		// been mapped. Push right before left to preserve left-to-right order.
-		var mapped = [];
-		while ( pending.len() > 0 ) {
-			var frame = pending.pop();
+		var mapped = new ArrayDeque();
+		while ( !pending.isEmpty() ) {
+			var frame = pending.removeLast();
 			var currentCause = frame.node;
 			if ( frame.visited ) {
-				var mappedRight = mapped.pop();
-				var mappedLeft = mapped.pop();
-				mapped.append( currentCause.kind() == "Sequential"
+				var mappedRight = mapped.removeLast();
+				var mappedLeft = mapped.removeLast();
+				mapped.addLast( currentCause.kind() == "Sequential"
 					? Cause::sequential( mappedLeft, mappedRight )
 					: Cause::parallel( mappedLeft, mappedRight )
 				);
@@ -223,31 +197,30 @@ class {
 			}
 
 			if ( currentCause.kind() == "Sequential" || currentCause.kind() == "Parallel" ) {
-				pending.append( { node: currentCause, visited: true } );
-				pending.append( { node: currentCause.right(), visited: false } );
-				pending.append( { node: currentCause.left(), visited: false } );
+				pending.addLast( { node: currentCause, visited: true } );
+				pending.addLast( { node: currentCause.right(), visited: false } );
+				pending.addLast( { node: currentCause.left(), visited: false } );
 			} else {
-				mapped.append( currentCause.kind() == "Fail"
+				mapped.addLast( currentCause.kind() == "Fail"
 					? Cause::fail( arguments.mapper( currentCause.error() ) )
 					: currentCause
 				);
 			}
 		}
-		return mapped[ 1 ];
+		return mapped.removeLast();
 	}
 
 	/**
 	 * Renders the complete tree iteratively, including sequential and parallel structure.
-	 *
-	 * @return A diagnostic string.
 	 */
 	string function pretty() {
 		var rendered = sb{""};
-		var pending = [ { kind: "Cause", value: this } ];
+		var pending = new ArrayDeque();
+		pending.addLast( { kind: "Cause", value: this } );
 		// Text frames hold delimiters so even deeply nested trees render without
 		// recursive string concatenation or recursive calls.
-		while ( pending.len() > 0 ) {
-			var frame = pending.pop();
+		while ( !pending.isEmpty() ) {
+			var frame = pending.removeLast();
 			if ( frame.kind == "Text" ) {
 				rendered.append( frame.value );
 				continue;
@@ -267,10 +240,10 @@ class {
 				case "Sequential":
 				case "Parallel":
 					rendered.append( currentCause.kind() & "(" );
-					pending.append( { kind: "Text", value: ")" } );
-					pending.append( { kind: "Cause", value: currentCause.right() } );
-					pending.append( { kind: "Text", value: ", " } );
-					pending.append( { kind: "Cause", value: currentCause.left() } );
+					pending.addLast( { kind: "Text", value: ")" } );
+					pending.addLast( { kind: "Cause", value: currentCause.right() } );
+					pending.addLast( { kind: "Text", value: ", " } );
+					pending.addLast( { kind: "Cause", value: currentCause.left() } );
 					break;
 				default:
 					rendered.append( "Unknown cause" );
@@ -283,19 +256,19 @@ class {
 	 * Traverses leaves iteratively in left-to-right order.
 	 *
 	 * @targetKind Cause node kind to locate in the tree.
-	 * @return Matching error or defect values.
 	 */
 	private array function collectValues( required string targetKind ) {
 		var values = [];
-		var pending = [ this ];
+		var pending = new ArrayDeque();
+		pending.addLast( this );
 
-		while ( pending.len() > 0 ) {
-			var current = pending.pop();
+		while ( !pending.isEmpty() ) {
+			var current = pending.removeLast();
 			if ( current.kind() == arguments.targetKind ) {
 				values.append( arguments.targetKind == "Fail" ? current.error() : current.defect() );
 			} else if ( current.kind() == "Sequential" || current.kind() == "Parallel" ) {
-				pending.append( current.right() );
-				pending.append( current.left() );
+				pending.addLast( current.right() );
+				pending.addLast( current.left() );
 			}
 		}
 
@@ -306,18 +279,18 @@ class {
 	 * Searches iteratively and stops at the first matching node.
 	 *
 	 * @targetKind Cause node kind to locate in the tree.
-	 * @return Whether the tree contains the requested kind.
 	 */
 	private boolean function containsKind( required string targetKind ) {
-		var pending = [ this ];
-		while ( pending.len() > 0 ) {
-			var currentCause = pending.pop();
+		var pending = new ArrayDeque();
+		pending.addLast( this );
+		while ( !pending.isEmpty() ) {
+			var currentCause = pending.removeLast();
 			if ( currentCause.kind() == arguments.targetKind ) {
 				return true;
 			}
 			if ( currentCause.kind() == "Sequential" || currentCause.kind() == "Parallel" ) {
-				pending.append( currentCause.right() );
-				pending.append( currentCause.left() );
+				pending.addLast( currentCause.right() );
+				pending.addLast( currentCause.left() );
 			}
 		}
 		return false;
@@ -327,7 +300,6 @@ class {
 	 * Prefers an error message, then string conversion, then JSON serialization.
 	 *
 	 * @value Value carried by this operation; may be null.
-	 * @return A diagnostic representation of the value.
 	 */
 	private string function renderValue( required any value ) {
 		if ( isStruct( arguments.value ) && structKeyExists( arguments.value, "message" ) ) {

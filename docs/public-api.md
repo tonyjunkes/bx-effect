@@ -1,21 +1,21 @@
 # Public API Inventory
 
-This page is the compatibility boundary for BX Effect `0.1.x`. Import every
+This page is the compatibility boundary for BX Effect `1.x`. Import every
 public class through the activated module mapping:
 
 ```boxlang
 import models.effect.Effect@bxeffect;
 ```
 
-Methods whose names begin with `_`, and every class under
-`models.effect.internal`, are runtime implementation details. They can be
-reached by BoxLang but may change without compatibility guarantees.
+The supported API is the inventory below. Interpreter, cursor, and coordination
+methods used between module classes, and classes under `models.effect.internal`,
+are implementation details even when BoxLang permits calling them directly.
 
 ## Effect values and outcomes
 
 | Class and import | Supported surface | Evaluation and failure behavior |
 | --- | --- | --- |
-| `models.effect.Effect@bxeffect` | Constructors: `succeed`, `fail`, `sync`, `try`, `suspend`, `fromAttempt`, `fromResult`, `service`, `acquireRelease`, `fromBoxFuture`, `all`, `forEach`, `race`, `firstSuccessOf`, `sleep`. Operators: `map`, `flatMap`, `tap`, `tapError`, `tapCause`, `exit`, `zip`, `zipWith`, `as`, `asVoid`, `foldCause`, `catchCause`, `catchAll`, `mapError`, `catchIf`, `catchTag`, `orElse`, `filterOrFail`, `ensuring`, `onExit`, `fork`, `retry`, `repeat`, `timeout`, `provide`, `provideService`. Boundaries: `runSync`, `runSyncExit`, `runFuture`, `runFutureExit`, `runFork`. | Constructors and operators are lazy except validation of invalid options. `fail` is expected failure; thrown user code is a defect; Fiber cancellation is interruption. `catchAll`/`tapError` handle only a pure expected failure. `catchCause`/`tapCause` see the complete Cause. |
+| `models.effect.Effect@bxeffect` | Constructors: `succeed`, `fail`, `failCause`, `die`, `sync`, `try`, `suspend`, `fromAttempt`, `fromResult`, `fromExit`, `service`, `acquireRelease`, `acquireUseRelease`, `fromBoxFuture`, `all`, `forEach`, `race`, `firstSuccessOf`, `sleep`. Operators: `map`, `flatMap`, `tap`, `tapError`, `tapCause`, `exit`, `zip`, `zipWith`, `as`, `asVoid`, `foldCause`, `catchCause`, `catchAll`, `mapError`, `catchIf`, `catchTag`, `catchTags`, `orElse`, `filterOrFail`, `ensuring`, `onExit`, `fork`, `retry`, `repeat`, `timeout`, `provide`, `provideService`. Boundaries: `runSync`, `runSyncExit`, `runFuture`, `runFutureExit`, `runFork`. | Constructors and operators are lazy except validation of invalid options. `fail` is expected failure; thrown user code is a defect; Fiber cancellation is interruption. `catchAll`/`tapError` handle only a pure expected failure. `catchCause`/`tapCause` see the complete Cause. |
 | `models.effect.Cause@bxeffect` | `fail`, `die`, `interrupt`, `sequential`, `parallel`; `kind`, `error`, `defect`, `fiberId`, `left`, `right`, `isFailure`, `isDefect`, `isInterrupted`, `failures`, `defects`, `mapFailures`, `pretty`. | Immutable complete failure tree. Cause construction is eager value construction and runs no Effects. |
 | `models.effect.Exit@bxeffect` | `success`, `failure`; `isSuccess`, `isFailure`, `value`, `cause`, `match`. | Immutable complete Effect outcome. |
 | `models.effect.Result@bxeffect` | `success`, `failure`, `fromAttempt`; `isSuccess`, `isFailure`, `value`, `error`, `map`, `flatMap`, `mapError`, `match`, `toAttempt`. | Immutable pure value with success or expected failure only. It does not represent defects or interruption. |
@@ -56,16 +56,16 @@ creates or owns an executor pool.
 
 | Class and import | Supported surface | Contract |
 | --- | --- | --- |
-| `models.effect.Stream@bxeffect` | Constructors: `empty`, `succeed`, `fail`, `fromArray`, `fromEffect`, `suspend`, `unfoldEffect`, `acquireRelease`, `fromQueue`, `fromPubSub`. Operators: `map`, `mapEffect`, `filter`, `tap`, `take`, `drop`, `concat`, `flatMap`, `catchAll`, `catchCause`, `ensuring`, `provide`. Consumers: `runCollect`, `runForEach`, `runFold`, `runDrain`. | Immutable reusable description. Every consumer opens a fresh demand-driven cursor and closes it on every exit. End-of-stream is empty native `Attempt`, never failure. |
+| `models.effect.Stream@bxeffect` | Constructors: `empty`, `succeed`, `fail`, `fromArray`, `fromEffect`, `suspend`, `unfoldEffect`, `acquireRelease`, `fromQueue`, `fromPubSub`. Operators: `map`, `mapEffect`, `filter`, `tap`, `take`, `takeWhile`, `scan`, `grouped`, `drop`, `concat`, `flatMap`, `catchAll`, `catchCause`, `ensuring`, `provide`. Consumers: `runCollect`, `runForEach`, `runFold`, `runDrain`. | Immutable reusable description. Every consumer opens a fresh demand-driven cursor and closes it on every exit. End-of-stream is empty native `Attempt`, never failure. |
 | `models.effect.observability.LoggingObserver@bxeffect` | `make(loggerOrName, levels)`; `onEvent`. | Optional diagnostic adapter for an existing logger object or named `writeLog` target. It configures and owns nothing; all adapter failures are contained. |
 
-## Compatibility policy before 1.0
+## Compatibility policy for 1.x
 
-BX Effect follows semantic-versioning intent while the package is `0.x`:
+BX Effect follows semantic versioning for the supported surface above:
 
 - patch releases preserve this inventory and documented semantics;
-- a minor `0.x` release may make a necessary breaking correction, which must
-  be called out in the changelog and migration notes;
+- minor releases add compatible capabilities; breaking changes require a major
+  release and must be called out in the changelog and migration notes;
 - additions require focused failure-channel, laziness, Context, and cleanup
   tests as applicable; and
 - removal, renaming, changed defaults, changed error tags, new eager work, or a
@@ -73,6 +73,5 @@ BX Effect follows semantic-versioning intent while the package is `0.x`:
   still compile.
 
 Before changing public API, update this inventory, the relevant guide and
-examples, focused specs, the isolated installed-consumer fixture, package
-inspection, and the minimum/latest runtime matrix in the same change.
-
+examples, and focused TestBox specs. Verify minimum-runtime compatibility
+separately when parser-facing or platform behavior changes.

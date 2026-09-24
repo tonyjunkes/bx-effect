@@ -19,11 +19,17 @@ defaults:
 
 jobs:
   tests:
-    name: Verify BoxLang latest
+    name: Verify BoxLang ${{ matrix.boxlang-version }}
     # workflow_dispatch has no branch filter; guard manual runs as well.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        boxlang-version:
+          - latest
+          - snapshot
 
     steps:
       - name: Checkout repository
@@ -34,7 +40,7 @@ jobs:
       - name: Set up BoxLang
         uses: ortus-boxlang/setup-boxlang@main
         with:
-          version: latest
+          version: ${{ matrix.boxlang-version }}
           with-commandbox: true
 
       - name: Install development dependencies
@@ -60,18 +66,18 @@ jobs:
       - name: Inspect package metadata
         run: box package show
 
-      - name: Verify isolated installed consumer
+      - name: Verify installed consumer
+        if: matrix.boxlang-version == 'latest'
         run: |
-          consumer_dir="${RUNNER_TEMP}/bx-effect-consumer"
-          export BOXLANG_HOME="${consumer_dir}/.boxlang"
-          mkdir -p "${consumer_dir}/boxlang_modules"
-          cp tests/consumer/Smoke.bxm tests/consumer/boxlang.json "${consumer_dir}/"
-          cd "${consumer_dir}"
-          box install "${GITHUB_WORKSPACE}" \
-            --directory="boxlang_modules" \
-            --production \
-            --save=false
-          boxlang --bx-config boxlang.json Smoke.bxm
+          package_dir="$RUNNER_TEMP/bx-effect-package"
+          consumer_dir="$RUNNER_TEMP/bx-effect-consumer"
+          mkdir -p "$package_dir" "$consumer_dir"
+          cp -R models "$package_dir/"
+          cp box.json ModuleConfig.bx "$package_dir/"
+          cp tests/consumer/Smoke.bxm tests/consumer/boxlang.json "$consumer_dir/"
+          cd "$consumer_dir"
+          box install ID="$package_dir" directory=boxlang_modules production=true save=false
+          boxlang --bx-home "$consumer_dir/.boxlang" --bx-config boxlang.json Smoke.bxm
 
   publish:
     name: Tag and publish
@@ -90,68 +96,65 @@ jobs:
       - name: Read and validate release version
         id: release
         run: |
-          package_version="$(jq -er '.version | select(type == "string")' box.json)"
-          module_version="$(sed -n 's/.*this\.version *= *"\([^"]*\)".*/\1/p' ModuleConfig.bx)"
-          # SemVer, including prereleases and build metadata; tags have no v prefix.
-          number='(0|[1-9][0-9]*)'
-          identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
-          if ! [[ "$package_version" =~ ^$number\.$number\.$number(-$identifier(\.$identifier)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo '::error::box.json must contain a valid semantic version'
+          VERSION="$(jq -er '.version | select(type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+([+-][0-9A-Za-z.-]+)?$"))' box.json)"
+          MODULE_VERSION="$(sed -n 's/.*this\.version *= *"\([^"]*\)".*/\1/p' ModuleConfig.bx)"
+
+          if [[ "$VERSION" != "$MODULE_VERSION" ]]; then
+            echo "box.json version ($VERSION) does not match ModuleConfig.bx ($MODULE_VERSION)." >&2
             exit 1
           fi
-          if [[ "$package_version" != "$module_version" ]]; then
-            echo "::error::box.json version ($package_version) does not match ModuleConfig.bx ($module_version)"
-            exit 1
-          fi
-          if git show-ref --verify --quiet "refs/tags/$package_version"; then
-            test "$(git rev-parse "refs/tags/$package_version^{commit}")" = "$(git rev-parse HEAD)" || {
-              echo '::error::Existing release tag points to a different commit'
-              exit 1
-            }
-          fi
-          echo "tag=$package_version" >> "$GITHUB_OUTPUT"
 
-      - name: Set up BoxLang
-        uses: ortus-boxlang/setup-boxlang@main
-        with:
-          version: latest
-          with-commandbox: true
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create release tag on the tested commit
-        env:
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          if ! git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG" HEAD
-            git push origin "refs/tags/$RELEASE_TAG"
-          fi
-
-      # ForgeBox publishing remains opt-in until the repository variable is enabled.
-      - name: Publish to ForgeBox
-        if: ${{ vars.BX_EFFECT_FORGEBOX_PUBLISH_ENABLED == 'true' }}
+      - name: Require release credentials
         env:
           FORGEBOX_API_TOKEN: ${{ secrets.FORGEBOX_API_TOKEN }}
         run: |
-          test -n "$FORGEBOX_API_TOKEN" || { echo '::error::FORGEBOX_API_TOKEN is required'; exit 1; }
-          box config set nonInteractiveShell=true
-          box config set endpoints.forgebox.APIToken="$FORGEBOX_API_TOKEN"
-          box publish endpointName=forgebox
+          if [[ -z "$FORGEBOX_API_TOKEN" ]]; then
+            echo 'Add a FORGEBOX_API_TOKEN repository secret before releasing.' >&2
+            exit 1
+          fi
 
-      - name: Create release if absent
+      - name: Set up CommandBox
+        uses: Ortus-Solutions/setup-commandbox@v2.0.1
+        with:
+          forgeboxAPIKey: ${{ secrets.FORGEBOX_API_TOKEN }}
+
+      - name: Tag release commit
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+            TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+            if [[ "$TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+              echo "$TAG already points to $TAG_COMMIT; refusing to move it to $GITHUB_SHA." >&2
+              exit 1
+            fi
+            echo "$TAG already points to this commit; continuing the release."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag --annotate "$TAG" --message "Release $TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
+
+      - name: Publish to ForgeBox
+        run: box forgebox publish --force
+
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
-          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; leaving it unchanged."
-            exit 0
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub release $TAG already exists."
+          else
+            flags=()
+            if [[ "${TAG%%+*}" == *-* ]]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$TAG" --verify-tag --title "bx-effect $VERSION" --generate-notes "${flags[@]}"
           fi
-          flags=()
-          if [[ "${RELEASE_TAG%%+*}" == *-* ]]; then
-            flags+=(--prerelease)
-          fi
-          gh release create "$RELEASE_TAG" --verify-tag --generate-notes \
-            --title "$RELEASE_TAG" "${flags[@]}"

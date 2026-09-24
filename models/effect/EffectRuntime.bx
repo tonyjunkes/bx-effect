@@ -9,6 +9,7 @@ import bxModules.bxEffect.models.effect.internal.FiberControl;
 import bxModules.bxEffect.models.effect.internal.LayerMemo;
 import bxModules.bxEffect.models.effect.internal.ThrowablePolicy;
 import bxModules.bxEffect.models.effect.Scope;
+
 import java.util.ArrayDeque;
 
 /**
@@ -29,7 +30,6 @@ class {
 	 * Configures the execution boundary without starting any program.
 	 *
 	 * @options Optional executor name, Clock object, and diagnostic observer callback/object.
-	 * @return This runtime.
 	 */
 	EffectRuntime function init( struct options = {} ) {
 		variables.executorName = structKeyExists( arguments.options, "executor" )
@@ -48,7 +48,6 @@ class {
 	 * Runs immediately, waits for root cleanup, and throws EffectFailureException for a failed Exit.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return The success value.
 	 */
 	any function runSync( required Effect program ) {
 		var effectExit = runSyncExit( arguments.program );
@@ -67,17 +66,15 @@ class {
 	 * Runs immediately with an empty Context and a fresh root Scope.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return The complete Exit after cleanup.
 	 */
 	any function runSyncExit( required Effect program ) {
-		return _runSyncExitWithContext( arguments.program, Context::empty() );
+		return runSyncExitWithContext( arguments.program, Context::empty() );
 	}
 
 	/**
 	 * Starts execution on the configured executor without blocking the caller.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return A native BoxFuture yielding the value or failing with EffectFailureException.
 	 */
 	BoxFuture function runFuture( required Effect program ) {
 		var programToRun = arguments.program;
@@ -88,20 +85,18 @@ class {
 	 * Starts execution asynchronously with an empty Context and a fresh root Scope.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return A native BoxFuture yielding the complete Exit.
 	 */
 	BoxFuture function runFutureExit( required Effect program ) {
-		return _runFutureExitWithContext( arguments.program, Context::empty() );
+		return runFutureExitWithContext( arguments.program, Context::empty() );
 	}
 
 	/**
 	 * Starts a root Fiber with an empty Context and a fresh Scope.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return A Fiber handle.
 	 */
 	Fiber function runFork( required Effect program ) {
-		return _runForkWithContext( arguments.program, Context::empty() );
+		return runForkWithContext( arguments.program, Context::empty() );
 	}
 
 	/**
@@ -112,9 +107,8 @@ class {
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
 	 * @sharedScope Optional externally owned Scope; null creates a fresh owned root Scope.
 	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
-	 * @return A native BoxFuture yielding the Exit.
 	 */
-	BoxFuture function _runFutureExitWithContext(
+	BoxFuture function runFutureExitWithContext(
 		required Effect program,
 		required Context initialContext,
 		any controlState = null,
@@ -127,7 +121,7 @@ class {
 		var scopeToUse = arguments.sharedScope;
 		var layerMemoToUse = arguments.sharedLayerMemo;
 		return futureNew(
-			() => _runSyncExitWithContext(
+			() => runSyncExitWithContext(
 				programToRun,
 				contextToUse,
 				controlToUse,
@@ -140,8 +134,6 @@ class {
 
 	/**
 	 * Resolves and caches the explicit or activated-module executor name.
-	 *
-	 * @return The BoxLang named executor.
 	 */
 	string function executor() {
 		if ( isNull( variables.executorName ) ) {
@@ -152,8 +144,6 @@ class {
 
 	/**
 	 * Reads the runtime's live or injected Clock.
-	 *
-	 * @return The configured Clock object.
 	 */
 	any function clock() {
 		return variables.clock;
@@ -161,8 +151,6 @@ class {
 
 	/**
 	 * Resolves the activated module's default executor with a defensive fallback.
-	 *
-	 * @return The configured executor name, or io-tasks.
 	 */
 	private string function resolveDefaultExecutor() {
 		var fallbackExecutor = "io-tasks";
@@ -189,9 +177,8 @@ class {
 	 * @initialContext Service bindings at the start of interpretation.
 	 * @sharedScope Optional externally owned Scope; null creates a fresh owned root Scope.
 	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
-	 * @return A Fiber using the supplied Context and optional shared Scope/memo.
 	 */
-	Fiber function _runForkWithContext(
+	Fiber function runForkWithContext(
 		required Effect program,
 		required Context initialContext,
 		any sharedScope = null,
@@ -210,7 +197,7 @@ class {
 		var runtimeFuture = futureNew(
 			() => {
 				try {
-					var completedExit = _runSyncExitWithContext(
+					var completedExit = runSyncExitWithContext(
 						programToRun,
 						contextToUse,
 						controlState,
@@ -243,9 +230,8 @@ class {
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
 	 * @sharedScope Optional externally owned Scope; null creates a fresh owned root Scope.
 	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
-	 * @return The complete Exit; only an owning invocation closes the Scope.
 	 */
-	any function _runSyncExitWithContext(
+	any function runSyncExitWithContext(
 		required Effect program,
 		required Context initialContext,
 		any controlState = null,
@@ -253,7 +239,7 @@ class {
 		any sharedLayerMemo = null
 	) {
 		notifyObserver( "runtime:started", {} );
-		var current = arguments.program._instruction();
+		var current = arguments.program.instructionNode();
 		// Frames represent work to resume after the current node. Pushing and
 		// popping them here keeps deep map/flatMap chains off the JVM call stack.
 		var continuations = new ArrayDeque();
@@ -319,6 +305,9 @@ class {
 								current = haltInstruction( releaseExit.isFailure()
 									? Cause::sequential( registrationCause, releaseExit.cause() )
 									: registrationCause );
+								if ( releaseExit.isFailure() ) {
+									recordCleanup( releaseExit.cause(), arguments.controlState );
+								}
 							}
 							break;
 						}
@@ -328,12 +317,12 @@ class {
 								context : runtimeContext
 							} );
 							runtimeContext = runtimeContext.merge( current.value );
-							current = successFrame.effect._instruction();
+							current = successFrame.effect.instructionNode();
 							break;
 						}
 						if ( successFrame.kind == "CompleteLayerBuild" ) {
 							try {
-								var layerOutputs = current.value._outputsFrom( successFrame.baseContext );
+								var layerOutputs = current.value.outputsFrom( successFrame.baseContext );
 								// Memoize only explicit writes: a waiter may have different
 								// inherited bindings that must not be replaced by the owner's.
 								runtimeLayerMemo.completeSuccess(
@@ -361,7 +350,7 @@ class {
 									? variables.clock.now()
 									: successFrame.scheduledAt
 							} );
-							current = successFrame.effect._instruction();
+							current = successFrame.effect.instructionNode();
 							break;
 						}
 						if ( successFrame.kind == "Repeat" ) {
@@ -398,6 +387,7 @@ class {
 							runtimeContext
 						);
 						if ( finalizerExit.isFailure() ) {
+							recordCleanup( finalizerExit.cause(), arguments.controlState );
 							current = haltInstruction( finalizerExit.cause() );
 						}
 						break;
@@ -406,8 +396,8 @@ class {
 						current = successFrame.kind == "Map"
 							? { kind: "Succeed", value: successFrame.mapper( current.value ) }
 							: successFrame.kind == "FlatMap"
-								? successFrame.mapper( current.value )._instruction()
-								: successFrame.onSuccess( current.value )._instruction();
+								? successFrame.mapper( current.value ).instructionNode()
+								: successFrame.onSuccess( current.value ).instructionNode();
 					} catch ( any error ) {
 						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
@@ -442,6 +432,7 @@ class {
 								runtimeContext
 							);
 							if ( cleanupExit.isFailure() ) {
+								recordCleanup( cleanupExit.cause(), arguments.controlState );
 								current = haltInstruction(
 									Cause::sequential( current.cause, cleanupExit.cause() )
 								);
@@ -489,7 +480,7 @@ class {
 						}
 						if ( failureFrame.kind == "FoldCause" ) {
 							try {
-								current = failureFrame.onFailure( current.cause )._instruction();
+								current = failureFrame.onFailure( current.cause ).instructionNode();
 							} catch ( any error ) {
 								current = interruptionOrDefectInstruction( error, arguments.controlState );
 							}
@@ -543,7 +534,7 @@ class {
 
 				case "Suspend":
 					try {
-						current = current.thunk()._instruction();
+						current = current.thunk().instructionNode();
 					} catch ( any error ) {
 						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
@@ -559,7 +550,7 @@ class {
 					// clear this before the executor thread returns to arbitrary code.
 					var semaphoreThread = registerBlockingThread( arguments.controlState );
 					try {
-						current.permitSource._acquireNative();
+						current.permitSource.acquireNative();
 						current = {
 							kind : "Succeed",
 							value : null
@@ -574,7 +565,7 @@ class {
 				case "QueueOffer":
 					var queueOfferThread = registerBlockingThread( arguments.controlState );
 					try {
-						var offerOutcome = current.queueSource._offerNative(
+						var offerOutcome = current.queueSource.offerNative(
 							current.value,
 							arguments.controlState
 						);
@@ -599,7 +590,7 @@ class {
 				case "QueueTake":
 					var queueTakeThread = registerBlockingThread( arguments.controlState );
 					try {
-						var takeOutcome = current.queueSource._takeNative( arguments.controlState );
+						var takeOutcome = current.queueSource.takeNative( arguments.controlState );
 						current = takeOutcome.isInterrupted
 							? haltInstruction( Cause::interrupt( arguments.controlState.fiberId() ) )
 							: takeOutcome.isShutdown
@@ -621,7 +612,7 @@ class {
 				case "PubSubPublish":
 					var publishThread = registerBlockingThread( arguments.controlState );
 					try {
-						var publishOutcome = current.pubSubSource._publishNative(
+						var publishOutcome = current.pubSubSource.publishNative(
 							current.value,
 							arguments.controlState
 						);
@@ -646,7 +637,7 @@ class {
 				case "PubSubSubscribe":
 					var subscribeThread = registerBlockingThread( arguments.controlState );
 					try {
-						var subscribeOutcome = current.pubSubSource._subscribeNative(
+						var subscribeOutcome = current.pubSubSource.subscribeNative(
 							arguments.controlState
 						);
 						current = subscribeOutcome.isInterrupted
@@ -670,7 +661,7 @@ class {
 				case "PubSubTake":
 					var pubSubTakeThread = registerBlockingThread( arguments.controlState );
 					try {
-						var subscriptionOutcome = current.subscriptionSource._takeNative(
+						var subscriptionOutcome = current.subscriptionSource.takeNative(
 							arguments.controlState
 						);
 						current = subscriptionOutcome.isInterrupted
@@ -702,7 +693,7 @@ class {
 						var childContext = runtimeContext;
 						var childScope = runtimeScope;
 						var childLayerMemo = runtimeLayerMemo;
-						var childFiber = runtimeScope._forkChild( () => _runForkWithContext(
+						var childFiber = runtimeScope.forkChild( () => runForkWithContext(
 							childProgram,
 							childContext,
 							childScope,
@@ -786,7 +777,7 @@ class {
 						context : runtimeContext
 					} );
 					runtimeContext = runtimeContext.merge( current.context );
-						current = current.effect._instruction();
+						current = current.effect.instructionNode();
 						break;
 
 					case "ProvideLayer":
@@ -795,10 +786,10 @@ class {
 								kind : "ProvideLayer",
 								effect : current.effect
 							} );
-							current = Effect::_buildLayer(
+							current = Effect::buildLayerInstruction(
 								current.layer,
 								Context::empty()
-							)._instruction();
+							).instructionNode();
 						} catch ( any error ) {
 							current = interruptionOrDefectInstruction( error, arguments.controlState );
 						}
@@ -806,7 +797,7 @@ class {
 
 					case "BuildLayer":
 						try {
-							var layerIdentity = current.layer._identity();
+							var layerIdentity = current.layer.identity();
 							var layerBuild = runtimeLayerMemo.begin( layerIdentity );
 							if ( layerBuild.owner ) {
 								continuations.addLast( {
@@ -815,7 +806,7 @@ class {
 									baseContext : current.baseContext,
 									outcomeFuture : layerBuild.outcomeFuture
 								} );
-								current = current.layer.build( current.baseContext )._instruction();
+								current = current.layer.build( current.baseContext ).instructionNode();
 							} else {
 								current = {
 									kind : "AwaitLayerBuild",
@@ -854,7 +845,7 @@ class {
 						kind : "RegisterFinalizer",
 						release : current.release
 					} );
-					current = current.acquire._instruction();
+					current = current.acquire.instructionNode();
 					break;
 
 				case "AcquireUseRelease":
@@ -863,7 +854,7 @@ class {
 						use : current.use,
 						release : current.release
 					} );
-					current = current.acquire._instruction();
+					current = current.acquire.instructionNode();
 					break;
 
 				case "Ensuring":
@@ -871,7 +862,7 @@ class {
 						kind : "Ensuring",
 						handler : current.handler
 					} );
-					current = current.effect._instruction();
+					current = current.effect.instructionNode();
 					break;
 
 				case "FlatMap":
@@ -880,7 +871,7 @@ class {
 						kind : current.kind,
 						mapper : current.mapper
 					} );
-					current = current.effect._instruction();
+					current = current.effect.instructionNode();
 					break;
 
 				case "FoldCause":
@@ -889,7 +880,7 @@ class {
 						onFailure : current.onFailure,
 						onSuccess : current.onSuccess
 					} );
-					current = current.effect._instruction();
+					current = current.effect.instructionNode();
 					break;
 
 				case "Retry":
@@ -901,7 +892,7 @@ class {
 						recurrence : 0,
 						scheduledAt : variables.clock.now()
 					} );
-					current = current.effect._instruction();
+					current = current.effect.instructionNode();
 					break;
 
 				default:
@@ -922,7 +913,6 @@ class {
 	 *
 	 * @instruction Internal instruction node consumed by EffectRuntime; treat as read-only.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return A Succeed or Halt instruction.
 	 */
 	private struct function awaitFutureInstruction( required struct instruction, any controlState = null ) {
 		var instructionKind = arguments.instruction.kind;
@@ -950,7 +940,6 @@ class {
 	 * Preserves an existing Cause in an interpreter failure node.
 	 *
 	 * @failureCause Complete Cause to preserve, including composite structure.
-	 * @return A Halt instruction.
 	 */
 	private struct function haltInstruction( required Cause failureCause ) {
 		return {
@@ -963,7 +952,6 @@ class {
 	 * Rethrows fatal platform conditions and normalizes other thrown values as defects.
 	 *
 	 * @throwableValue Thrown value or native throwable wrapper to inspect.
-	 * @return A Halt instruction with a Die Cause.
 	 */
 	private struct function defectInstruction( required any throwableValue ) {
 		ThrowablePolicy::rethrowIfFatal( arguments.throwableValue );
@@ -975,7 +963,6 @@ class {
 	 *
 	 * @throwableValue Thrown value or native throwable wrapper to inspect.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return A Halt instruction.
 	 */
 	private struct function interruptionOrDefectInstruction(
 		required any throwableValue,
@@ -991,7 +978,6 @@ class {
 	 * Registers the current thread only for a known interruptible native instruction.
 	 *
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return The registered thread, or null without cancellation state.
 	 */
 	private any function registerBlockingThread( any controlState = null ) {
 		if ( isNull( arguments.controlState ) ) {
@@ -1007,7 +993,6 @@ class {
 	 *
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
 	 * @workerThread Worker registered only during a known interruptible native instruction.
-	 * @return No value.
 	 */
 	private void function clearBlockingThread( any controlState = null, any workerThread = null ) {
 		if ( !isNull( arguments.controlState ) && !isNull( arguments.workerThread ) ) {
@@ -1020,7 +1005,6 @@ class {
 	 *
 	 * @instruction Internal instruction node consumed by EffectRuntime; treat as read-only.
 	 * @continuations Interpreter continuation deque with the next frame at its tail.
-	 * @return Whether cancellation observation must be deferred for this step.
 	 */
 	private boolean function isResourceHandoff( required struct instruction, required any continuations ) {
 		if ( arguments.instruction.kind != "Succeed" || arguments.continuations.isEmpty() ) {
@@ -1037,12 +1021,11 @@ class {
 	 *
 	 * @release Callback receiving the acquired resource and returning its cleanup Effect.
 	 * @resource Successfully acquired value captured for use or release.
-	 * @return A handler returning the release Effect.
 	 */
 	private function function resourceReleaseHandler( required function release, any resource ) {
 		var releaseResource = arguments.release;
 		var ownedResource = arguments.resource;
-		return ( ignoredExit ) => Effect::suspend( () => releaseResource( ownedResource ) );
+		return ( completedExit ) => Effect::suspend( () => releaseResource( ownedResource, completedExit ) );
 	}
 
 	/**
@@ -1050,7 +1033,6 @@ class {
 	 *
 	 * @use Callback receiving the resource and returning the Effect to run before release.
 	 * @resource Successfully acquired value captured for use or release.
-	 * @return A Suspend instruction.
 	 */
 	private struct function resourceUseInstruction( required function use, any resource ) {
 		var useResource = arguments.use;
@@ -1062,7 +1044,6 @@ class {
 	 * Constructs the expected error for a closed Queue operation.
 	 *
 	 * @operation Operation name used in validation or shutdown diagnostics.
-	 * @return A QueueShutdown tagged struct.
 	 */
 	private struct function queueShutdownError( required string operation ) {
 		return {
@@ -1076,7 +1057,6 @@ class {
 	 * Constructs the expected error for a closed hub operation.
 	 *
 	 * @operation Operation name used in validation or shutdown diagnostics.
-	 * @return A PubSubShutdown tagged struct.
 	 */
 	private struct function pubSubShutdownError( required string operation ) {
 		return {
@@ -1090,7 +1070,6 @@ class {
 	 * Constructs the expected error for an unsubscribed consumer operation.
 	 *
 	 * @operation Operation name used in validation or shutdown diagnostics.
-	 * @return A SubscriptionShutdown tagged struct.
 	 */
 	private struct function subscriptionShutdownError( required string operation ) {
 		return {
@@ -1107,7 +1086,6 @@ class {
 	 * @activeScope Scope whose child lifetime and finalizers are being completed.
 	 * @closeScope Whether this invocation owns and must close the Scope; defaults to true.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return The final Exit.
 	 */
 	private any function finishExit(
 		required any initialExit,
@@ -1118,12 +1096,13 @@ class {
 		var completedExit = arguments.initialExit;
 		if ( arguments.closeScope ) {
 			notifyObserver( "scope:closing", { exit: completedExit } );
-			arguments.activeScope._shutdownChildren();
+			completedExit = appendCleanup( completedExit, arguments.activeScope.shutdownChildren(), arguments.controlState );
 			// Children may still use root resources during their own finalization.
 			// Drain releases only after every admitted child interpreter has stopped.
 			for ( var finalizerEntry in arguments.activeScope.close() ) {
 				var finalizerExit = runFinalizerEntry( finalizerEntry );
 				if ( finalizerExit.isFailure() ) {
+					recordCleanup( finalizerExit.cause(), arguments.controlState );
 					completedExit = completedExit.isSuccess()
 						? Exit::failure( finalizerExit.cause() )
 						: Exit::failure(
@@ -1132,6 +1111,9 @@ class {
 				}
 			}
 			notifyObserver( "scope:closed", { exit: completedExit } );
+		}
+		if ( !isNull( arguments.controlState ) ) {
+			arguments.controlState.completeCleanup( completedExit );
 		}
 		notifyTerminalEvents( completedExit, arguments.controlState );
 		notifyObserver( "runtime:completed", { exit: completedExit } );
@@ -1143,9 +1125,8 @@ class {
 	 *
 	 * @initialExit Program outcome before Scope cleanup is added.
 	 * @activeScope Scope whose child lifetime and finalizers are being completed.
-	 * @return The Exit including cleanup failures.
 	 */
-	any function _closeScopeWithExit( required any initialExit, required Scope activeScope ) {
+	any function closeScopeWithExit( required any initialExit, required Scope activeScope ) {
 		return finishExit( arguments.initialExit, arguments.activeScope, true );
 	}
 
@@ -1154,7 +1135,6 @@ class {
 	 *
 	 * @completedExit Execution outcome to publish, unwrap, or combine with cleanup.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return No value.
 	 */
 	private void function notifyTerminalEvents( required any completedExit, any controlState = null ) {
 		if ( !isNull( arguments.controlState ) ) {
@@ -1181,7 +1161,6 @@ class {
 	 *
 	 * @eventName Runtime diagnostic event name.
 	 * @details Event-specific diagnostic fields; defaults to an empty struct.
-	 * @return No value.
 	 */
 	private void function notifyObserver( required string eventName, struct details = {} ) {
 		if ( isNull( variables.observer ) ) {
@@ -1205,7 +1184,6 @@ class {
 	 * @handler Callback receiving the completed Exit and returning the cleanup Effect.
 	 * @completedExit Execution outcome to publish, unwrap, or combine with cleanup.
 	 * @finalizerContext Context captured at the cleanup boundary or registration site.
-	 * @return The cleanup Exit.
 	 */
 	private any function executeFrameFinalizer(
 		required function handler,
@@ -1226,11 +1204,10 @@ class {
 	 *
 	 * @finalizer Zero-argument callback returning the cleanup Effect.
 	 * @finalizerContext Context captured at the cleanup boundary or registration site.
-	 * @return The cleanup Exit, including nonfatal callback defects.
 	 */
 	private any function runFinalizer( required function finalizer, required Context finalizerContext ) {
 		try {
-			return new EffectRuntime( { executor: executor(), clock: variables.clock } )._runSyncExitWithContext(
+			return new EffectRuntime( { executor: executor(), clock: variables.clock } ).runSyncExitWithContext(
 				arguments.finalizer(),
 				arguments.finalizerContext
 			);
@@ -1244,14 +1221,13 @@ class {
 	 * Executes a stored release or finalizer with its registration Context.
 	 *
 	 * @finalizerEntry Stored callback/resource entry with its captured Context.
-	 * @return The cleanup Exit.
 	 */
 	private any function runFinalizerEntry( required struct finalizerEntry ) {
 		try {
 			var finalizerProgram = structKeyExists( arguments.finalizerEntry, "kind" )
 				? arguments.finalizerEntry.release( arguments.finalizerEntry.resource )
 				: arguments.finalizerEntry.finalizer();
-			return new EffectRuntime( { executor: executor(), clock: variables.clock } )._runSyncExitWithContext(
+			return new EffectRuntime( { executor: executor(), clock: variables.clock } ).runSyncExitWithContext(
 				finalizerProgram,
 				arguments.finalizerEntry.context
 			);
@@ -1270,7 +1246,6 @@ class {
 	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
 	 * @options Validated concurrency and mode settings controlling child admission and failure collection.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return A success struct with values, or a failure struct with cause.
 	 */
 	private struct function awaitAll(
 		required array programs,
@@ -1280,8 +1255,9 @@ class {
 		required struct options,
 		any controlState = null
 	) {
+		var discardResults = structKeyExists( arguments.options, "discard" ) && arguments.options.discard;
 		if ( arguments.programs.len() == 0 ) {
-			return { isSuccess: true, values: [] };
+			return { isSuccess: true, values: discardResults ? null : [] };
 		}
 
 		var concurrencyLimit = arguments.options.concurrency == "unbounded"
@@ -1305,14 +1281,17 @@ class {
 		while ( running.len() > 0 ) {
 			var completedResult = awaitOne( awaitIndexedFactories( running ), arguments.controlState );
 			var completedExit = completedResult.exit;
+			observeChildCleanup( completedResult.fiber, arguments.controlState );
 			running = removeIndexedFiber( running, completedResult.fiberId );
 
 			if ( completedExit.isFailure() && arguments.options.mode == "failFast" ) {
-				interruptIndexedFibers( running );
-				return { isSuccess: false, cause: completedExit.cause() };
+				var failedExit = appendCleanup( completedExit, interruptIndexedFibers( running ), arguments.controlState );
+				return { isSuccess: false, cause: failedExit.cause() };
 			}
 
-			exitsByIndex[ completedResult.index ] = completedExit;
+			if ( !discardResults || completedExit.isFailure() ) {
+				exitsByIndex[ completedResult.index ] = completedExit;
+			}
 			if ( nextIndex <= arguments.programs.len() ) {
 				running.append( startIndexedChild(
 					arguments.programs[ nextIndex ],
@@ -1328,7 +1307,7 @@ class {
 		var combinedCause = null;
 		for ( var index = 1; index <= arguments.programs.len(); index++ ) {
 			// Completion order varies; input indices keep accumulated Causes stable.
-			if ( exitsByIndex[ index ].isFailure() ) {
+			if ( structKeyExists( exitsByIndex, index ) && exitsByIndex[ index ].isFailure() ) {
 				combinedCause = isNull( combinedCause )
 					? exitsByIndex[ index ].cause()
 					: Cause::parallel( combinedCause, exitsByIndex[ index ].cause() );
@@ -1336,6 +1315,9 @@ class {
 		}
 		if ( !isNull( combinedCause ) ) {
 			return { isSuccess: false, cause: combinedCause };
+		}
+		if ( discardResults ) {
+			return { isSuccess: true, values: null };
 		}
 
 		var values = [];
@@ -1353,7 +1335,6 @@ class {
 	 * @parentScope Root Scope that atomically admits and owns the children.
 	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return The winning Exit.
 	 */
 	private any function awaitAny(
 		required array programs,
@@ -1370,8 +1351,8 @@ class {
 		);
 		var completedResult = awaitOne( awaitFactories( childFibers ), arguments.controlState );
 		var winnerExit = completedResult.exit;
-		interruptFibers( childFibers );
-		return winnerExit;
+		observeChildCleanup( completedResult.fiber, arguments.controlState );
+		return appendCleanup( winnerExit, interruptFibers( childFibers ), arguments.controlState );
 	}
 
 	/**
@@ -1382,7 +1363,6 @@ class {
 	 * @parentScope Root Scope that atomically admits and owns the children.
 	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return The winning success Exit or a parallel failure Exit.
 	 */
 	private any function awaitFirstSuccess(
 		required array programs,
@@ -1402,15 +1382,22 @@ class {
 			) );
 		}
 		var failuresByIndex = {};
+		var earlierCleanup = null;
 
 		while ( pendingFibers.len() > 0 ) {
 			var completedResult = awaitOne( awaitIndexedFactories( pendingFibers ), arguments.controlState );
 			var completedExit = completedResult.exit;
+			var observedCleanup = observeChildCleanup( completedResult.fiber, arguments.controlState );
 			pendingFibers = removeIndexedFiber( pendingFibers, completedResult.fiberId );
 
 			if ( completedExit.isSuccess() ) {
-				interruptIndexedFibers( pendingFibers );
-				return completedExit;
+				return appendCleanup(
+					appendCleanup( completedExit, earlierCleanup, arguments.controlState ),
+					interruptIndexedFibers( pendingFibers ), arguments.controlState
+				);
+			}
+			if ( !isNull( observedCleanup ) ) {
+				earlierCleanup = isNull( earlierCleanup ) ? observedCleanup : Cause::sequential( earlierCleanup, observedCleanup );
 			}
 			failuresByIndex[ completedResult.index ] = completedExit.cause();
 		}
@@ -1432,7 +1419,6 @@ class {
 	 * @inheritedContext Service bindings inherited by each child Fiber.
 	 * @parentScope Root Scope that atomically admits and owns the children.
 	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
-	 * @return A struct containing index, fiber, and its completion future.
 	 */
 	private struct function startIndexedChild(
 		required Effect program,
@@ -1445,7 +1431,7 @@ class {
 		var contextToUse = arguments.inheritedContext;
 		var scopeToUse = arguments.parentScope;
 		var layerMemoToUse = arguments.sharedLayerMemo;
-		var childFiber = arguments.parentScope._forkChild( () => _runForkWithContext(
+		var childFiber = arguments.parentScope.forkChild( () => runForkWithContext(
 			programToRun,
 			contextToUse,
 			scopeToUse,
@@ -1456,8 +1442,9 @@ class {
 		return {
 			index : childIndex,
 			fiber : childFiber,
-			completion : childFiber._completionFuture().then( ( completedExit ) => {
+			completion : childFiber.completionFuture().then( ( completedExit ) => {
 				index : childIndex,
+				fiber : childFiber,
 				fiberId : childId,
 				exit : completedExit
 			} )
@@ -1469,7 +1456,6 @@ class {
 	 *
 	 * @indexedFibers Child records containing their input index, Fiber, and completion future.
 	 * @fiberId Logical Fiber identifier used in interruption and diagnostics.
-	 * @return The remaining indexed children.
 	 */
 	private array function removeIndexedFiber( required array indexedFibers, required string fiberId ) {
 		var remaining = [];
@@ -1485,34 +1471,35 @@ class {
 	 * Requests interruption for all pending indexed children before waiting for each to terminate.
 	 *
 	 * @indexedFibers Child records containing their input index, Fiber, and completion future.
-	 * @return No value.
 	 */
-	private void function interruptIndexedFibers( required array indexedFibers ) {
+	private any function interruptIndexedFibers( required array indexedFibers ) {
+		var childFibers = [];
 		for ( var indexedFiber in arguments.indexedFibers ) {
-			if ( !indexedFiber.fiber.isDone() ) {
-				indexedFiber.fiber.interrupt();
-			}
+			childFibers.append( indexedFiber.fiber );
 		}
-		for ( var indexedFiber in arguments.indexedFibers ) {
-			indexedFiber.fiber._awaitTermination();
-		}
+		return interruptFibers( childFibers );
 	}
 
 	/**
 	 * Requests interruption for all pending children before waiting for each to terminate.
 	 *
 	 * @childFibers Child Fiber handles participating in this operation.
-	 * @return No value.
 	 */
-	private void function interruptFibers( required array childFibers ) {
+	private any function interruptFibers( required array childFibers ) {
 		for ( var childFiber in arguments.childFibers ) {
 			if ( !childFiber.isDone() ) {
 				childFiber.interrupt();
 			}
 		}
+		var cleanupCause = null;
 		for ( var childFiber in arguments.childFibers ) {
-			childFiber._awaitTermination();
+			childFiber.awaitTermination();
+			var childCleanup = childFiber.takeCleanupFailure();
+			if ( !isNull( childCleanup ) ) {
+				cleanupCause = isNull( cleanupCause ) ? childCleanup : Cause::sequential( cleanupCause, childCleanup );
+			}
 		}
+		return cleanupCause;
 	}
 
 	/**
@@ -1522,7 +1509,6 @@ class {
 	 * @inheritedContext Service bindings inherited by each child Fiber.
 	 * @parentScope Root Scope that atomically admits and owns the children.
 	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
-	 * @return An array of admitted Fibers.
 	 */
 	private array function forkChildren(
 		required array programs,
@@ -1536,7 +1522,7 @@ class {
 			var contextToUse = arguments.inheritedContext;
 			var scopeToUse = arguments.parentScope;
 			var layerMemoToUse = arguments.sharedLayerMemo;
-			var childFiber = arguments.parentScope._forkChild( () => _runForkWithContext(
+			var childFiber = arguments.parentScope.forkChild( () => runForkWithContext(
 				programToRun,
 				contextToUse,
 				scopeToUse,
@@ -1551,7 +1537,6 @@ class {
 	 * Builds completion views carrying each child's identity.
 	 *
 	 * @childFibers Child Fiber handles participating in this operation.
-	 * @return An array of native completion futures.
 	 */
 	private array function awaitFactories( required array childFibers ) {
 		var factories = [];
@@ -1565,12 +1550,12 @@ class {
 	 * Attaches logical identity to a dependent completion view.
 	 *
 	 * @childFiber Child whose completion is being observed.
-	 * @return A native BoxFuture yielding fiberId and exit.
 	 */
 	private BoxFuture function completionForFiber( required Fiber childFiber ) {
 		var fiberToAwait = arguments.childFiber;
 		var fiberId = fiberToAwait.id();
-		return fiberToAwait._completionFuture().then( ( completedExit ) => {
+		return fiberToAwait.completionFuture().then( ( completedExit ) => {
+			fiber : fiberToAwait,
 			fiberId : fiberId,
 			exit : completedExit
 		} );
@@ -1580,7 +1565,6 @@ class {
 	 * Selects completion futures from indexed child records.
 	 *
 	 * @indexedFibers Child records containing their input index, Fiber, and completion future.
-	 * @return An array of native completion futures.
 	 */
 	private array function awaitIndexedFactories( required array indexedFibers ) {
 		var factories = [];
@@ -1595,7 +1579,6 @@ class {
 	 *
 	 * @completions Native completion futures supplied to asyncAny.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return The first completed value.
 	 */
 	private any function awaitOne( required array completions, any controlState = null ) {
 		var completionFuture = asyncAny( arguments.completions );
@@ -1609,6 +1592,49 @@ class {
 				arguments.controlState.clearActiveFuture( completionFuture );
 			}
 		}
+	}
+
+	/**
+	 * Associates a cleanup Cause with this runtime's Fiber when one exists.
+	 *
+	 * @failureCause Cleanup failure tree to retain through the terminal boundary.
+	 * @controlState Optional Fiber control for this run.
+	 */
+	private void function recordCleanup( required Cause failureCause, any controlState = null ) {
+		if ( !isNull( arguments.controlState ) ) {
+			arguments.controlState.recordCleanup( arguments.failureCause );
+		}
+	}
+
+	/**
+	 * Claims a completed child's cleanup and transfers it to this run's control.
+	 *
+	 * @childFiber Completed child whose terminal cleanup may be unclaimed.
+	 * @controlState Optional parent Fiber control.
+	 */
+	private any function observeChildCleanup( required Fiber childFiber, any controlState = null ) {
+		var cleanupCause = arguments.childFiber.takeCleanupFailure();
+		if ( !isNull( cleanupCause ) ) {
+			recordCleanup( cleanupCause, arguments.controlState );
+		}
+		return cleanupCause;
+	}
+
+	/**
+	 * Appends failed cleanup after the primary outcome while recording its provenance.
+	 *
+	 * @completedExit Outcome before the newly observed cleanup failure.
+	 * @cleanupCause Optional cleanup failure to add.
+	 * @controlState Optional Fiber control for terminal recovery tracking.
+	 */
+	private any function appendCleanup( required any completedExit, any cleanupCause = null, any controlState = null ) {
+		if ( isNull( arguments.cleanupCause ) ) {
+			return arguments.completedExit;
+		}
+		recordCleanup( arguments.cleanupCause, arguments.controlState );
+		return Exit::failure( arguments.completedExit.isSuccess()
+			? arguments.cleanupCause
+			: Cause::sequential( arguments.completedExit.cause(), arguments.cleanupCause ) );
 	}
 
 }

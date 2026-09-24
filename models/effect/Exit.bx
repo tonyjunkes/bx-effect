@@ -15,7 +15,6 @@ class {
 	 *
 	 * @exitKind Internal Success or Failure discriminator.
 	 * @exitValue Success value or complete failure Cause.
-	 * @return This Exit.
 	 */
 	any function init( required string exitKind, any exitValue ) {
 		variables.exitKind = arguments.exitKind;
@@ -29,7 +28,6 @@ class {
 	 * Wraps the successful result of execution.
 	 *
 	 * @value Value carried by this operation; may be null.
-	 * @return A successful Exit.
 	 */
 	static any function success( any value ) {
 		return new Exit( exitKind: "Success", exitValue: arguments.value );
@@ -39,7 +37,6 @@ class {
 	 * Wraps the complete failure tree without losing failure channels.
 	 *
 	 * @failureCause Complete Cause to preserve, including composite structure.
-	 * @return A failed Exit.
 	 */
 	static any function failure( required Cause failureCause ) {
 		return new Exit( exitKind: "Failure", exitValue: arguments.failureCause );
@@ -47,8 +44,6 @@ class {
 
 	/**
 	 * Tests the outcome branch.
-	 *
-	 * @return Whether execution succeeded.
 	 */
 	boolean function isSuccess() {
 		return variables.exitKind == "Success";
@@ -56,8 +51,6 @@ class {
 
 	/**
 	 * Tests the outcome branch.
-	 *
-	 * @return Whether execution failed for any Cause.
 	 */
 	boolean function isFailure() {
 		return variables.exitKind == "Failure";
@@ -65,8 +58,6 @@ class {
 
 	/**
 	 * Reads the stored payload; callers should check isSuccess before using it as a success value.
-	 *
-	 * @return The payload, which is a Cause on failure.
 	 */
 	any function value() {
 		return variables.exitValue;
@@ -74,8 +65,6 @@ class {
 
 	/**
 	 * Reads the stored payload; callers should check isFailure before using it as a Cause.
-	 *
-	 * @return The payload, which is the success value on success.
 	 */
 	any function cause() {
 		return variables.exitValue;
@@ -86,7 +75,6 @@ class {
 	 *
 	 * @onSuccess Callback receiving the success value.
 	 * @onFailure Callback receiving the complete failure Cause.
-	 * @return The selected handler result.
 	 */
 	any function match( required function onSuccess, required function onFailure ) {
 		return isSuccess()

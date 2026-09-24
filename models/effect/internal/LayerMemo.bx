@@ -13,7 +13,6 @@ class {
 	 * Atomically elects one builder and shares its future with concurrent requests.
 	 *
 	 * @layerId Stable Layer identity used as the memo key.
-	 * @return A struct with owner and outcomeFuture.
 	 */
 	struct function begin( required string layerId ) {
 		var proposedFuture = futureNew();
@@ -30,7 +29,6 @@ class {
 	 *
 	 * @outcomeFuture Shared native build future returned by begin.
 	 * @value Context containing only explicit Layer outputs, excluding inherited bindings.
-	 * @return This memo.
 	 */
 	LayerMemo function completeSuccess( required any outcomeFuture, required any value ) {
 		arguments.outcomeFuture.complete( Exit::success( arguments.value ) );
@@ -43,7 +41,6 @@ class {
 	 * @layerId Stable Layer identity used as the memo key.
 	 * @outcomeFuture Shared native build future returned by begin.
 	 * @failureCause Complete Cause to preserve, including composite structure.
-	 * @return This memo.
 	 */
 	LayerMemo function completeFailure(
 		required string layerId,

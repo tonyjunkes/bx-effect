@@ -48,6 +48,30 @@ exceptions are defects. `mapEffect`, `tap`, and `runForEach` take callbacks that
 return Effects and run sequentially. `concat` and `flatMap` are also sequential;
 the MVP has no implicit parallelism or buffering.
 
+`takeWhile(predicate)` excludes the first rejected value and stops further
+pulls; its cursor still closes on early completion. `scan(initial, reducer)`
+emits the initial accumulator before pulling, then every updated accumulator.
+Treat the seed and results as immutable; use `Stream::suspend(() => ...)` to
+allocate a fresh mutable seed if needed. Synchronous callback exceptions are
+defects, just as with `map`.
+
+`grouped(size)` emits native arrays with up to a positive whole `size` values.
+It fills one group on demand across source batches, emitting a final partial
+group only at normal completion. Source failure keeps its Cause and discards
+an unfinished group. It retains at most the current source batch and one group;
+it never reads ahead for a later group.
+
+```boxlang
+batches = Stream::fromArray( [ 1, 2, 3, 4, 5 ] ).grouped( 2 );
+// runCollect yields [ [1, 2], [3, 4], [5] ]
+progress = Stream::fromArray( [ 1, 2, 3 ] ).scan( 0, ( total, value ) => total + value );
+// runCollect yields [0, 1, 3, 6]
+```
+
+Repeated `concat` builds an immutable description graph in constant work per
+append. Each consumer flattens it iteratively once, and still opens sources
+one at a time, closing the previous cursor before opening the next.
+
 `catchAll` recovers a pure expected failure only. Use `catchCause` when recovery
 deliberately includes defects, interruption, or composite Causes. `provide`
 keeps services visible during source acquisition, every pull, and release.

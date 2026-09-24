@@ -2,6 +2,21 @@
 
 All notable changes to BX Effect are documented here.
 
+## 1.1.0 - 9-23-2026
+
+- Add `acquireUseRelease`, `fromExit`, `failCause`, `die`, and `catchTags`, plus
+  sequential Stream `takeWhile`, `scan`, and `grouped`.
+- Retain failed child cleanup through races, fail-fast collections, root shutdown,
+  and managed runtime shutdown. Serialize worker interruption with wait
+  unregistration.
+- Reject null Queue and PubSub messages lazily, align ServiceTag equality and
+  hashing with native BoxLang keys, and use a monotonic live Clock for recurrence.
+- Improve Cause traversal, discarded concurrent collections, and deep Stream
+  concatenation without changing their public results.
+- Define the 1.x public compatibility boundary, check TestBox JSON totals in
+  CI, and test on BoxLang `latest` and `snapshot`. Verify installed-module
+  activation before publication.
+
 ## 1.0.0 — 09-08-2026
 
 Initial release of BX Effect for BoxLang 1.16.0+ and Java 21+, bringing lazy
@@ -71,7 +86,7 @@ BoxLang API built on native runtime facilities.
   executor overrides, package inspection, and isolated installed-consumer checks.
 - Public API inventory and guides for error handling, resources, services,
   concurrency, Streams, scheduling, observability, native integrations,
-  incremental adoption, and deliberate differences from Effect.
+  incremental adoption.
 
 ### Correctness fixes included in 1.0
 

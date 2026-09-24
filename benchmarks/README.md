@@ -14,7 +14,7 @@ Run them from the repository root with the commands listed in `AGENTS.md`, for
 example:
 
 ```bash
-box boxlang cli --bx-config tests/boxlang.json benchmarks/EffectRuntimeBench.bxm
+box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json benchmarks/EffectRuntimeBench.bxm
 ```
 
 For a performance change, run the affected benchmark three times before and
@@ -27,8 +27,8 @@ and machine context with any published result.
 Capture a prebuilt kernel graph with Java Flight Recorder after its warmup:
 
 ```bash
-box boxlang cli --bx-config tests/boxlang.json benchmarks/EffectRuntimeProfile.bxm --mode=map
-box boxlang cli --bx-config tests/boxlang.json benchmarks/EffectRuntimeProfile.bxm --mode=flatMap
+box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json benchmarks/EffectRuntimeProfile.bxm --mode=map
+box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json benchmarks/EffectRuntimeProfile.bxm --mode=flatMap
 ```
 
 The recordings are written under the ignored `benchmarks/build/` directory by
@@ -46,3 +46,8 @@ The scripts cover:
 - 100,000-value Stream mapping, 10,000 repeated pulls, Queue consumption,
   early interruption, and an indicative retained-memory reading;
 - Context lookup/provision and Scope finalization.
+
+`CollectionBench.bxm` measures balanced and skewed Cause traversal, repeated
+Stream concatenation construction, and bounded `forEach(discard:true)`. Run it
+with the same isolated-home/config flags above. The release audit records the
+initial before/after samples; these are local evidence, not performance promises.

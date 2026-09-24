@@ -5,10 +5,17 @@
  * Fiber request cancellation of both its outer runtime future and the native
  * BoxFuture currently awaited by the iterative interpreter.
  */
+import bxModules.bxEffect.models.effect.Cause;
+import java.util.ArrayDeque;
+
 class {
 
 	variables.activeFuture = new java.util.concurrent.atomic.AtomicReference();
 	variables.activeThread = new java.util.concurrent.atomic.AtomicReference();
+	variables.threadLock = new java.util.concurrent.locks.ReentrantLock();
+	variables.deliveredInterrupt = false;
+	variables.cleanupNodes = new java.util.IdentityHashMap();
+	variables.terminalCleanup = new java.util.concurrent.atomic.AtomicReference();
 	variables.fiberId = "";
 	variables.interrupted = new java.util.concurrent.atomic.AtomicBoolean( false );
 
@@ -16,7 +23,6 @@ class {
 	 * Stores the identity for runtime-private cancellation state.
 	 *
 	 * @fiberId Logical Fiber identifier used in interruption and diagnostics.
-	 * @return This control object.
 	 */
 	FiberControl function init( required string fiberId ) {
 		variables.fiberId = arguments.fiberId;
@@ -27,7 +33,6 @@ class {
 	 * Registers the current native wait and cancels it immediately if interruption was already requested.
 	 *
 	 * @future Native BoxFuture currently representing execution or a registered wait.
-	 * @return This control object.
 	 */
 	FiberControl function setActiveFuture( required any future ) {
 		variables.activeFuture.set( arguments.future );
@@ -42,7 +47,6 @@ class {
 	 * Clears only the matching wait so stale cleanup cannot erase a newer registration.
 	 *
 	 * @future Native BoxFuture currently representing execution or a registered wait.
-	 * @return This control object.
 	 */
 	FiberControl function clearActiveFuture( required any future ) {
 		variables.activeFuture.compareAndSet( arguments.future, null );
@@ -53,13 +57,17 @@ class {
 	 * Registers the worker only inside a known interruptible instruction and honors pending interruption.
 	 *
 	 * @workerThread Worker registered only during a known interruptible native instruction.
-	 * @return This control object.
 	 */
 	FiberControl function setActiveThread( required any workerThread ) {
-		variables.activeThread.set( arguments.workerThread );
-		// A cancellation before registration must still wake the imminent wait.
-		if ( variables.interrupted.get() ) {
-			interruptActiveThread();
+		variables.threadLock.lock();
+		try {
+			variables.activeThread.set( arguments.workerThread );
+			variables.deliveredInterrupt = false;
+			if ( variables.interrupted.get() ) {
+				interruptActiveThread();
+			}
+		} finally {
+			variables.threadLock.unlock();
 		}
 		return this;
 	}
@@ -68,17 +76,25 @@ class {
 	 * Clears only the matching worker registration after the blocking instruction exits.
 	 *
 	 * @workerThread Worker registered only during a known interruptible native instruction.
-	 * @return This control object.
 	 */
 	FiberControl function clearActiveThread( required any workerThread ) {
-		variables.activeThread.compareAndSet( arguments.workerThread, null );
+		variables.threadLock.lock();
+		try {
+			if ( variables.activeThread.compareAndSet( arguments.workerThread, null ) ) {
+				// Consume our instruction-local interrupt before uninterruptible cleanup.
+				if ( variables.deliveredInterrupt && arguments.workerThread.equals( java.lang.Thread::currentThread() ) ) {
+					java.lang.Thread::interrupted();
+				}
+				variables.deliveredInterrupt = false;
+			}
+		} finally {
+			variables.threadLock.unlock();
+		}
 		return this;
 	}
 
 	/**
 	 * Records interruption and requests cancellation of the active future and registered blocking thread.
-	 *
-	 * @return This control object.
 	 */
 	FiberControl function interrupt() {
 		variables.interrupted.set( true );
@@ -89,8 +105,6 @@ class {
 
 	/**
 	 * Reads the monotonic interruption flag.
-	 *
-	 * @return Whether cancellation has been requested.
 	 */
 	boolean function isInterrupted() {
 		return variables.interrupted.get();
@@ -98,8 +112,6 @@ class {
 
 	/**
 	 * Reads the logical identity used for interruption Causes.
-	 *
-	 * @return The Fiber identifier.
 	 */
 	string function fiberId() {
 		return variables.fiberId;
@@ -107,8 +119,6 @@ class {
 
 	/**
 	 * Best-effort cancels an active incomplete native future.
-	 *
-	 * @return No value; unsupported cancellation is ignored.
 	 */
 	private void function cancelActiveFuture() {
 		var currentFuture = variables.activeFuture.get();
@@ -125,19 +135,74 @@ class {
 
 	/**
 	 * Best-effort interrupts only the registered blocking-instruction worker.
-	 *
-	 * @return No value.
 	 */
 	private void function interruptActiveThread() {
-		var workerThread = variables.activeThread.get();
-		if ( isNull( workerThread ) ) {
-			return;
-		}
+		variables.threadLock.lock();
 		try {
-			workerThread.interrupt();
-		} catch ( any ignored ) {
-			// The worker may have completed between lookup and interruption.
+			var workerThread = variables.activeThread.get();
+			if ( !isNull( workerThread ) ) {
+				workerThread.interrupt();
+				variables.deliveredInterrupt = true;
+			}
+		} finally {
+			variables.threadLock.unlock();
 		}
+	}
+
+	/**
+	 * Records cleanup provenance on the interpreter thread without changing Cause values.
+	 *
+	 * @failureCause Cleanup failure tree to track until terminal recovery is known.
+	 */
+	void function recordCleanup( required Cause failureCause ) {
+		var pending = new ArrayDeque();
+		pending.addLast( arguments.failureCause );
+		while ( !pending.isEmpty() ) {
+			var node = pending.removeLast();
+			variables.cleanupNodes.put( node, true );
+			if ( node.kind() == "Sequential" || node.kind() == "Parallel" ) {
+				pending.addLast( node.right() );
+				pending.addLast( node.left() );
+			}
+		}
+	}
+
+	/**
+	 * Retains only cleanup subtrees still present at the terminal boundary after recovery.
+	 *
+	 * @completedExit Terminal outcome after all local finalizers have run.
+	 */
+	void function completeCleanup( required any completedExit ) {
+		var retained = null;
+		var pending = new ArrayDeque();
+		if ( arguments.completedExit.isFailure() && !variables.cleanupNodes.isEmpty() ) {
+			pending.addLast( arguments.completedExit.cause() );
+		}
+		while ( !pending.isEmpty() ) {
+			var node = pending.removeLast();
+			if ( variables.cleanupNodes.containsKey( node ) ) {
+				retained = isNull( retained ) ? node : Cause::sequential( retained, node );
+			} else if ( node.kind() == "Sequential" || node.kind() == "Parallel" ) {
+				pending.addLast( node.right() );
+				pending.addLast( node.left() );
+			}
+		}
+		variables.cleanupNodes.clear();
+		variables.terminalCleanup.set( retained );
+	}
+
+	/**
+	 * Checks whether terminal cleanup remains available to its owner.
+	 */
+	boolean function hasCleanupFailure() {
+		return !isNull( variables.terminalCleanup.get() );
+	}
+
+	/**
+	 * Lets a concurrency operator or owning Scope claim this failure exactly once.
+	 */
+	any function takeCleanupFailure() {
+		return variables.terminalCleanup.getAndSet( null );
 	}
 
 }

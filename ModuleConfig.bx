@@ -11,7 +11,7 @@ class {
 	property name="boxRuntime";
 	property name="log";
 
-	this.version = "1.0.0";
+	this.version = "1.1.0";
 	this.mapping = "bxeffect";
 	this.author = "Tony Junkes";
 	this.description = "A BoxLang-native structured effect system inspired by Effect.";

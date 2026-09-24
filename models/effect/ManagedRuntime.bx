@@ -35,13 +35,12 @@ class {
 	 *
 	 * @applicationLayer Application service Layer owned by this ManagedRuntime instance.
 	 * @options Optional executor name, Clock object, and diagnostic observer callback/object.
-	 * @return This managed runtime.
 	 */
 	ManagedRuntime function init( required any applicationLayer, struct options = {} ) {
 		if (
 			!isObject( arguments.applicationLayer )
 			|| !structKeyExists( arguments.applicationLayer, "build" )
-			|| !structKeyExists( arguments.applicationLayer, "_identity" )
+			|| !structKeyExists( arguments.applicationLayer, "identity" )
 		) {
 			throw(
 				type: "bxeffect.InvalidManagedLayerException",
@@ -58,7 +57,6 @@ class {
 	 *
 	 * @applicationLayer Application service Layer owned by this ManagedRuntime instance.
 	 * @options Optional executor name, Clock object, and diagnostic observer callback/object.
-	 * @return A new ManagedRuntime.
 	 */
 	static ManagedRuntime function make( required any applicationLayer, struct options = {} ) {
 		return new ManagedRuntime( arguments.applicationLayer, arguments.options );
@@ -68,7 +66,6 @@ class {
 	 * Runs with managed services and unwraps success; failure throws EffectFailureException.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return The success value.
 	 */
 	any function runSync( required Effect program ) {
 		return unwrap( runSyncExit( arguments.program ) );
@@ -78,7 +75,6 @@ class {
 	 * Starts a managed run and blocks on its public Fiber completion.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return The complete Exit.
 	 */
 	any function runSyncExit( required Effect program ) {
 		return runFork( arguments.program ).await();
@@ -88,7 +84,6 @@ class {
 	 * Starts a managed run without blocking the caller.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return A native BoxFuture yielding the value or failing with EffectFailureException.
 	 */
 	BoxFuture function runFuture( required Effect program ) {
 		return runFutureExit( arguments.program ).then( ( completedExit ) => unwrap( completedExit ) );
@@ -98,10 +93,9 @@ class {
 	 * Starts a managed run with its own root Scope and shared application services.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return A native BoxFuture yielding the Exit.
 	 */
 	BoxFuture function runFutureExit( required Effect program ) {
-		return runFork( arguments.program )._completionFuture();
+		return runFork( arguments.program ).completionFuture();
 	}
 
 	/**
@@ -109,7 +103,6 @@ class {
 	 * failure.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return A Fiber handle.
 	 */
 	Fiber function runFork( required Effect program ) {
 		variables.lock.lock();
@@ -118,14 +111,14 @@ class {
 			var programToRun = accepted
 				? withManagedContext( arguments.program )
 				: Effect::fail( closedError() );
-			var runFiber = variables.runtime._runForkWithContext(
+			var runFiber = variables.runtime.runForkWithContext(
 				programToRun,
 				Context::empty()
 			);
 			if ( accepted ) {
 				variables.activeRuns.put( runFiber.id(), runFiber );
 				var runId = runFiber.id();
-				runFiber._terminationFuture().then( ( ignored ) => {
+				runFiber.terminationFuture().then( ( ignored ) => {
 					variables.activeRuns.remove( runId );
 					return null;
 				} );
@@ -139,8 +132,6 @@ class {
 	/**
 	 * Begins idempotent shutdown and blocks until active run finalization and service release
 	 * finish.
-	 *
-	 * @return The shutdown Exit.
 	 */
 	any function close() {
 		try {
@@ -153,8 +144,6 @@ class {
 
 	/**
 	 * Stops admission, interrupts admitted runs/build work, and starts one shared shutdown task.
-	 *
-	 * @return The shared native BoxFuture yielding the shutdown Exit.
 	 */
 	BoxFuture function closeFuture() {
 		variables.lock.lock();
@@ -190,8 +179,6 @@ class {
 
 	/**
 	 * Checks whether shutdown has fully finished; Closing is not yet Closed.
-	 *
-	 * @return Whether state is Closed.
 	 */
 	boolean function isClosed() {
 		variables.lock.lock();
@@ -206,7 +193,6 @@ class {
 	 * Lazily obtains shared services through a cancellation-isolated build waiter.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return An Effect running the program with managed bindings.
 	 */
 	private Effect function withManagedContext( required Effect program ) {
 		var programToRun = arguments.program;
@@ -222,15 +208,13 @@ class {
 			return Effect::fromBoxFuture( () => dependentBuild ).flatMap(
 				( buildExit ) => buildExit.isSuccess()
 					? programToRun.provide( buildExit.value() )
-					: Effect::_halt( buildExit.cause() )
+					: Effect::haltInstruction( buildExit.cause() )
 			);
 		} );
 	}
 
 	/**
 	 * Serializes first-build admission and shares an in-flight or successful Context build.
-	 *
-	 * @return A closed marker or a shared build outcome future.
 	 */
 	private struct function contextBuildAccess() {
 		variables.lock.lock();
@@ -250,13 +234,13 @@ class {
 			var buildScope = new Scope();
 			var buildMemo = new LayerMemo();
 			var layerToBuild = variables.applicationLayer;
-			var buildFiber = variables.runtime._runForkWithContext(
-				Effect::_buildLayer( layerToBuild, Context::empty() ),
+			var buildFiber = variables.runtime.runForkWithContext(
+				Effect::buildLayerInstruction( layerToBuild, Context::empty() ),
 				Context::empty(),
 				buildScope,
 				buildMemo
 			);
-			var buildOutcome = buildFiber._terminationFuture().then(
+			var buildOutcome = buildFiber.terminationFuture().then(
 				( buildExit ) => finishBuildAttempt( buildExit, buildScope )
 			);
 			variables.managedScope = buildScope;
@@ -274,7 +258,6 @@ class {
 	 *
 	 * @completedExit Execution outcome to publish, unwrap, or combine with cleanup.
 	 * @buildScope Scope owning resources acquired during this build attempt.
-	 * @return The build Exit including any failed cleanup.
 	 */
 	private any function finishBuildAttempt(
 		required any completedExit,
@@ -284,7 +267,7 @@ class {
 		if ( buildExit.isFailure() ) {
 			// Cleanup precedes clearing buildOutcomeFuture so retry cannot overlap
 			// release of resources from the failed attempt.
-			buildExit = variables.runtime._closeScopeWithExit( buildExit, arguments.buildScope );
+			buildExit = variables.runtime.closeScopeWithExit( buildExit, arguments.buildScope );
 		}
 
 		variables.lock.lock();
@@ -308,7 +291,6 @@ class {
 	 * @runsToStop Snapshot of admitted runs captured when closing began.
 	 * @buildToStop Optional in-flight build Fiber whose interpreter must terminate.
 	 * @buildToAwait Optional build outcome future including failed-build cleanup.
-	 * @return The shutdown Exit.
 	 */
 	private any function completeClose(
 		required array runsToStop,
@@ -316,11 +298,16 @@ class {
 		any buildToAwait = null
 	) {
 		try {
+			var runCleanup = null;
 			for ( var runFiber in arguments.runsToStop ) {
-				runFiber._awaitTermination();
+				runFiber.awaitTermination();
+				var childCleanup = runFiber.takeCleanupFailure();
+				if ( !isNull( childCleanup ) ) {
+					runCleanup = isNull( runCleanup ) ? childCleanup : Cause::sequential( runCleanup, childCleanup );
+				}
 			}
 			if ( !isNull( arguments.buildToStop ) ) {
-				arguments.buildToStop._awaitTermination();
+				arguments.buildToStop.awaitTermination();
 			}
 			if ( !isNull( arguments.buildToAwait ) ) {
 				// Build termination alone does not include finishBuildAttempt cleanup.
@@ -333,9 +320,10 @@ class {
 			} finally {
 				variables.lock.unlock();
 			}
-			var closeExit = isNull( scopeToClose )
-				? Exit::success( null )
-				: variables.runtime._closeScopeWithExit( Exit::success( null ), scopeToClose );
+			var closeExit = isNull( runCleanup ) ? Exit::success( null ) : Exit::failure( runCleanup );
+			if ( !isNull( scopeToClose ) ) {
+				closeExit = variables.runtime.closeScopeWithExit( closeExit, scopeToClose );
+			}
 		} catch ( any error ) {
 			ThrowablePolicy::rethrowIfFatal( error );
 			var closeExit = Exit::failure( Cause::die( error ) );
@@ -359,7 +347,6 @@ class {
 	 * Unwraps success or throws EffectFailureException retaining the Cause.
 	 *
 	 * @completedExit Execution outcome to publish, unwrap, or combine with cleanup.
-	 * @return The success value.
 	 */
 	private any function unwrap( required any completedExit ) {
 		if ( arguments.completedExit.isSuccess() ) {
@@ -374,8 +361,6 @@ class {
 
 	/**
 	 * Constructs the expected failure for work submitted during or after shutdown.
-	 *
-	 * @return A ManagedRuntimeClosed tagged struct.
 	 */
 	private struct function closedError() {
 		return {

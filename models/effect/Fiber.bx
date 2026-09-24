@@ -25,7 +25,6 @@ class {
 	 * @fiberId Logical Fiber identifier used in interruption and diagnostics.
 	 * @control Runtime-private cancellation state for this Fiber.
 	 * @terminationFuture Optional future resolved by interpreter finalization, independently of public cancellation.
-	 * @return This Fiber.
 	 */
 	Fiber function init(
 		required any future,
@@ -44,8 +43,6 @@ class {
 
 	/**
 	 * Blocks on public completion and normalizes nonfatal wait errors into an Exit.
-	 *
-	 * @return The Exit; cancellation can be observed before interpreter cleanup finishes.
 	 */
 	any function await() {
 		try {
@@ -60,8 +57,6 @@ class {
 
 	/**
 	 * Blocks and unwraps success; failure throws EffectFailureException with the Cause.
-	 *
-	 * @return The success value.
 	 */
 	any function join() {
 		var completedExit = this.await();
@@ -78,8 +73,6 @@ class {
 
 	/**
 	 * Checks public completion immediately without waiting.
-	 *
-	 * @return A native Attempt containing the Exit, or empty while pending.
 	 */
 	Attempt function poll() {
 		return isDone() ? attempt( await() ) : attempt();
@@ -87,8 +80,6 @@ class {
 
 	/**
 	 * Requests cancellation of the active wait and outer runtime task without awaiting cleanup.
-	 *
-	 * @return This Fiber.
 	 */
 	Fiber function interrupt() {
 		variables.control.interrupt();
@@ -104,8 +95,6 @@ class {
 
 	/**
 	 * Checks public future completion, which may precede cleanup after cancellation.
-	 *
-	 * @return Whether the public future is done.
 	 */
 	boolean function isDone() {
 		return variables.future.isDone();
@@ -113,8 +102,6 @@ class {
 
 	/**
 	 * Reads the logical execution identity.
-	 *
-	 * @return The Fiber identifier.
 	 */
 	string function id() {
 		return variables.fiberId;
@@ -122,30 +109,38 @@ class {
 
 	/**
 	 * Creates a dependent view of public completion for internal concurrency operators.
-	 *
-	 * @return A native BoxFuture yielding the Exit.
 	 */
-	BoxFuture function _completionFuture() {
+	BoxFuture function completionFuture() {
 		return variables.future.then( ( completedExit ) => completedExit );
 	}
 
 	/**
 	 * Creates an internal dependent view of actual interpreter termination.
-	 *
-	 * @return A native BoxFuture yielding the Exit after interpreter finalization.
 	 */
-	BoxFuture function _terminationFuture() {
+	BoxFuture function terminationFuture() {
 		return variables.terminationFuture.then( ( completedExit ) => completedExit );
 	}
 
 	/**
 	 * Blocks until interpreter finalization has finished, even after public cancellation.
-	 *
-	 * @return This Fiber.
 	 */
-	Fiber function _awaitTermination() {
+	Fiber function awaitTermination() {
 		variables.terminationFuture.get();
 		return this;
+	}
+
+	/**
+	 * Checks whether this Fiber still owns a terminal cleanup failure.
+	 */
+	boolean function hasCleanupFailure() {
+		return variables.control.hasCleanupFailure();
+	}
+
+	/**
+	 * Claims the terminal cleanup failure once for the owning Scope or operator.
+	 */
+	any function takeCleanupFailure() {
+		return variables.control.takeCleanupFailure();
 	}
 
 }

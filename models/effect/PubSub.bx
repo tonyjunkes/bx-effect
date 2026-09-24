@@ -1,6 +1,7 @@
-import ortus.boxlang.runtime.dynamic.Attempt;
 import bxModules.bxEffect.models.effect.Effect;
 import bxModules.bxEffect.models.effect.PubSubSubscription;
+
+import ortus.boxlang.runtime.dynamic.Attempt;
 
 /**
  * An Effect-aware active-subscriber broadcast hub with explicit shutdown.
@@ -23,7 +24,6 @@ class {
 	 * Creates an application-owned broadcast hub with explicit subscription lifetimes.
 	 *
 	 * @capacity Positive whole buffer capacity; internal constructors also accept -1 for unbounded.
-	 * @return This PubSub.
 	 */
 	PubSub function init( numeric capacity = -1 ) {
 		if (
@@ -44,7 +44,6 @@ class {
 	 * Creates a hub whose publishers wait for capacity in every active subscription.
 	 *
 	 * @capacity Positive whole maximum number of buffered values per consumer.
-	 * @return A new bounded PubSub.
 	 */
 	static PubSub function bounded( required numeric capacity ) {
 		if ( arguments.capacity <= 0 || int( arguments.capacity ) != arguments.capacity ) {
@@ -58,8 +57,6 @@ class {
 
 	/**
 	 * Creates a hub without publication backpressure.
-	 *
-	 * @return A new unbounded PubSub.
 	 */
 	static PubSub function unbounded() {
 		return new PubSub();
@@ -68,39 +65,33 @@ class {
 	/**
 	 * Describes a broadcast to all active subscribers; a closed hub fails with PubSubShutdown.
 	 *
-	 * @value Value carried by this operation; may be null.
-	 * @return An Effect yielding null when accepted, including when there are no subscribers.
+	 * @value Non-null message; null is rejected as a defect at execution.
 	 */
 	Effect function publish( any value ) {
-		return Effect::_publishPubSub( this, arguments.value );
+		return Effect::publishPubSubInstruction( this, arguments.value );
 	}
 
 	/**
 	 * Describes acquisition of a fresh subscription with no replay of earlier values.
-	 *
-	 * @return An Effect yielding the subscription or failing with PubSubShutdown.
 	 */
 	Effect function subscribe() {
-		return Effect::_subscribePubSub( this );
+		return Effect::subscribePubSubInstruction( this );
 	}
 
 	/**
 	 * Acquires a subscription and unsubscribes after the use Effect on every outcome.
 	 *
 	 * @use Callback receiving the subscription and returning the Effect to run before unsubscribe.
-	 * @return An Effect yielding the use result.
 	 */
 	Effect function withSubscription( required function use ) {
 		var useSubscription = arguments.use;
-		return Effect::_acquireUseRelease(
+		return Effect::acquireUseRelease(
 			subscribe(), useSubscription, ( subscription ) => subscription.unsubscribe()
 		);
 	}
 
 	/**
 	 * Describes idempotent hub shutdown, clearing subscription buffers and waking all waiters.
-	 *
-	 * @return An Effect yielding true only for the first shutdown.
 	 */
 	Effect function shutdown() {
 		return Effect::sync( () => shutdownNative() );
@@ -108,8 +99,6 @@ class {
 
 	/**
 	 * Reads hub shutdown state under the lock.
-	 *
-	 * @return Whether the hub has shut down.
 	 */
 	boolean function isShutdown() {
 		variables.lock.lock();
@@ -122,8 +111,6 @@ class {
 
 	/**
 	 * Reads the per-subscription capacity.
-	 *
-	 * @return A positive capacity, or -1 for unbounded.
 	 */
 	numeric function capacity() {
 		return variables.capacity;
@@ -131,8 +118,6 @@ class {
 
 	/**
 	 * Counts active subscriptions under the hub lock.
-	 *
-	 * @return The current count, which may change concurrently.
 	 */
 	numeric function subscriberCount() {
 		variables.lock.lock();
@@ -146,11 +131,13 @@ class {
 	/**
 	 * Waits for all active subscriptions to have room, then broadcasts under one lock.
 	 *
-	 * @value Value carried by this operation; may be null.
+	 * @value Non-null message; null is rejected as a defect at execution.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return An outcome struct with isInterrupted and isShutdown flags.
 	 */
-	struct function _publishNative( any value, any controlState = null ) {
+	struct function publishNative( any value, any controlState = null ) {
+		if ( isNull( arguments.value ) ) {
+			throw( type: "bxeffect.InvalidPubSubValueException", message: "PubSub values must be non-null; poll uses Attempt for absence" );
+		}
 		variables.lock.lockInterruptibly();
 		try {
 			while ( !variables.shutdown && isFull() ) {
@@ -166,7 +153,7 @@ class {
 				return { isInterrupted: false, isShutdown: true };
 			}
 			for ( var subscription in variables.subscriptions ) {
-				subscription._enqueueNative( arguments.value );
+				subscription.enqueueNative( arguments.value );
 				// Membership and every enqueue share the lock: publication cannot be
 				// partially accepted by only some active subscriptions.
 			}
@@ -181,9 +168,8 @@ class {
 	 * Registers a new subscription unless canceled or shut down.
 	 *
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return An outcome struct with flags and the subscription on success.
 	 */
-	struct function _subscribeNative( any controlState = null ) {
+	struct function subscribeNative( any controlState = null ) {
 		variables.lock.lockInterruptibly();
 		try {
 			if ( wasInterrupted( arguments.controlState ) ) {
@@ -210,15 +196,14 @@ class {
 	 *
 	 * @subscription Consumer registered with this parent hub.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return An outcome struct with three status flags and a value on success.
 	 */
-	struct function _takeNative( required any subscription, any controlState = null ) {
+	struct function takeNative( required any subscription, any controlState = null ) {
 		variables.lock.lockInterruptibly();
 		try {
 			while (
 				!variables.shutdown
 				&& isSubscriptionActive( arguments.subscription )
-				&& arguments.subscription._isEmptyNative()
+				&& arguments.subscription.isEmptyNative()
 			) {
 				if ( wasInterrupted( arguments.controlState ) ) {
 					return interruptionOutcome();
@@ -234,7 +219,7 @@ class {
 			if ( !isSubscriptionActive( arguments.subscription ) ) {
 				return subscriptionShutdownOutcome();
 			}
-			var entry = arguments.subscription._dequeueNative();
+			var entry = arguments.subscription.dequeueNative();
 			variables.notFull.signalAll();
 			return {
 				isInterrupted: false,
@@ -251,19 +236,18 @@ class {
 	 * Immediately dequeues from an active subscription and wakes blocked publishers.
 	 *
 	 * @subscription Consumer registered with this parent hub.
-	 * @return A native Attempt, empty for an empty or closed subscription.
 	 */
-	Attempt function _pollNative( required any subscription ) {
+	Attempt function pollNative( required any subscription ) {
 		variables.lock.lock();
 		try {
 			if (
 				variables.shutdown
 				|| !isSubscriptionActive( arguments.subscription )
-				|| arguments.subscription._isEmptyNative()
+				|| arguments.subscription.isEmptyNative()
 			) {
 				return attempt();
 			}
-			var entry = arguments.subscription._dequeueNative();
+			var entry = arguments.subscription.dequeueNative();
 			variables.notFull.signalAll();
 			return attempt( entry.value );
 		} finally {
@@ -275,15 +259,14 @@ class {
 	 * Removes a subscription, clears its buffer, and wakes consumers and publishers.
 	 *
 	 * @subscription Consumer registered with this parent hub.
-	 * @return True if it was active, otherwise false.
 	 */
-	boolean function _unsubscribeNative( required any subscription ) {
+	boolean function unsubscribeNative( required any subscription ) {
 		variables.lock.lock();
 		try {
 			if ( !variables.subscriptions.remove( arguments.subscription ) ) {
 				return false;
 			}
-			arguments.subscription._shutdownNative();
+			arguments.subscription.shutdownNative();
 			// Removing the slowest subscriber may free publication capacity, while
 			// its own blocked consumer must wake to observe unsubscribe.
 			variables.notEmpty.signalAll();
@@ -296,15 +279,13 @@ class {
 
 	/**
 	 * Checks all active buffers while the caller holds the hub lock.
-	 *
-	 * @return Whether any subscription has reached bounded capacity.
 	 */
 	private boolean function isFull() {
 		if ( variables.capacity < 0 ) {
 			return false;
 		}
 		for ( var subscription in variables.subscriptions ) {
-			if ( subscription._sizeNative() >= variables.capacity ) {
+			if ( subscription.sizeNative() >= variables.capacity ) {
 				return true;
 			}
 		}
@@ -315,7 +296,6 @@ class {
 	 * Checks hub membership while the caller holds the hub lock.
 	 *
 	 * @subscription Consumer registered with this parent hub.
-	 * @return Whether the subscription remains registered.
 	 */
 	private boolean function isSubscriptionActive( required any subscription ) {
 		return variables.subscriptions.contains( arguments.subscription );
@@ -325,7 +305,6 @@ class {
 	 * Checks optional Fiber cancellation state.
 	 *
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return Whether interruption was requested.
 	 */
 	private boolean function wasInterrupted( any controlState = null ) {
 		return !isNull( arguments.controlState ) && arguments.controlState.isInterrupted();
@@ -333,8 +312,6 @@ class {
 
 	/**
 	 * Encodes a canceled subscription wait without using the error channel.
-	 *
-	 * @return An internal status struct marking interruption only.
 	 */
 	private struct function interruptionOutcome() {
 		return {
@@ -346,8 +323,6 @@ class {
 
 	/**
 	 * Encodes a take rejected by hub shutdown.
-	 *
-	 * @return An internal status struct marking hub shutdown only.
 	 */
 	private struct function pubSubShutdownOutcome() {
 		return {
@@ -359,8 +334,6 @@ class {
 
 	/**
 	 * Encodes a take rejected by explicit unsubscribe.
-	 *
-	 * @return An internal status struct marking subscription shutdown only.
 	 */
 	private struct function subscriptionShutdownOutcome() {
 		return {
@@ -372,8 +345,6 @@ class {
 
 	/**
 	 * Closes the hub, discards all subscription buffers, and wakes every waiter.
-	 *
-	 * @return True on the first shutdown, otherwise false.
 	 */
 	private boolean function shutdownNative() {
 		variables.lock.lock();
@@ -383,7 +354,7 @@ class {
 			}
 			variables.shutdown = true;
 			for ( var subscription in variables.subscriptions ) {
-				subscription._shutdownNative();
+				subscription.shutdownNative();
 			}
 			variables.subscriptions.clear();
 			variables.notEmpty.signalAll();

@@ -20,7 +20,6 @@ class {
 	 * Stores a service-building recipe and assigns its runtime-local memoization identity.
 	 *
 	 * @builder Callback receiving a base Context and returning an Effect that produces a Context.
-	 * @return This Layer; the builder is not invoked here.
 	 */
 	Layer function init( required function builder ) {
 		variables.builder = arguments.builder;
@@ -33,7 +32,6 @@ class {
 	 *
 	 * @tag ServiceTag identifying the binding.
 	 * @service Service implementation stored by reference.
-	 * @return A Layer producing the supplied binding.
 	 */
 	static Layer function succeed( required ServiceTag tag, any service ) {
 		var providedTag = arguments.tag;
@@ -48,7 +46,6 @@ class {
 	 *
 	 * @tag ServiceTag identifying the binding.
 	 * @effectProducingService Effect yielding the service; resource Effects register release with the runtime Scope.
-	 * @return A Layer producing the service binding.
 	 */
 	static Layer function effect( required ServiceTag tag, required Effect effectProducingService ) {
 		var providedTag = arguments.tag;
@@ -64,7 +61,6 @@ class {
 	 *
 	 * @tag ServiceTag identifying the binding.
 	 * @effectProducingService Effect yielding the service; resource Effects register release with the runtime Scope.
-	 * @return A Layer whose resources belong to the enclosing Scope.
 	 */
 	static Layer function scoped( required ServiceTag tag, required Effect effectProducingService ) {
 		return Layer::effect( arguments.tag, arguments.effectProducingService );
@@ -74,7 +70,6 @@ class {
 	 * Composes recipes in input order so later Layers can use and override earlier services.
 	 *
 	 * @layers Ordered Layer recipes; later builders receive earlier outputs.
-	 * @return A Layer with a copied recipe array.
 	 */
 	static Layer function merge( required array layers ) {
 		var layersToMerge = [];
@@ -88,7 +83,6 @@ class {
 	 * Invokes the stored builder with the supplied Context; runtime provisioning supplies memoization.
 	 *
 	 * @baseContext Input service bindings available to the Layer build.
-	 * @return The builder's Effect producing a Context.
 	 */
 	any function build( required Context baseContext ) {
 		return variables.builder( arguments.baseContext );
@@ -98,18 +92,15 @@ class {
 	 * Builds this Layer during program execution and restores outer bindings afterward.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return An Effect yielding the program result.
 	 */
 	Effect function provide( required Effect program ) {
-		return Effect::_provideLayer( arguments.program, this );
+		return Effect::provideLayerInstruction( arguments.program, this );
 	}
 
 	/**
 	 * Reads the stable identity used by runtime-private build sharing.
-	 *
-	 * @return The Layer identifier.
 	 */
-	string function _identity() {
+	string function identity() {
 		return variables.layerId;
 	}
 
@@ -118,7 +109,6 @@ class {
 	 *
 	 * @baseContext Input service bindings available to the Layer build.
 	 * @layers Ordered Layer recipes; later builders receive earlier outputs.
-	 * @return An Effect yielding the accumulated Context.
 	 */
 	private static Effect function buildMerged( required Context baseContext, required array layers ) {
 		var buildProgram = Effect::succeed( arguments.baseContext );
@@ -133,12 +123,11 @@ class {
 	 *
 	 * @accumulated Effect yielding the Context built by preceding Layers.
 	 * @nextLayer Next recipe to build with the accumulated Context.
-	 * @return An Effect yielding the next accumulated Context.
 	 */
 	private static Effect function appendLayer( required Effect accumulated, required Layer nextLayer ) {
 		var layerToBuild = arguments.nextLayer;
 		return arguments.accumulated.flatMap(
-			( buildContext ) => Effect::_buildLayer( layerToBuild, buildContext )
+			( buildContext ) => Effect::buildLayerInstruction( layerToBuild, buildContext )
 		);
 	}
 

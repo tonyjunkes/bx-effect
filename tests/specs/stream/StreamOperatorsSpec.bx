@@ -1,0 +1,63 @@
+import models.effect.Effect@bxeffect;
+import models.effect.Stream@bxeffect;
+
+class extends="testbox.system.BaseSpec" {
+	function run() {
+		describe( "Sequential stream utilities", () => {
+			it( "takes while lazily, stops at the first rejection, and releases before following work", () => {
+				var seen = [];
+				var released = 0;
+				var source = Stream::acquireRelease( Effect::succeed( true ), resource => Effect::sync( () => released++ ),
+					resource => Stream::fromArray( [ 1, 2, 3, 4 ] ) ).takeWhile( value => { seen.append( value ); return value < 3; } );
+				expect( seen ).toBeEmpty();
+				expect( Effect::runSync( source.runCollect() ) ).toBe( [ 1, 2 ] );
+				expect( seen ).toBe( [ 1, 2, 3 ] );
+				expect( released ).toBe( 1 );
+				expect( Effect::runSync( source.runCollect() ) ).toBe( [ 1, 2 ] );
+				expect( released ).toBe( 2 );
+			} );
+
+			it( "scans with a fresh accumulator per run and emits its seed without pulling", () => {
+				var pulls = 0;
+				var source = Stream::unfoldEffect( 1, state => Effect::sync( () => {
+					pulls++;
+					return state > 3 ? attempt() : attempt( { value: state, state: state + 1 } );
+				} ) ).scan( 0, ( total, value ) => total + value );
+				expect( Effect::runSync( source.take( 1 ).runCollect() ) ).toBe( [ 0 ] );
+				expect( pulls ).toBe( 0 );
+				expect( Effect::runSync( source.runCollect() ) ).toBe( [ 0, 1, 3, 6 ] );
+				expect( Effect::runSync( source.runCollect() ) ).toBe( [ 0, 1, 3, 6 ] );
+				expect( Effect::runSync( Stream::empty().scan( 7, ( total, value ) => total ).runCollect() ) ).toBe( [ 7 ] );
+			} );
+
+			it( "groups across batches with a final partial group and no read-ahead", () => {
+				var pulls = 0;
+				var source = Stream::unfoldEffect( 1, state => Effect::sync( () => {
+					pulls++;
+					return state > 5 ? attempt() : attempt( { value: state, state: state + 1 } );
+				} ) ).grouped( 2 );
+				expect( pulls ).toBe( 0 );
+				expect( Effect::runSync( source.take( 1 ).runCollect() ) ).toBe( [ [ 1, 2 ] ] );
+				expect( pulls ).toBe( 2 );
+				expect( Effect::runSync( source.runCollect() ) ).toBe( [ [ 1, 2 ], [ 3, 4 ], [ 5 ] ] );
+				expect( Effect::runSync( Stream::fromArray( [ 1, 2, 3, 4 ] ).grouped( 2 ).runCollect() ) ).toBe( [ [ 1, 2 ], [ 3, 4 ] ] );
+				expect( Effect::runSync( Stream::empty().grouped( 2 ).runCollect() ) ).toBeEmpty();
+				expect( () => Stream::empty().grouped( 0 ) ).toThrow( "bxeffect.InvalidStreamCountException" );
+			} );
+
+			it( "preserves expected source failures and defects, including callback defects, through cleanup", () => {
+				var releases = 0;
+				var source = Stream::acquireRelease( Effect::succeed( true ), resource => Effect::sync( () => releases++ ),
+					resource => Stream::fromArray( [ 1, 2 ] ) );
+				var predicateFailure = Effect::runSyncExit( source.takeWhile( value => { throw( message: "predicate" ); } ).runCollect() );
+				expect( predicateFailure.cause().kind() ).toBe( "Die" );
+				var reducerFailure = Effect::runSyncExit( source.scan( 0, ( total, value ) => { throw( message: "reducer" ); } ).runCollect() );
+				expect( reducerFailure.cause().kind() ).toBe( "Die" );
+				expect( releases ).toBe( 2 );
+				var failing = source.concat( Stream::fromEffect( Effect::fail( "source" ) ) ).grouped( 3 );
+				expect( Effect::runSyncExit( failing.runCollect() ).cause().error() ).toBe( "source" );
+				expect( releases ).toBe( 3 );
+			} );
+		} );
+	}
+}

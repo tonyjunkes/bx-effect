@@ -1,5 +1,5 @@
-import ortus.boxlang.runtime.dynamic.Attempt;
 import bxModules.bxEffect.models.effect.Effect;
+import ortus.boxlang.runtime.dynamic.Attempt;
 
 /**
  * An Effect-aware FIFO queue with explicit shutdown semantics.
@@ -23,7 +23,6 @@ class {
 	 * Creates an application-owned FIFO buffer with explicit shutdown.
 	 *
 	 * @capacity Positive whole buffer capacity; internal constructors also accept -1 for unbounded.
-	 * @return This Queue.
 	 */
 	Queue function init( numeric capacity = -1 ) {
 		if (
@@ -44,7 +43,6 @@ class {
 	 * Creates a Queue whose offers wait when its positive capacity is reached.
 	 *
 	 * @capacity Positive whole maximum number of buffered values per consumer.
-	 * @return A new bounded Queue.
 	 */
 	static Queue function bounded( required numeric capacity ) {
 		if ( arguments.capacity <= 0 || int( arguments.capacity ) != arguments.capacity ) {
@@ -58,8 +56,6 @@ class {
 
 	/**
 	 * Creates a Queue without capacity backpressure.
-	 *
-	 * @return A new unbounded Queue.
 	 */
 	static Queue function unbounded() {
 		return new Queue();
@@ -68,26 +64,21 @@ class {
 	/**
 	 * Describes an interruptible offer; offers after shutdown fail with QueueShutdown.
 	 *
-	 * @value Value carried by this operation; may be null.
-	 * @return An Effect yielding null when accepted.
+	 * @value Non-null message; null is rejected as a defect at execution.
 	 */
 	Effect function offer( any value ) {
-		return Effect::_offerQueue( this, arguments.value );
+		return Effect::offerQueueInstruction( this, arguments.value );
 	}
 
 	/**
 	 * Describes an interruptible FIFO take; a shut down Queue drains before failing with QueueShutdown.
-	 *
-	 * @return An Effect yielding the next value.
 	 */
 	Effect function take() {
-		return Effect::_takeQueue( this );
+		return Effect::takeQueueInstruction( this );
 	}
 
 	/**
 	 * Immediately removes the oldest buffered value, including after shutdown, without waiting.
-	 *
-	 * @return A native Attempt, empty when no value is buffered.
 	 */
 	Attempt function poll() {
 		variables.lock.lock();
@@ -105,8 +96,6 @@ class {
 
 	/**
 	 * Describes idempotent shutdown, waking waiters while retaining buffered values for draining.
-	 *
-	 * @return An Effect yielding true only for the first shutdown.
 	 */
 	Effect function shutdown() {
 		return Effect::sync( () => shutdownNative() );
@@ -114,8 +103,6 @@ class {
 
 	/**
 	 * Reads the shutdown flag under the Queue lock.
-	 *
-	 * @return Whether shutdown has begun.
 	 */
 	boolean function isShutdown() {
 		variables.lock.lock();
@@ -128,8 +115,6 @@ class {
 
 	/**
 	 * Reads the buffered item count under the Queue lock.
-	 *
-	 * @return The current size, which may change concurrently.
 	 */
 	numeric function size() {
 		variables.lock.lock();
@@ -143,11 +128,13 @@ class {
 	/**
 	 * Waits under the Queue lock for capacity and enqueues one value unless interrupted or closed.
 	 *
-	 * @value Value carried by this operation; may be null.
+	 * @value Non-null message; null is rejected as a defect at execution.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return An outcome struct with isShutdown and isInterrupted flags.
 	 */
-	struct function _offerNative( any value, any controlState = null ) {
+	struct function offerNative( any value, any controlState = null ) {
+		if ( isNull( arguments.value ) ) {
+			throw( type: "bxeffect.InvalidQueueValueException", message: "Queue values must be non-null; poll uses Attempt for absence" );
+		}
 		variables.lock.lockInterruptibly();
 		try {
 			while ( !variables.shutdown && isFull() ) {
@@ -165,7 +152,7 @@ class {
 				return { isShutdown: true, isInterrupted: false };
 			}
 			variables.items.addLast( { value: arguments.value } );
-			// The wrapper lets ArrayDeque carry a null user value without a null entry.
+			// Keep the message envelope private to native buffer operations.
 			variables.notEmpty.signal();
 			return { isShutdown: false, isInterrupted: false };
 		} finally {
@@ -177,9 +164,8 @@ class {
 	 * Waits under the Queue lock for an item or shutdown, preserving buffered values for draining.
 	 *
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return An outcome struct with flags and a value on success.
 	 */
-	struct function _takeNative( any controlState = null ) {
+	struct function takeNative( any controlState = null ) {
 		variables.lock.lockInterruptibly();
 		try {
 			while ( variables.items.isEmpty() && !variables.shutdown ) {
@@ -205,8 +191,6 @@ class {
 
 	/**
 	 * Checks capacity while the caller holds the Queue lock.
-	 *
-	 * @return Whether a bounded Queue has reached capacity.
 	 */
 	private boolean function isFull() {
 		return variables.capacity > 0 && variables.items.size() >= variables.capacity;
@@ -216,7 +200,6 @@ class {
 	 * Checks optional Fiber cancellation state.
 	 *
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 * @return Whether interruption was requested.
 	 */
 	private boolean function wasInterrupted( any controlState = null ) {
 		return !isNull( arguments.controlState ) && arguments.controlState.isInterrupted();
@@ -224,8 +207,6 @@ class {
 
 	/**
 	 * Closes admission atomically and wakes both producers and consumers.
-	 *
-	 * @return True on the first shutdown, otherwise false.
 	 */
 	private boolean function shutdownNative() {
 		variables.lock.lock();

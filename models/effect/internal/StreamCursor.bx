@@ -18,7 +18,6 @@ class {
 	 *
 	 * @pullFactory Zero-argument factory returning an Effect of native Attempt<Array>; empty means completion.
 	 * @closeFactory Zero-argument cleanup Effect factory; defaults to a successful no-op.
-	 * @return This internal cursor.
 	 */
 	StreamCursor function init(
 		required function pullFactory,
@@ -31,8 +30,6 @@ class {
 
 	/**
 	 * Defers one batch request; a closed cursor completes normally without calling its factory.
-	 *
-	 * @return An Effect yielding native Attempt<Array>; empty Attempt means completion.
 	 */
 	Effect function pull() {
 		return Effect::suspend( () => variables.closed.get()
@@ -43,8 +40,6 @@ class {
 
 	/**
 	 * Defers an atomic close claim so the cleanup factory runs at most once, even if it fails.
-	 *
-	 * @return An Effect yielding the cleanup result, or null on repeated close.
 	 */
 	Effect function close() {
 		return Effect::suspend( () => variables.closed.compareAndSet( false, true )

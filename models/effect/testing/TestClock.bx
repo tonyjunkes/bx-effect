@@ -15,7 +15,6 @@ class {
 	 *
 	 * @duration Non-negative delay or elapsed amount in the supplied unit.
 	 * @unit Time unit; defaults to milliseconds when omitted.
-	 * @return A native BoxFuture completing with null at its due time.
 	 */
 	BoxFuture function sleep( required numeric duration, string unit = "milliseconds" ) {
 		var delayMillis = toMillis( arguments.duration, arguments.unit );
@@ -42,7 +41,6 @@ class {
 	 *
 	 * @duration Non-negative delay or elapsed amount in the supplied unit.
 	 * @unit Time unit; defaults to milliseconds when omitted.
-	 * @return The number of due futures selected for completion.
 	 */
 	numeric function advance( required numeric duration, string unit = "milliseconds" ) {
 		var futuresToComplete = [];
@@ -74,8 +72,6 @@ class {
 
 	/**
 	 * Reads simulated time under the Clock lock.
-	 *
-	 * @return Milliseconds elapsed from the initial zero time.
 	 */
 	numeric function now() {
 		variables.lock.lock();
@@ -88,8 +84,6 @@ class {
 
 	/**
 	 * Prunes completed/canceled waits and counts outstanding sleeps.
-	 *
-	 * @return The number of pending sleeps.
 	 */
 	numeric function pendingCount() {
 		variables.lock.lock();
@@ -112,7 +106,6 @@ class {
 	 *
 	 * @duration Non-negative delay or elapsed amount in the supplied unit.
 	 * @unit Required time unit to convert to milliseconds.
-	 * @return Milliseconds; invalid input throws InvalidDurationException or InvalidTimeUnitException.
 	 */
 	private numeric function toMillis( required numeric duration, required string unit ) {
 		if ( arguments.duration < 0 ) {

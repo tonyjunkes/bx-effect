@@ -47,7 +47,7 @@ interruptMeasurement = BenchmarkSupport::measure( () => {
 	var queueSource = Queue::unbounded();
 	var blockedFiber = Effect::runFork( Stream::fromQueue( queueSource ).runDrain() );
 	blockedFiber.interrupt();
-	var interruptionExit = blockedFiber._awaitTermination().await();
+	var interruptionExit = blockedFiber.awaitTermination().await();
 	return interruptionExit.cause().isInterrupted();
 } );
 

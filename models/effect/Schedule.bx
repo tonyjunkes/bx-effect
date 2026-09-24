@@ -20,7 +20,6 @@ class {
 	 * @delay Base delay in timeUnit; defaults to zero.
 	 * @timeUnit Stored delay unit; defaults to milliseconds.
 	 * @decision Callback receiving recurrence, value, scheduledAt, and nowMillis and returning a decision struct.
-	 * @return This Schedule.
 	 */
 	Schedule function init(
 		required string scheduleKind,
@@ -45,7 +44,6 @@ class {
 	 * Allows a bounded number of recurrences after the initial execution.
 	 *
 	 * @count Non-negative maximum number of additional executions after the initial run.
-	 * @return A Schedule with no delay.
 	 */
 	static Schedule function recurs( required numeric count ) {
 		if ( arguments.count < 0 ) {
@@ -59,7 +57,6 @@ class {
 	 *
 	 * @duration Non-negative delay or elapsed amount in the supplied unit.
 	 * @unit Time unit; defaults to milliseconds when omitted.
-	 * @return A Schedule with a constant completion-relative delay.
 	 */
 	static Schedule function spaced( required numeric duration, string unit = "milliseconds" ) {
 		return delayed( "Spaced", arguments.duration, arguments.unit );
@@ -70,7 +67,6 @@ class {
 	 *
 	 * @duration Non-negative delay or elapsed amount in the supplied unit.
 	 * @unit Time unit; defaults to milliseconds when omitted.
-	 * @return A Schedule anchored to recurrence starts.
 	 */
 	static Schedule function fixed( required numeric duration, string unit = "milliseconds" ) {
 		return delayed( "Fixed", arguments.duration, arguments.unit );
@@ -81,7 +77,6 @@ class {
 	 *
 	 * @baseDuration Non-negative initial delay, doubled for each recurrence.
 	 * @unit Time unit; defaults to milliseconds when omitted.
-	 * @return An unbounded exponential Schedule.
 	 */
 	static Schedule function exponential( required numeric baseDuration, string unit = "milliseconds" ) {
 		return delayed( "Exponential", arguments.baseDuration, arguments.unit );
@@ -91,7 +86,6 @@ class {
 	 * Continues only while both policies continue, using the longer delay.
 	 *
 	 * @other Schedule-compatible policy or shorthand times struct to intersect.
-	 * @return A composed Schedule.
 	 */
 	Schedule function and( required any other ) {
 		var leftSchedule = this;
@@ -115,7 +109,6 @@ class {
 	 * Continues while either policy continues, using the shorter delay among continuing policies.
 	 *
 	 * @other Schedule-compatible policy or shorthand times struct to combine as an alternative.
-	 * @return A composed Schedule.
 	 */
 	Schedule function or( required any other ) {
 		var leftSchedule = this;
@@ -141,7 +134,6 @@ class {
 	 * Continues only while the underlying policy and input predicate both permit it.
 	 *
 	 * @predicate Callback receiving the latest expected error (retry) or success value (repeat) and returning a boolean.
-	 * @return A new Schedule.
 	 */
 	Schedule function whileInput( required function predicate ) {
 		var sourceSchedule = this;
@@ -157,7 +149,6 @@ class {
 	 * Stops when the input predicate becomes true or the underlying policy stops.
 	 *
 	 * @predicate Callback receiving the latest expected error (retry) or success value (repeat) and returning a boolean.
-	 * @return A new Schedule.
 	 */
 	Schedule function untilInput( required function predicate ) {
 		var sourceSchedule = this;
@@ -174,7 +165,6 @@ class {
 	 *
 	 * @minimum Non-negative minimum jitter multiplier; defaults to 0.8.
 	 * @maximum Maximum jitter multiplier, at least minimum; defaults to 1.2.
-	 * @return A new Schedule.
 	 */
 	Schedule function jittered( numeric minimum = 0.8, numeric maximum = 1.2 ) {
 		if ( arguments.minimum < 0 || arguments.maximum < arguments.minimum ) {
@@ -194,7 +184,6 @@ class {
 	 * Accepts a next-capable policy or converts the shorthand times struct.
 	 *
 	 * @policy Schedule-compatible object or shorthand struct with a times count.
-	 * @return A Schedule-compatible policy; invalid input throws InvalidScheduleException.
 	 */
 	static any function coerce( required any policy ) {
 		if ( isObject( arguments.policy ) && structKeyExists( arguments.policy, "next" ) ) {
@@ -216,7 +205,6 @@ class {
 	 * @value Latest expected error for retry, or latest success value for repeat.
 	 * @scheduledAt Previous recurrence start target in Clock milliseconds.
 	 * @nowMillis Current Clock time in milliseconds after the previous run completes.
-	 * @return A struct with continue, delay, unit, and nextScheduledAt (null for completion-relative timing).
 	 */
 	struct function next(
 		required numeric recurrence,
@@ -263,7 +251,6 @@ class {
 	 * @scheduleKind Internal Recurs, Spaced, Fixed, Exponential, or Custom discriminator.
 	 * @duration Non-negative delay or elapsed amount in the supplied unit.
 	 * @unit Required time unit for the stored delay.
-	 * @return A Schedule.
 	 */
 	private static Schedule function delayed(
 		required string scheduleKind,
@@ -285,7 +272,6 @@ class {
 	 * Stores a composed decision callback as a Schedule.
 	 *
 	 * @decision Callback receiving recurrence, value, scheduledAt, and nowMillis and returning a decision struct.
-	 * @return A custom Schedule.
 	 */
 	private static Schedule function custom( required function decision ) {
 		return new Schedule( scheduleKind: "Custom", decision: arguments.decision );
@@ -296,7 +282,6 @@ class {
 	 *
 	 * @leftDecision Decision from the left composed Schedule.
 	 * @rightDecision Decision from the right composed Schedule.
-	 * @return The next scheduled time, or null.
 	 */
 	private static any function firstScheduledAt( required struct leftDecision, required struct rightDecision ) {
 		return structKeyExists( arguments.leftDecision, "nextScheduledAt" )
@@ -314,7 +299,6 @@ class {
 	 *
 	 * @duration Non-negative delay or elapsed amount in the supplied unit.
 	 * @unit Required time unit to convert to milliseconds.
-	 * @return The converted duration; invalid units throw InvalidTimeUnitException.
 	 */
 	private static numeric function toMillis( required numeric duration, required string unit ) {
 		switch ( lCase( arguments.unit ) ) {

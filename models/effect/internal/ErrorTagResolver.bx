@@ -8,7 +8,6 @@ class {
 	 * explicit _tag, effectError annotation, throwable type, metadata name, native class.
 	 *
 	 * @errorValue Expected error whose tag or metadata is inspected.
-	 * @return The tag string used by catchTag.
 	 */
 	static string function resolve( required any errorValue ) {
 		var explicitTag = readExplicitTag( arguments.errorValue );
@@ -45,7 +44,6 @@ class {
 	 * Attempts structural _tag access without requiring a struct or BoxLang class.
 	 *
 	 * @errorValue Expected error whose tag or metadata is inspected.
-	 * @return The explicit tag, or null when unavailable.
 	 */
 	private static any function readExplicitTag( required any errorValue ) {
 		try {
@@ -61,7 +59,6 @@ class {
 	 * Attempts BoxLang class metadata access for tag fallback.
 	 *
 	 * @errorValue Expected error whose tag or metadata is inspected.
-	 * @return Metadata, or null when unavailable.
 	 */
 	private static any function readMetadata( required any errorValue ) {
 		try {

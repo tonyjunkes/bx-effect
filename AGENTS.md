@@ -1,5 +1,5 @@
 <!-- FOR AI AGENTS | Verify commands and runtime assumptions against README.md and CI. -->
-<!-- Last updated: 2026-09-07 | Last verified: 2026-09-07 -->
+<!-- Last updated: 2026-09-23 | Last verified: 2026-09-23 -->
 
 # AGENTS.md
 
@@ -13,11 +13,8 @@ Effect semantics while reusing BoxLang's runtime facilities. It is
 Effect-inspired, not an API-compatible TypeScript Effect port.
 
 Treat implementation and focused tests as the executable contract. Use the
-focused guides in `docs/` for public semantics and deliberate BoxLang-native
-differences, especially `docs/effect-alignment.md`; use `README.md` for supported
-entry points and setup. If these disagree, do not guess: preserve current
-behavior while reconciling the guide and tests. Do not silently broaden the
-public API.
+focused guides in `docs/` for public semantics; use `README.md` for supported
+entry points and setup.
 
 ## Architecture
 
@@ -36,8 +33,8 @@ public API.
 | `models/effect/internal/` | Private Fiber control, Layer memoization, Stream cursors, and throwable/tagged-error policies |
 | `ModuleConfig.bx`, `box.json` | Module settings, identity, packaging, and version metadata |
 | `tests/specs/` | TestBox contracts grouped by subsystem |
-| `.github/workflows/pr.yml` | PR checks targeting `develop`; BoxLang `latest` and `snapshot`, override, metadata, and installed-consumer smoke test |
-| `.github/workflows/release.yml` | Verify and publish from `main` using BoxLang `latest`; version tags have no `v` prefix |
+| `.github/workflows/pr.yml` | PR TestBox checks on `latest` and `snapshot`, including the executor override |
+| `.github/workflows/release.yml` | TestBox on `latest` and `snapshot`, plus an installed-consumer smoke check before publishing from `main` |
 
 BX Effect is module-first: its BoxLang module must be installed, registered,
 and activated. Public applications import `models.effect.Effect@bxeffect` and
@@ -185,6 +182,10 @@ a custom abstraction unless a tested semantic requirement proves otherwise.
   throughout unrelated code.
 - Match surrounding BoxLang style: tabs in `.bx`/`.bxm` code, descriptive
   named arguments, and LF line endings. Avoid unrelated formatting churn.
+- Document functions with a description and argument descriptions. Declared
+  return types make `@return` comments unnecessary. Use ordinary descriptive
+  names for internal methods; the public compatibility boundary is the
+  supported inventory in `docs/public-api.md`.
 
 ## Commands
 
@@ -211,10 +212,11 @@ BoxLang `1.16.0`, but the current PR matrix runs `latest` and `snapshot`; verify
 minimum-runtime compatibility separately for parser-facing or platform changes.
 
 Inspect TestBox totals, not only the process exit code: the runner can exit zero
-with failing specs. The release workflow writes JSON reports and checks
-`totalFail == 0`, `totalError == 0`, and `totalPass > 0`. For package/import
-changes, also follow the isolated installed-consumer step in
-`.github/workflows/pr.yml` using `tests/consumer/Smoke.bxm` and its config.
+with failing specs. Both workflows write JSON reports and check
+`totalFail == 0`, `totalError == 0`, and `totalPass > 0`. Module specs verify
+activation and checkout resolution. The release workflow additionally installs
+the package in an isolated consumer and runs `tests/consumer/Smoke.bxm` once on
+`latest`. Keep CI on BoxLang `latest` and `snapshot`.
 
 Additional checks:
 
@@ -252,7 +254,7 @@ for interpreter or composition changes.
 | Module settings | `ModuleConfig.bx`, both test configs, module specs, and executor-override check |
 | Version or release metadata | `box.json`, `ModuleConfig.bx`, `CHANGELOG.md`, and `.github/workflows/release.yml` |
 | Supported runtime matrix | `box.json`, README requirements, test configs, `.github/workflows/pr.yml`, and `.github/workflows/release.yml` |
-| Public API | README/guides, module-resolved imports, focused tests, and package contents |
+| Public API | README/guides, module-resolved imports, and focused TestBox specs |
 
 Add focused TestBox coverage with behavior changes. Tests should assert failure
 channel distinctions, not merely that an operation failed.

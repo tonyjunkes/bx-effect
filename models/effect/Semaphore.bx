@@ -15,7 +15,6 @@ class {
 	 * Allocates a fair native semaphore after validating the initial permit count.
 	 *
 	 * @permits Non-negative whole initial permit count.
-	 * @return This Semaphore.
 	 */
 	Semaphore function init( required numeric permits ) {
 		validatePermits( arguments.permits );
@@ -27,7 +26,6 @@ class {
 	 * Creates a mutable permit source with a non-negative whole permit count.
 	 *
 	 * @permits Non-negative whole initial permit count.
-	 * @return A new Semaphore.
 	 */
 	static Semaphore function make( required numeric permits ) {
 		return new Semaphore( arguments.permits );
@@ -35,17 +33,13 @@ class {
 
 	/**
 	 * Describes an interruptible wait for one permit; manual acquisition requires matching release.
-	 *
-	 * @return An Effect yielding null after acquisition.
 	 */
 	Effect function acquire() {
-		return Effect::_acquireSemaphore( this );
+		return Effect::acquireSemaphoreInstruction( this );
 	}
 
 	/**
 	 * Describes returning one permit to the source.
-	 *
-	 * @return An Effect yielding null.
 	 */
 	Effect function release() {
 		var permitSource = variables.permits;
@@ -59,17 +53,14 @@ class {
 	 * Acquires one permit and releases it after the program on every outcome.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return An Effect preserving the program outcome and any cleanup failure.
 	 */
 	Effect function withPermit( required Effect program ) {
 		var programToRun = arguments.program;
-		return Effect::_acquireUseRelease( acquire(), ( ignored ) => programToRun, ( ignored ) => release() );
+		return Effect::acquireUseRelease( acquire(), ( ignored ) => programToRun, ( ignored ) => release() );
 	}
 
 	/**
 	 * Reads the current native permit count immediately.
-	 *
-	 * @return The available count, which may change concurrently.
 	 */
 	numeric function availablePermits() {
 		return variables.permits.availablePermits();
@@ -77,10 +68,8 @@ class {
 
 	/**
 	 * Blocks the interpreter thread until one native permit is acquired.
-	 *
-	 * @return Null; native interruption propagates to the interpreter.
 	 */
-	any function _acquireNative() {
+	any function acquireNative() {
 		variables.permits.acquire();
 		return null;
 	}
@@ -89,7 +78,6 @@ class {
 	 * Rejects negative or fractional permit counts.
 	 *
 	 * @permits Non-negative whole initial permit count.
-	 * @return No value; throws InvalidPermitCountException on invalid input.
 	 */
 	private static void function validatePermits( required numeric permits ) {
 		if ( arguments.permits < 0 || int( arguments.permits ) != arguments.permits ) {

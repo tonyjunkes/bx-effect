@@ -15,8 +15,6 @@ class {
 
 	/**
 	 * Allocates one incomplete native BoxFuture for the shared outcome.
-	 *
-	 * @return This Deferred.
 	 */
 	Deferred function init() {
 		variables.outcomeFuture = futureNew();
@@ -25,8 +23,6 @@ class {
 
 	/**
 	 * Creates application-owned one-shot coordination state.
-	 *
-	 * @return A new incomplete Deferred.
 	 */
 	static Deferred function make() {
 		return new Deferred();
@@ -34,8 +30,6 @@ class {
 
 	/**
 	 * Lazily waits through a dependent future so canceling one waiter cannot cancel the shared result.
-	 *
-	 * @return An Effect reproducing the completed Exit's value or Cause.
 	 */
 	Effect function await() {
 		var sourceFuture = variables.outcomeFuture;
@@ -50,7 +44,6 @@ class {
 	 * Lazily attempts the first completion; later attempts leave the outcome unchanged.
 	 *
 	 * @outcome Exit containing the shared success value or complete Cause.
-	 * @return An Effect yielding true only for the winning completion.
 	 */
 	Effect function complete( required any outcome ) {
 		var outcomeToComplete = arguments.outcome;
@@ -64,7 +57,6 @@ class {
 	 * Lazily attempts completion with a success value.
 	 *
 	 * @value Value carried by this operation; may be null.
-	 * @return An Effect yielding whether completion won.
 	 */
 	Effect function succeed( any value ) {
 		return complete( Exit::success( arguments.value ) );
@@ -74,7 +66,6 @@ class {
 	 * Lazily attempts completion with an expected error.
 	 *
 	 * @error Expected application error value.
-	 * @return An Effect yielding whether completion won.
 	 */
 	Effect function fail( required any error ) {
 		return complete( Exit::failure( Cause::fail( arguments.error ) ) );
@@ -84,7 +75,6 @@ class {
 	 * Lazily attempts completion with a defect.
 	 *
 	 * @defect Unexpected failure value retained in the defect channel.
-	 * @return An Effect yielding whether completion won.
 	 */
 	Effect function die( required any defect ) {
 		return complete( Exit::failure( Cause::die( arguments.defect ) ) );
@@ -94,7 +84,6 @@ class {
 	 * Lazily attempts completion with an interruption Cause.
 	 *
 	 * @fiberId Logical Fiber identifier used in interruption and diagnostics.
-	 * @return An Effect yielding whether completion won.
 	 */
 	Effect function interrupt( required any fiberId ) {
 		return complete( Exit::failure( Cause::interrupt( arguments.fiberId ) ) );
@@ -102,8 +91,6 @@ class {
 
 	/**
 	 * Checks completion immediately without waiting.
-	 *
-	 * @return A native Attempt containing the Exit, or empty while pending.
 	 */
 	Attempt function poll() {
 		return isDone() ? attempt( variables.outcomeFuture.get() ) : attempt();
@@ -111,8 +98,6 @@ class {
 
 	/**
 	 * Checks the shared future immediately.
-	 *
-	 * @return Whether an outcome has been assigned.
 	 */
 	boolean function isDone() {
 		return variables.outcomeFuture.isDone();
@@ -122,20 +107,18 @@ class {
 	 * Reconstitutes an Exit without losing its failure channels.
 	 *
 	 * @outcome Exit containing the shared success value or complete Cause.
-	 * @return An Effect yielding the value or halting with the Cause.
 	 */
 	private static Effect function exitToEffect( required any outcome ) {
 		validateExit( arguments.outcome );
 		return arguments.outcome.isSuccess()
 			? Effect::succeed( arguments.outcome.value() )
-			: Effect::_halt( arguments.outcome.cause() );
+			: Effect::haltInstruction( arguments.outcome.cause() );
 	}
 
 	/**
 	 * Checks the structural Exit contract before accepting an outcome.
 	 *
 	 * @outcome Exit containing the shared success value or complete Cause.
-	 * @return No value; throws InvalidDeferredOutcomeException for invalid input.
 	 */
 	private static void function validateExit( required any outcome ) {
 		if (

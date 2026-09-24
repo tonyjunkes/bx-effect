@@ -20,7 +20,6 @@ class {
 	 * Stores a fresh-cursor factory without opening it or pulling values.
 	 *
 	 * @opener Zero-argument factory returning an Effect that acquires a fresh private cursor.
-	 * @return This reusable Stream description.
 	 */
 	Stream function init( required function opener ) {
 		variables.opener = arguments.opener;
@@ -29,8 +28,6 @@ class {
 
 	/**
 	 * Describes a Stream that ends on its first pull.
-	 *
-	 * @return An empty Stream.
 	 */
 	static Stream function empty() {
 		return new Stream( () => Effect::succeed( new StreamCursor(
@@ -42,7 +39,6 @@ class {
 	 * Describes a Stream containing one value.
 	 *
 	 * @value Value carried by this operation; may be null.
-	 * @return A single-value Stream.
 	 */
 	static Stream function succeed( any value ) {
 		return Stream::fromArray( [ arguments.value ] );
@@ -52,7 +48,6 @@ class {
 	 * Describes an expected failure when the Stream is pulled.
 	 *
 	 * @error Expected application error value.
-	 * @return A failed Stream.
 	 */
 	static Stream function fail( required any error ) {
 		var failureValue = arguments.error;
@@ -65,7 +60,6 @@ class {
 	 * Copies the array structure and emits it as one batch for each fresh consumption.
 	 *
 	 * @values Input values in encounter order.
-	 * @return A reusable Stream sharing the original element references.
 	 */
 	static Stream function fromArray( required array values ) {
 		var sourceValues = copyArray( arguments.values );
@@ -87,7 +81,6 @@ class {
 	 * Executes an Effect on the first pull of each consumption and emits its success once.
 	 *
 	 * @program Effect to execute within this operation's boundary.
-	 * @return A Stream preserving the Effect's failure channels.
 	 */
 	static Stream function fromEffect( required Effect program ) {
 		var sourceProgram = arguments.program;
@@ -107,11 +100,10 @@ class {
 	 * Defers creating a Stream until each consumer opens it.
 	 *
 	 * @factory Zero-argument callback returning the Stream for this consumption.
-	 * @return A reusable lazy Stream.
 	 */
 	static Stream function suspend( required function factory ) {
 		var streamFactory = arguments.factory;
-		return new Stream( () => Effect::suspend( () => streamFactory()._open() ) );
+		return new Stream( () => Effect::suspend( () => streamFactory().openCursor() ) );
 	}
 
 	/**
@@ -119,7 +111,6 @@ class {
 	 *
 	 * @initialState Starting unfold state, captured separately for each cursor's progression.
 	 * @step Callback receiving state and returning an Effect of Attempt<{ value, state }>.
-	 * @return A Stream ending when the step returns empty Attempt.
 	 */
 	static Stream function unfoldEffect( any initialState, required function step ) {
 		var startingState = arguments.initialState;
@@ -161,7 +152,6 @@ class {
 	 * @acquire Effect producing the resource; failed acquisition does not register release.
 	 * @release Callback receiving the acquired resource and returning its cleanup Effect.
 	 * @use Callback receiving the resource and returning the Stream to consume.
-	 * @return A Stream built from the acquired resource.
 	 */
 	static Stream function acquireRelease(
 		required Effect acquire,
@@ -179,8 +169,8 @@ class {
 				released.compareAndSet( false, true ) ? releaseFunction( resource ) : Effect::succeed( null )
 			);
 			return Effect::acquireRelease( acquireProgram, releaseOnce ).flatMap( ( resource ) =>
-				Effect::suspend( () => useFunction( resource )._open() ).foldCause(
-					( acquisitionCause ) => Effect::_halt( acquisitionCause ).ensuring( releaseOnce( resource ) ),
+				Effect::suspend( () => useFunction( resource ).openCursor() ).foldCause(
+					( acquisitionCause ) => Effect::haltInstruction( acquisitionCause ).ensuring( releaseOnce( resource ) ),
 					( innerCursor ) => Effect::succeed( new StreamCursor(
 						() => innerCursor.pull(),
 						() => innerCursor.close().ensuring( releaseOnce( resource ) )
@@ -194,7 +184,6 @@ class {
 	 * Consumes Queue values without owning or shutting down the Queue.
 	 *
 	 * @queueSource Application-owned Queue; this operation does not transfer ownership.
-	 * @return A Stream ending normally on QueueShutdown after draining.
 	 */
 	static Stream function fromQueue( required any queueSource ) {
 		var sourceQueue = arguments.queueSource;
@@ -209,7 +198,6 @@ class {
 	 * Acquires one subscription per consumption and unsubscribes when its cursor closes.
 	 *
 	 * @pubSubSource Parent PubSub hub coordinating subscription state and waits.
-	 * @return A Stream ending normally on hub or subscription shutdown.
 	 */
 	static Stream function fromPubSub( required any pubSubSource ) {
 		var sourcePubSub = arguments.pubSubSource;
@@ -230,7 +218,6 @@ class {
 	 * Transforms each pulled value; mapper exceptions become defects during consumption.
 	 *
 	 * @mapper Callback receiving a success value and returning its replacement.
-	 * @return A new Stream.
 	 */
 	Stream function map( required function mapper ) {
 		var mapValue = arguments.mapper;
@@ -253,7 +240,6 @@ class {
 	 * Transforms values with Effects sequentially, without implicit read-ahead.
 	 *
 	 * @mapper Callback receiving a value and returning an Effect producing its replacement.
-	 * @return A new Stream.
 	 */
 	Stream function mapEffect( required function mapper ) {
 		var mapValue = arguments.mapper;
@@ -273,7 +259,6 @@ class {
 	 * Retains matching values and continues pulling past batches with no matches.
 	 *
 	 * @predicate Callback receiving a value and returning whether to retain it.
-	 * @return A new Stream.
 	 */
 	Stream function filter( required function predicate ) {
 		var keepValue = arguments.predicate;
@@ -287,7 +272,6 @@ class {
 	 * Runs an Effect for each value and retains the value if observation succeeds.
 	 *
 	 * @observer Callback receiving a success value and returning an observation Effect.
-	 * @return A new Stream.
 	 */
 	Stream function tap( required function observer ) {
 		var observeValue = arguments.observer;
@@ -298,7 +282,6 @@ class {
 	 * Limits output to a non-negative whole count and avoids further upstream pulls once satisfied.
 	 *
 	 * @count Non-negative whole number of elements.
-	 * @return A new Stream.
 	 */
 	Stream function take( required numeric count ) {
 		validateCount( arguments.count, "take" );
@@ -313,10 +296,121 @@ class {
 	}
 
 	/**
+	 * Emits values until the first predicate failure, excluding that value.
+	 *
+	 * @predicate Callback receiving each value and deciding whether to continue.
+	 */
+	Stream function takeWhile( required function predicate ) {
+		var keepValue = arguments.predicate;
+		return transformCursor( ( sourceCursor ) => {
+			var progress = { done: false };
+			return new StreamCursor( () => {
+				if ( progress.done ) {
+					return Effect::succeed( attempt() );
+				}
+				return sourceCursor.pull().map( ( batchAttempt ) => {
+					if ( !batchAttempt.isPresent() ) {
+						progress.done = true;
+						return attempt();
+					}
+					var kept = [];
+					for ( var value in batchAttempt.get() ) {
+						if ( !keepValue( value ) ) {
+							progress.done = true;
+							break;
+						}
+						kept.append( value );
+					}
+					return kept.len() == 0 ? attempt() : attempt( kept );
+				} );
+			}, () => sourceCursor.close() );
+		} );
+	}
+
+	/**
+	 * Emits the initial value, then every sequential accumulator value.
+	 * Treat initial and reducer results as immutable values. Use Stream.suspend
+	 * to allocate a fresh mutable seed when the application needs mutation.
+	 *
+	 * @initial Initial accumulator emitted before pulling the source.
+	 * @reducer Callback receiving the current accumulator and next source value.
+	 */
+	Stream function scan( required any initial, required function reducer ) {
+		var seed = arguments.initial;
+		var reduceValue = arguments.reducer;
+		return transformCursor( ( sourceCursor ) => {
+			var progress = { first: true, value: seed };
+			return new StreamCursor( () => {
+				if ( progress.first ) {
+					progress.first = false;
+					return Effect::succeed( attempt( [ progress.value ] ) );
+				}
+				return sourceCursor.pull().map( ( batchAttempt ) => {
+					if ( !batchAttempt.isPresent() ) {
+						return attempt();
+					}
+					var accumulated = [];
+					for ( var value in batchAttempt.get() ) {
+						progress.value = reduceValue( progress.value, value );
+						accumulated.append( progress.value );
+					}
+					return attempt( accumulated );
+				} );
+			}, () => sourceCursor.close() );
+		} );
+	}
+
+	/**
+	 * Emits native arrays of at most size values; normal completion emits a final partial group.
+	 *
+	 * @size Positive whole number of values per group.
+	 */
+	Stream function grouped( required numeric size ) {
+		validateCount( arguments.size, "grouped" );
+		if ( arguments.size == 0 ) {
+			throw( type: "bxeffect.InvalidStreamCountException", message: "Stream.grouped() requires a positive whole size" );
+		}
+		var groupSize = arguments.size;
+		return transformCursor( ( sourceCursor ) => {
+			var progress = { batch: [], index: 1, group: [], done: false };
+			return new StreamCursor(
+				() => groupedPull( sourceCursor, progress, groupSize ),
+				() => sourceCursor.close()
+			);
+		} );
+	}
+
+	/**
+	 * Fills one bounded group across source batches without requesting the following group.
+	 *
+	 * @sourceCursor Private cursor supplying the source batches.
+	 * @state Mutable progress belonging to this consumption.
+	 * @size Positive whole number of values per group.
+	 */
+	private static Effect function groupedPull( required any sourceCursor, required struct state, required numeric size ) {
+		var cursorToPull = arguments.sourceCursor;
+		var progress = arguments.state;
+		var groupSize = arguments.size;
+		while ( progress.index <= progress.batch.len() && progress.group.len() < groupSize ) {
+			progress.group.append( progress.batch[ progress.index++ ] );
+		}
+		if ( progress.group.len() == groupSize || progress.done ) {
+			var emitted = progress.group;
+			progress.group = [];
+			return Effect::succeed( emitted.len() == 0 ? attempt() : attempt( [ emitted ] ) );
+		}
+		return cursorToPull.pull().flatMap( ( batchAttempt ) => {
+			progress.done = !batchAttempt.isPresent();
+			progress.batch = progress.done ? [] : batchAttempt.get();
+			progress.index = 1;
+			return Effect::suspend( () => groupedPull( cursorToPull, progress, groupSize ) );
+		} );
+	}
+
+	/**
 	 * Skips a non-negative whole count before emitting remaining values.
 	 *
 	 * @count Non-negative whole number of elements.
-	 * @return A new Stream.
 	 */
 	Stream function drop( required numeric count ) {
 		validateCount( arguments.count, "drop" );
@@ -334,29 +428,22 @@ class {
 	 * Consumes Streams in order, closing each cursor before opening the next.
 	 *
 	 * @other Value to compose or compare with this instance.
-	 * @return A new Stream with flattened concatenation metadata.
 	 */
 	Stream function concat( required Stream other ) {
-		// Flatten description leaves so a long concatenation does not recursively
-		// open nested cursor wrappers before producing its first batch.
-		var parts = _concatParts();
-		for ( var part in arguments.other._concatParts() ) {
-			parts.append( part );
-		}
-		var combined = new Stream( () => openConcatParts( parts ) );
-		return combined._rememberConcatParts( parts );
+		var parts = [ this, arguments.other ];
+		var combined = new Stream( () => openConcatParts( flattenConcatParts( parts ) ) );
+		return combined.rememberConcatChildren( parts );
 	}
 
 	/**
 	 * Consumes one mapped inner Stream fully before advancing the outer values.
 	 *
 	 * @mapper Callback receiving a success value and returning the next Stream.
-	 * @return A sequential Stream.
 	 */
 	Stream function flatMap( required function mapper ) {
 		var outerStream = this;
 		var mapValue = arguments.mapper;
-		return new Stream( () => outerStream._open().map( ( outerCursor ) => {
+		return new Stream( () => outerStream.openCursor().map( ( outerCursor ) => {
 			var flatMapState = {
 				outer : outerCursor,
 				inner : null,
@@ -376,7 +463,6 @@ class {
 	 * Replaces a single expected failure with a recovery Stream; other Causes pass through.
 	 *
 	 * @handler Callback receiving the single expected error and returning a recovery Stream.
-	 * @return A new Stream.
 	 */
 	Stream function catchAll( required function handler ) {
 		var errorHandler = arguments.handler;
@@ -390,7 +476,6 @@ class {
 	 * Replaces any opening or pull Cause with a recovery Stream after successful source cleanup.
 	 *
 	 * @handler Callback receiving the complete Cause and returning a recovery Stream.
-	 * @return A new Stream; recovery failures are not recovered again by this operator.
 	 */
 	Stream function catchCause( required function handler ) {
 		return recoverWith( arguments.handler, ( ignored ) => true );
@@ -400,13 +485,12 @@ class {
 	 * Runs the finalizer when opening fails or the consumer closes, retaining cleanup failures.
 	 *
 	 * @finalizer Effect to execute as cleanup on every outcome.
-	 * @return A new Stream.
 	 */
 	Stream function ensuring( required Effect finalizer ) {
 		var sourceStream = this;
 		var finalizerProgram = arguments.finalizer;
-		return new Stream( () => sourceStream._open()
-			.catchCause( ( openingCause ) => Effect::_halt( openingCause ).ensuring( finalizerProgram ) )
+		return new Stream( () => sourceStream.openCursor()
+			.catchCause( ( openingCause ) => Effect::haltInstruction( openingCause ).ensuring( finalizerProgram ) )
 			.map( ( sourceCursor ) => new StreamCursor(
 				() => sourceCursor.pull(),
 				() => sourceCursor.close().ensuring( finalizerProgram )
@@ -418,14 +502,13 @@ class {
 	 * Supplies a Context or Layer during opening, every pull, and cursor cleanup.
 	 *
 	 * @provisioning Context or Layer supplying local service bindings.
-	 * @return A new Stream.
 	 */
 	Stream function provide( required any provisioning ) {
 		var sourceStream = this;
 		var provided = arguments.provisioning;
 		// Pull and close happen after the opening Effect has restored its Context,
 		// so each cursor operation needs its own provisioning boundary.
-		return new Stream( () => sourceStream._open().provide( provided ).map(
+		return new Stream( () => sourceStream.openCursor().provide( provided ).map(
 			( sourceCursor ) => new StreamCursor(
 				() => sourceCursor.pull().provide( provided ),
 				() => sourceCursor.close().provide( provided )
@@ -435,8 +518,6 @@ class {
 
 	/**
 	 * Describes consumption of all values into an array; execution begins only at an Effect runtime boundary.
-	 *
-	 * @return An Effect yielding the collected array after cursor cleanup.
 	 */
 	Effect function runCollect() {
 		return runWithCursor( ( sourceCursor ) => {
@@ -449,7 +530,6 @@ class {
 	 * Describes sequential effectful consumption with cursor cleanup on every outcome.
 	 *
 	 * @handler Callback receiving each value and returning an Effect; handler results are discarded.
-	 * @return An Effect yielding null.
 	 */
 	Effect function runForEach( required function handler ) {
 		var consumeValue = arguments.handler;
@@ -461,7 +541,6 @@ class {
 	 *
 	 * @initial Initial reduction accumulator.
 	 * @reducer Synchronous callback receiving accumulator and value and returning the next accumulator.
-	 * @return An Effect yielding the final accumulator.
 	 */
 	Effect function runFold( any initial, required function reducer ) {
 		var initialValue = arguments.initial;
@@ -474,8 +553,6 @@ class {
 
 	/**
 	 * Describes consumption of all values while discarding the output.
-	 *
-	 * @return An Effect yielding null after cursor cleanup.
 	 */
 	Effect function runDrain() {
 		return runForEach( ( ignored ) => Effect::succeed( null ) );
@@ -483,46 +560,62 @@ class {
 
 	/**
 	 * Builds a runtime-private fresh-cursor acquisition Effect.
-	 *
-	 * @return An Effect yielding a new StreamCursor.
 	 */
-	Effect function _open() {
+	Effect function openCursor() {
 		return Effect::suspend( () => variables.opener() );
 	}
 
 	/**
-	 * Reads normalized concatenation leaves without exposing the stored array.
-	 *
-	 * @return A copied leaf array, or an array containing this Stream.
+	 * Reads immediate concatenation children without exposing the stored array.
 	 */
-	array function _concatParts() {
-		if ( variables.concatParts.len() == 0 ) {
-			return [ this ];
-		}
+	array function concatChildren() {
 		return copyArray( variables.concatParts );
 	}
 
 	/**
 	 * Stores private construction metadata on a newly created concatenation.
 	 *
-	 * @parts Ordered normalized Stream leaves for sequential concatenation.
-	 * @return This Stream; only internal construction may call this mutator.
+	 * @parts Ordered immediate children for sequential concatenation.
 	 */
-	Stream function _rememberConcatParts( required array parts ) {
+	Stream function rememberConcatChildren( required array parts ) {
 		variables.concatParts = copyArray( arguments.parts );
 		return this;
+	}
+
+	/**
+	 * Flattens a concatenation graph iteratively without opening any source.
+	 *
+	 * @parts Immediate child descriptions in encounter order.
+	 */
+	private static array function flattenConcatParts( required array parts ) {
+		var pending = new java.util.ArrayDeque();
+		for ( var index = arguments.parts.len(); index >= 1; index-- ) {
+			pending.addLast( arguments.parts[ index ] );
+		}
+		var leaves = [];
+		while ( !pending.isEmpty() ) {
+			var current = pending.removeLast();
+			var children = current.concatChildren();
+			if ( children.len() == 0 ) {
+				leaves.append( current );
+			} else {
+				for ( var index = children.len(); index >= 1; index-- ) {
+					pending.addLast( children[ index ] );
+				}
+			}
+		}
+		return leaves;
 	}
 
 	/**
 	 * Wraps each newly opened source cursor with a transformation.
 	 *
 	 * @transformation Callback receiving a newly opened cursor and returning its wrapper cursor.
-	 * @return A new Stream.
 	 */
 	private Stream function transformCursor( required function transformation ) {
 		var sourceStream = this;
 		var transform = arguments.transformation;
-		return new Stream( () => sourceStream._open().map( transform ) );
+		return new Stream( () => sourceStream.openCursor().map( transform ) );
 	}
 
 	/**
@@ -530,16 +623,15 @@ class {
 	 *
 	 * @handler Callback receiving the eligible Cause and returning a recovery Stream.
 	 * @predicate Callback receiving a Cause and returning whether it is eligible for recovery.
-	 * @return A new Stream.
 	 */
 	private Stream function recoverWith( required function handler, required function predicate ) {
 		var sourceStream = this;
 		var recoveryHandler = arguments.handler;
 		var shouldRecover = arguments.predicate;
-		return new Stream( () => sourceStream._open().foldCause(
+		return new Stream( () => sourceStream.openCursor().foldCause(
 			( openingCause ) => shouldRecover( openingCause )
-				? Effect::suspend( () => recoveryHandler( openingCause )._open() )
-				: Effect::_halt( openingCause ),
+				? Effect::suspend( () => recoveryHandler( openingCause ).openCursor() )
+				: Effect::haltInstruction( openingCause ),
 			( sourceCursor ) => {
 				var recoveryState = {
 					cursor : sourceCursor,
@@ -557,13 +649,12 @@ class {
 	 * Pairs fresh cursor acquisition with use-boundary release before outer continuations resume.
 	 *
 	 * @consumer Callback receiving a fresh cursor and returning the consumption Effect.
-	 * @return An Effect yielding the consumer result.
 	 */
 	private Effect function runWithCursor( required function consumer ) {
 		// Release belongs to the consumption boundary, not merely the root Scope:
 		// following Effect work and outer recovery must see a closed cursor.
-		return Effect::_acquireUseRelease(
-			_open(), arguments.consumer,
+		return Effect::acquireUseRelease(
+			openCursor(), arguments.consumer,
 			( sourceCursor ) => sourceCursor.close()
 		);
 	}
@@ -573,7 +664,6 @@ class {
 	 *
 	 * @sourceCursor Private cursor belonging to this consumption only.
 	 * @predicate Callback receiving a value and returning whether to retain it.
-	 * @return An Effect yielding the next nonempty batch Attempt or completion.
 	 */
 	private static Effect function filterPull( required any sourceCursor, required function predicate ) {
 		var cursorToPull = arguments.sourceCursor;
@@ -601,7 +691,6 @@ class {
 	 *
 	 * @sourceCursor Private cursor belonging to this consumption only.
 	 * @state Mutable progress state owned by this cursor or consumption only.
-	 * @return An Effect yielding a batch Attempt or completion.
 	 */
 	private static Effect function takePull( required any sourceCursor, required struct state ) {
 		var cursorToPull = arguments.sourceCursor;
@@ -630,7 +719,6 @@ class {
 	 *
 	 * @sourceCursor Private cursor belonging to this consumption only.
 	 * @state Mutable progress state owned by this cursor or consumption only.
-	 * @return An Effect yielding a batch Attempt or completion.
 	 */
 	private static Effect function dropPull( required any sourceCursor, required struct state ) {
 		var cursorToPull = arguments.sourceCursor;
@@ -657,11 +745,10 @@ class {
 	 * Opens only the first normalized leaf and tracks the current cursor.
 	 *
 	 * @parts Ordered normalized Stream leaves for sequential concatenation.
-	 * @return An Effect yielding a concatenating cursor.
 	 */
 	private static Effect function openConcatParts( required array parts ) {
 		var streams = arguments.parts;
-		return streams[ 1 ]._open().map( ( firstCursor ) => {
+		return streams[ 1 ].openCursor().map( ( firstCursor ) => {
 			var concatState = {
 				streams : streams,
 				index : 1,
@@ -680,7 +767,6 @@ class {
 	 * Closes exhausted leaves before lazily opening the next one.
 	 *
 	 * @state Mutable progress state owned by this cursor or consumption only.
-	 * @return An Effect yielding a batch Attempt or completion.
 	 */
 	private static Effect function concatPartsPull( required struct state ) {
 		var stateToUse = arguments.state;
@@ -689,7 +775,7 @@ class {
 				return Effect::succeed( attempt() );
 			}
 			stateToUse.index++;
-			return stateToUse.streams[ stateToUse.index ]._open().flatMap( ( nextCursor ) => {
+			return stateToUse.streams[ stateToUse.index ].openCursor().flatMap( ( nextCursor ) => {
 				stateToUse.current = nextCursor;
 				return Effect::suspend( () => concatPartsPull( stateToUse ) );
 			} );
@@ -711,7 +797,6 @@ class {
 	 *
 	 * @state Mutable progress state owned by this cursor or consumption only.
 	 * @mapper Callback receiving an outer value and returning an inner Stream.
-	 * @return An Effect yielding a batch Attempt or completion.
 	 */
 	private static Effect function flatMapPull( required struct state, required function mapper ) {
 		var stateToUse = arguments.state;
@@ -731,7 +816,7 @@ class {
 		if ( stateToUse.index <= stateToUse.pending.len() ) {
 			var outerValue = stateToUse.pending[ stateToUse.index ];
 			stateToUse.index++;
-			return Effect::suspend( () => mapValue( outerValue )._open() ).flatMap(
+			return Effect::suspend( () => mapValue( outerValue ).openCursor() ).flatMap(
 				( innerCursor ) => {
 					stateToUse.inner = innerCursor;
 					return Effect::suspend( () => flatMapPull( stateToUse, mapValue ) );
@@ -754,7 +839,6 @@ class {
 	 * @state Mutable progress state owned by this cursor or consumption only.
 	 * @handler Callback receiving the eligible Cause and returning a recovery Stream.
 	 * @predicate Callback receiving a Cause and returning whether it is eligible for recovery.
-	 * @return An Effect yielding a recovery batch or propagating failure.
 	 */
 	private static Effect function recoverPull(
 		required struct state,
@@ -766,7 +850,7 @@ class {
 		var shouldRecover = arguments.predicate;
 		return stateToUse.cursor.pull().catchCause( ( pullCause ) => {
 			if ( stateToUse.recovered || !shouldRecover( pullCause ) ) {
-				return Effect::_halt( pullCause );
+				return Effect::haltInstruction( pullCause );
 			}
 			stateToUse.recovered = true;
 			// Claim recovery before opening its replacement so this operator cannot
@@ -776,9 +860,9 @@ class {
 				// A failed release prevents replacement acquisition and retains the
 				// original pull Cause followed by the cleanup Cause.
 				if ( closeExit.isFailure() ) {
-					return Effect::_halt( Cause::sequential( pullCause, closeExit.cause() ) );
+					return Effect::haltInstruction( Cause::sequential( pullCause, closeExit.cause() ) );
 				}
-				return Effect::suspend( () => recoveryHandler( pullCause )._open() ).flatMap(
+				return Effect::suspend( () => recoveryHandler( pullCause ).openCursor() ).flatMap(
 					( recoveryCursor ) => {
 						stateToUse.cursor = recoveryCursor;
 						return recoveryCursor.pull();
@@ -793,7 +877,6 @@ class {
 	 *
 	 * @sourceCursor Private cursor belonging to this consumption only.
 	 * @collected Private array receiving values in encounter order.
-	 * @return An Effect yielding the collected array.
 	 */
 	private static Effect function collectPulls( required any sourceCursor, required array collected ) {
 		var cursorToPull = arguments.sourceCursor;
@@ -814,7 +897,6 @@ class {
 	 *
 	 * @sourceCursor Private cursor belonging to this consumption only.
 	 * @handler Callback receiving each value and returning an Effect; handler results are discarded.
-	 * @return An Effect yielding null at completion.
 	 */
 	private static Effect function consumePulls( required any sourceCursor, required function handler ) {
 		var cursorToPull = arguments.sourceCursor;
@@ -838,7 +920,6 @@ class {
 	 * @sourceCursor Private cursor belonging to this consumption only.
 	 * @state Mutable progress state owned by this cursor or consumption only.
 	 * @reducer Synchronous callback receiving accumulator and value and returning the next accumulator.
-	 * @return An Effect yielding the final accumulator.
 	 */
 	private static Effect function foldPulls(
 		required any sourceCursor,
@@ -867,7 +948,6 @@ class {
 	 * Copies array structure while preserving element references.
 	 *
 	 * @values Input values in encounter order.
-	 * @return A shallow array copy.
 	 */
 	private static array function copyArray( required array values ) {
 		var copied = [];
@@ -882,7 +962,6 @@ class {
 	 *
 	 * @count Non-negative whole number of elements.
 	 * @operation Operation name used in validation or shutdown diagnostics.
-	 * @return No value; invalid input throws InvalidStreamCountException.
 	 */
 	private static void function validateCount( required numeric count, required string operation ) {
 		if ( arguments.count < 0 || arguments.count != int( arguments.count ) ) {

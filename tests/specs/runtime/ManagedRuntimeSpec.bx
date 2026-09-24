@@ -14,6 +14,19 @@ class extends="testbox.system.BaseSpec" {
 	function run() {
 		describe( "ManagedRuntime", () => {
 
+			it( "retains interrupted active-run cleanup before managed-service cleanup", () => {
+				var entered = new java.util.concurrent.CountDownLatch( 1 );
+				var managed = ManagedRuntime::make( Layer::scoped( ServiceTag::of( "managed/FailedRelease" ),
+					Effect::acquireRelease( Effect::succeed( true ), resource => Effect::fail( "service-release" ) ) ) );
+				var fiber = managed.runFork( Effect::sync( () => entered.countDown() )
+					.flatMap( () => Effect::sleep( 10000 ) ).ensuring( Effect::fail( "run-release" ) ) );
+				expect( entered.await( 5, java.util.concurrent.TimeUnit::SECONDS ) ).toBeTrue();
+				var outcome = managed.close();
+				expect( outcome.cause().failures() ).toBe( [ "run-release", "service-release" ] );
+				expect( outcome.cause().isInterrupted() ).toBeFalse();
+				expect( managed.close().cause().failures() ).toBe( [ "run-release", "service-release" ] );
+			} );
+
 			it( "builds lazily once, reuses services, and releases them on close", () => {
 				var builds = 0;
 				var releases = [];

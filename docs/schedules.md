@@ -24,6 +24,11 @@ with `{ _tag: "TimeoutError", duration, unit }` and requests interruption for
 the losing fiber. Delays use the runtime Clock; the default live Clock delegates
 to BoxFuture's native delayed executor.
 
+Live `Clock.now()` measures monotonic milliseconds using `System.nanoTime()`,
+anchored to wall time when that Clock instance is created. Wall-clock adjustments
+do not change recurrence delays. It is an elapsed-time clock, not an authoritative
+timestamp source; use native BoxLang date/time APIs for calendar timestamps.
+
 `spaced( duration )` waits the full duration **after an execution completes**.
 `fixed( duration )` targets recurrence start times at a fixed interval. When an
 execution overruns its next target, the next iteration begins without an

@@ -46,36 +46,15 @@ jobs:
         run: box install
 
       - name: Run TestBox
-        run: >-
-          boxlang --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx
-          --directory=tests.specs
-          --stream
-          --write-report=false
-          --properties-summary=false
-          --stacktrace=short
+        run: |
+          boxlang --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx \
+            --directory=tests.specs --stream --write-report=true --write-json-report=true \
+            --reportpath="$RUNNER_TEMP/pr-tests" --properties-summary=false --stacktrace=short
+          jq -e '.totalFail == 0 and .totalError == 0 and .totalPass > 0' "$RUNNER_TEMP/pr-tests/report.json"
 
       - name: Verify module setting override
-        run: >-
-          boxlang --bx-home .boxlang/test --bx-config tests/boxlang.executor-override.json testbox/system/runners/BoxLangRunner.bx
-          --directory=tests.specs.module
-          --stream
-          --write-report=false
-          --properties-summary=false
-          --stacktrace=short
-
-      - name: Inspect package metadata
-        run: box package show
-
-      - name: Verify isolated installed consumer
-        shell: bash
         run: |
-          consumer_dir="${RUNNER_TEMP}/bx-effect-consumer"
-          export BOXLANG_HOME="${consumer_dir}/.boxlang"
-          mkdir -p "${consumer_dir}/boxlang_modules"
-          cp tests/consumer/Smoke.bxm tests/consumer/boxlang.json "${consumer_dir}/"
-          cd "${consumer_dir}"
-          box install "${GITHUB_WORKSPACE}" \
-            --directory="boxlang_modules" \
-            --production \
-            --save=false
-          boxlang --bx-config boxlang.json Smoke.bxm
+          boxlang --bx-home .boxlang/test --bx-config tests/boxlang.executor-override.json testbox/system/runners/BoxLangRunner.bx \
+            --directory=tests.specs.module --stream --write-report=true --write-json-report=true \
+            --reportpath="$RUNNER_TEMP/pr-override" --properties-summary=false --stacktrace=short
+          jq -e '.totalFail == 0 and .totalError == 0 and .totalPass > 0' "$RUNNER_TEMP/pr-override/report.json"

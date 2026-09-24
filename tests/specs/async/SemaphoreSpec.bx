@@ -20,7 +20,7 @@ class extends="testbox.system.BaseSpec" {
 				var runtime = new EffectRuntime();
 				var outcome = null;
 				try {
-					outcome = runtime._runSyncExitWithContext( permitSource.withPermit(
+					outcome = runtime.runSyncExitWithContext( permitSource.withPermit(
 						Effect::sync( () => continued = true )
 					), Context::empty(), controlState );
 				} finally {

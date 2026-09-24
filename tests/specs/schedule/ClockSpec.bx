@@ -1,4 +1,5 @@
 import models.effect.Effect@bxeffect;
+import models.effect.Clock@bxeffect as LiveClock;
 import models.effect.EffectRuntime@bxeffect;
 import models.effect.Schedule@bxeffect;
 import models.effect.context.ServiceTag@bxeffect;
@@ -10,6 +11,24 @@ class extends="testbox.system.BaseSpec" {
 
 	function run() {
 		describe( "Runtime Clock and TestClock", () => {
+
+			it( "uses positive, nondecreasing milliseconds with elapsed time from the monotonic clock", () => {
+				var clockToUse = new LiveClock();
+				var started = System::nanoTime();
+				var before = clockToUse.now();
+				clockToUse.sleep( 20 ).get( 5000 );
+				var elapsed = clockToUse.now() - before;
+				var nativeElapsed = ( System::nanoTime() - started ) / 1000000;
+				expect( before ).toBeGT( 0 );
+				expect( elapsed ).toBeGTE( 19 );
+				expect( elapsed ).toBeLTE( nativeElapsed + 1 );
+				var previous = clockToUse.now();
+				for ( var index = 1; index <= 100; index++ ) {
+					var current = clockToUse.now();
+					expect( current ).toBeGTE( previous );
+					previous = current;
+				}
+			} );
 
 			it( "honors a live delay through the native delayed executor", () => {
 				var startedAt = System.nanoTime();
@@ -65,11 +84,11 @@ class extends="testbox.system.BaseSpec" {
 						awaitPending( clock, 1 );
 						expect( starts.toArray() ).toBe( [ 0, 35 ] );
 						clock.advance( 10 );
-						expect( fiber._terminationFuture().get( 3000 ).isSuccess() ).toBeTrue();
+						expect( fiber.terminationFuture().get( 3000 ).isSuccess() ).toBeTrue();
 						expect( starts.toArray() ).toBe( [ 0, 35, 45 ] );
 					} finally {
 						fiber.interrupt();
-						fiber._terminationFuture().get( 3000 );
+						fiber.terminationFuture().get( 3000 );
 					}
 				}
 			} );

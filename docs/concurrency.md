@@ -37,6 +37,11 @@ caller-blocking boundary. The async and concurrency benchmarks exercise 64 and
 256 concurrently delayed branches; retain those checks when changing executor
 or async-boundary behavior.
 
+Use `io-tasks` for programs that wait for child work. A bounded executor can
+starve if all its workers wait for children submitted to the same pool.
+An explicitly selected CPU executor suits work that does not wait on that pool;
+it is not a substitute for the default executor for structured I/O workflows.
+
 `runFuture` mirrors `runSync`: an Effect failure completes the native BoxFuture
 exceptionally. `get()` exposes BoxLang's normal execution wrapper around the
 underlying `bxeffect.EffectFailureException`; choose `runFutureExit` when the future
@@ -101,6 +106,16 @@ Effect::forEach( users, ( user, index ) => saveUser( user ), {
 ```
 
 Pass `{ discard: true }` when the work matters but collected values do not.
+The interpreter drops successful branch outputs instead of building a result
+array. Input descriptions are still finite and eager; use Stream for pull-based
+input. Prefer a bounded concurrency limit for large collections: unbounded
+completion selection still traverses the active set.
+
+Failed loser cleanup is retained by `race`, `firstSuccessOf`, and fail-fast
+`all`, in sequence after the primary outcome. A successful winner can therefore
+produce a failure when a loser cannot release its resources. Ordinary loser
+errors and interruption alone do not replace a successful winner. Root shutdown
+also retains cleanup failures from unjoined children; see [resources](resources.md).
 
 ## Deferred
 
@@ -174,6 +189,11 @@ makes room, and an empty `take()` waits for a producer. `poll()` is the
 non-blocking inspection operation: it returns native `Attempt` and, if it
 removes an item, wakes one blocked producer.
 
+Messages must be non-null so a present poll result always identifies a message.
+`offer(null)` constructs lazily but fails with an `InvalidQueueValueException`
+defect when run, without inserting a message or waiting for capacity. Argument
+validation precedes shutdown handling; even a closed queue rejects null this way.
+
 `shutdown()` is lazy and idempotent: the first execution returns `true`; later
 executions return `false`. It wakes blocked producers and consumers. Existing
 buffered items can still be taken after shutdown; once drained, `take()` and
@@ -222,6 +242,11 @@ delivered only to subscriptions active when `publish()` runs; no replay buffer
 is retained for a later subscriber. In a bounded hub, a publish waits when any
 active subscription has reached capacity. Taking from, or unsubscribing, that
 slow subscriber makes room for blocked publishers.
+
+Messages must be non-null. `publish(null)` fails lazily with an
+`InvalidPubSubValueException` defect without delivery or capacity consumption,
+including with no subscribers or after shutdown. This keeps subscription
+`poll(): Attempt<value>` unambiguous.
 
 Subscriptions are explicit application-owned resources. Prefer
 `withSubscription( use )` when the consumer has one Effect lifetime:

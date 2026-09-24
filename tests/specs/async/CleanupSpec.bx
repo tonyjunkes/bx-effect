@@ -1,0 +1,111 @@
+import models.effect.Cause@bxeffect;
+import models.effect.Deferred@bxeffect;
+import models.effect.Effect@bxeffect;
+import models.effect.Queue@bxeffect;
+import models.effect.internal.FiberControl@bxeffect;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+class extends="testbox.system.BaseSpec" {
+	function run() {
+		describe( "Child cleanup outcomes", () => {
+			it( "retains a race loser's expected cleanup failure without its interruption", () => {
+				var ready = Deferred::make();
+				var loser = ready.succeed( true ).flatMap( () => Effect::sleep( 10000 ) )
+					.ensuring( Effect::fail( "release" ) );
+				var outcome = Effect::runSyncExit( Effect::race( [ loser, ready.await().as( "winner" ) ] ) );
+				expect( outcome.cause().failures() ).toBe( [ "release" ] );
+				expect( outcome.cause().isInterrupted() ).toBeFalse();
+			} );
+
+			it( "retains a first-success loser's cleanup defect", () => {
+				var ready = Deferred::make();
+				var loser = ready.succeed( true ).flatMap( () => Effect::sleep( 10000 ) )
+					.ensuring( Effect::die( "release-defect" ) );
+				var outcome = Effect::runSyncExit( Effect::firstSuccessOf( [ loser, ready.await().as( "winner" ) ] ) );
+				expect( outcome.cause().defects() ).toBe( [ "release-defect" ] );
+				expect( outcome.cause().isInterrupted() ).toBeFalse();
+			} );
+
+			it( "appends failed sibling release after the fail-fast primary error", () => {
+				var ready = Deferred::make();
+				var loser = ready.succeed( true ).flatMap( () => Effect::sleep( 10000 ) )
+					.ensuring( Effect::fail( "release" ) );
+				var outcome = Effect::runSyncExit( Effect::all( [ loser, ready.await().flatMap( () => Effect::fail( "primary" ) ) ] ) );
+				expect( outcome.cause().kind() ).toBe( "Sequential" );
+				expect( outcome.cause().failures() ).toBe( [ "primary", "release" ] );
+				expect( outcome.cause().isInterrupted() ).toBeFalse();
+			} );
+
+			it( "retains failed release from an unjoined child at parent shutdown", () => {
+				var ready = Deferred::make();
+				var childProgram = ready.succeed( true ).flatMap( () => Effect::sleep( 10000 ) )
+					.ensuring( Effect::fail( "child-release" ) );
+				var outcome = Effect::runSyncExit( childProgram.fork().flatMap( () => ready.await() ) );
+				expect( outcome.cause().failures() ).toBe( [ "child-release" ] );
+			} );
+
+			it( "does not resurrect recovered cleanup or duplicate accumulated cleanup", () => {
+				var recovered = Effect::succeed( 1 ).ensuring( Effect::fail( "handled" ) ).catchAll( () => Effect::succeed( 2 ) );
+				expect( Effect::runSync( Effect::all( [ recovered ] ) ) ).toBe( [ 2 ] );
+				var combined = Effect::all( [ Effect::succeed( 1 ).ensuring( Effect::fail( "once" ) ), Effect::fail( "business" ) ], { mode: "accumulate" } );
+				expect( Effect::runSyncExit( combined ).cause().failures() ).toBe( [ "once", "business" ] );
+				expect( Effect::runSync( combined.catchCause( () => Effect::succeed( "handled" ) ) ) ).toBe( "handled" );
+			} );
+
+			it( "keeps earlier first-success cleanup while excluding the losing business error", () => {
+				var ready = Deferred::make();
+				var loser = Effect::fail( "business" ).ensuring( ready.succeed( true ).flatMap( () => Effect::fail( "release" ) ) );
+				var outcome = Effect::runSyncExit( Effect::firstSuccessOf( [ loser, ready.await().flatMap( () => Effect::sleep( 5 ) ).as( "winner" ) ] ) );
+				expect( outcome.cause().failures() ).toBe( [ "release" ] );
+			} );
+
+			it( "preserves nested aggregate cleanup once at the outer ownership boundary", () => {
+				var ready = Deferred::make();
+				var inner = Effect::all( [ ready.succeed( true ).flatMap( () => Effect::sleep( 10000 ) ).ensuring( Effect::fail( "inner-release" ) ) ] );
+				var outcome = Effect::runSyncExit( Effect::race( [ inner, ready.await().as( "winner" ) ] ) );
+				expect( outcome.cause().failures() ).toBe( [ "inner-release" ] );
+				expect( outcome.cause().isInterrupted() ).toBeFalse();
+			} );
+
+			it( "keeps instruction cancellation from interrupting cleanup waits", () => {
+				var ready = Deferred::make();
+				var queueSource = Queue::unbounded();
+				var releases = new java.util.concurrent.atomic.AtomicInteger( 0 );
+				var loser = ready.succeed( true ).flatMap( () => queueSource.take() ).ensuring(
+					Effect::sync( () => {
+						java.lang.Thread::sleep( 5 );
+						return releases.incrementAndGet();
+					} )
+				);
+				expect( Effect::runSync( Effect::race( [ loser, ready.await().as( "winner" ) ] ) ) ).toBe( "winner" );
+				expect( releases.get() ).toBe( 1 );
+			} );
+
+			it( "serializes physical interrupt delivery with worker unregistration", () => {
+				var entered = new CountDownLatch( 1 );
+				var proceed = new CountDownLatch( 1 );
+				var clearing = new CountDownLatch( 1 );
+				var cleared = new CountDownLatch( 1 );
+				var control = new FiberControl( "test" );
+				var worker = {
+					interrupt: () => { entered.countDown(); if ( !proceed.await( 5, TimeUnit::SECONDS ) ) { throw( message: "Delivery gate timed out" ); } },
+					equals: ( other ) => false
+				};
+				control.setActiveThread( worker );
+				var cancelling = futureNew( () => control.interrupt() );
+				try {
+					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					var unregistering = futureNew( () => { clearing.countDown(); control.clearActiveThread( worker ); cleared.countDown(); } );
+					expect( clearing.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					expect( cleared.await( 25, TimeUnit::MILLISECONDS ) ).toBeFalse();
+				} finally {
+					proceed.countDown();
+				}
+				cancelling.get( 5000 );
+				unregistering.get( 5000 );
+				expect( cleared.getCount() ).toBe( 0 );
+			} );
+		} );
+	}
+}

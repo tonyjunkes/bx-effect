@@ -40,7 +40,7 @@ class extends="testbox.system.BaseSpec" {
 				} finally {
 					proceed.countDown();
 				}
-				var outcome = fiber._terminationFuture().get( 5000 );
+				var outcome = fiber.terminationFuture().get( 5000 );
 				expect( outcome.cause().kind() ).toBe( "Interrupt" );
 				expect( continued.get() ).toBeFalse();
 				expect( released.toArray() ).toBe( [ "outer:resource", "inner:outer:resource" ] );
@@ -62,7 +62,7 @@ class extends="testbox.system.BaseSpec" {
 				} finally {
 					proceed.countDown();
 				}
-				var outcome = fiber._terminationFuture().get( 5000 );
+				var outcome = fiber.terminationFuture().get( 5000 );
 				expect( outcome.cause().kind() ).toBe( "Sequential" );
 				expect( outcome.cause().left().kind() ).toBe( "Interrupt" );
 				expect( outcome.cause().right().error() ).toBe( "release-failed" );
@@ -81,7 +81,7 @@ class extends="testbox.system.BaseSpec" {
 				} finally {
 					fiber.interrupt();
 				}
-				expect( fiber._terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
+				expect( fiber.terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
 				expect( pending.isCancelled() ).toBeTrue();
 				expect( releases.get() ).toBe( 0 );
 			} );
@@ -91,7 +91,7 @@ class extends="testbox.system.BaseSpec" {
 				activeScope.close();
 				var releases = 0;
 				var runtime = new EffectRuntime();
-				var outcome = runtime._runSyncExitWithContext( Effect::acquireRelease(
+				var outcome = runtime.runSyncExitWithContext( Effect::acquireRelease(
 					Effect::succeed( "resource" ),
 					( resource ) => Effect::sync( () => releases++ )
 				), Context::empty(), null, activeScope );
@@ -119,7 +119,7 @@ class extends="testbox.system.BaseSpec" {
 				} finally {
 					proceed.countDown();
 				}
-				expect( fiber._terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
+				expect( fiber.terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
 				expect( releases.get() ).toBe( 1 );
 			} );
 		} );

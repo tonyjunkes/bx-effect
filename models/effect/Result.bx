@@ -16,7 +16,6 @@ class {
 	 *
 	 * @resultKind Internal Success or Failure discriminator.
 	 * @resultValue Success value or expected error payload.
-	 * @return This Result.
 	 */
 	Result function init( required string resultKind, any resultValue ) {
 		variables.resultKind = arguments.resultKind;
@@ -30,7 +29,6 @@ class {
 	 * Wraps a success value without executing work.
 	 *
 	 * @value Value carried by this operation; may be null.
-	 * @return A successful Result.
 	 */
 	static Result function success( any value ) {
 		return new Result( resultKind: "Success", resultValue: arguments.value );
@@ -40,7 +38,6 @@ class {
 	 * Wraps an expected error without a Cause tree.
 	 *
 	 * @error Expected application error value.
-	 * @return A failed Result.
 	 */
 	static Result function failure( required any error ) {
 		return new Result( resultKind: "Failure", resultValue: arguments.error );
@@ -51,7 +48,6 @@ class {
 	 *
 	 * @valueAttempt Native Attempt representing presence or absence.
 	 * @onEmpty Zero-argument callback producing the expected error when the Attempt is empty.
-	 * @return A success for presence or expected failure for absence.
 	 */
 	static Result function fromAttempt( required any valueAttempt, required function onEmpty ) {
 		return arguments.valueAttempt.isPresent()
@@ -61,8 +57,6 @@ class {
 
 	/**
 	 * Tests the Result branch.
-	 *
-	 * @return Whether this Result is successful.
 	 */
 	boolean function isSuccess() {
 		return variables.resultKind == "Success";
@@ -70,8 +64,6 @@ class {
 
 	/**
 	 * Tests the Result branch.
-	 *
-	 * @return Whether this Result is an expected failure.
 	 */
 	boolean function isFailure() {
 		return variables.resultKind == "Failure";
@@ -79,8 +71,6 @@ class {
 
 	/**
 	 * Reads the success branch.
-	 *
-	 * @return The success value, or null on failure.
 	 */
 	any function value() {
 		return isSuccess() ? variables.resultValue : null;
@@ -88,8 +78,6 @@ class {
 
 	/**
 	 * Reads the failure branch.
-	 *
-	 * @return The expected error, or null on success.
 	 */
 	any function error() {
 		return isFailure() ? variables.resultValue : null;
@@ -99,7 +87,6 @@ class {
 	 * Transforms success immediately; callback exceptions propagate to the caller.
 	 *
 	 * @mapper Callback receiving a success value and returning its replacement.
-	 * @return A mapped Result, or this failure unchanged.
 	 */
 	Result function map( required function mapper ) {
 		return isFailure()
@@ -111,7 +98,6 @@ class {
 	 * Chains a Result-producing callback immediately on success.
 	 *
 	 * @mapper Callback receiving a success value and returning the next Result.
-	 * @return The callback Result, or this failure unchanged.
 	 */
 	any function flatMap( required function mapper ) {
 		return isFailure() ? this : arguments.mapper( variables.resultValue );
@@ -121,7 +107,6 @@ class {
 	 * Transforms the expected error immediately; callback exceptions propagate.
 	 *
 	 * @mapper Callback receiving a single expected error and returning its replacement.
-	 * @return A mapped failure, or this success unchanged.
 	 */
 	Result function mapError( required function mapper ) {
 		return isSuccess()
@@ -134,7 +119,6 @@ class {
 	 *
 	 * @onSuccess Callback receiving the success value.
 	 * @onFailure Callback receiving the expected error.
-	 * @return The selected handler result.
 	 */
 	any function match( required function onSuccess, required function onFailure ) {
 		return isSuccess()
@@ -144,8 +128,6 @@ class {
 
 	/**
 	 * Converts success to native presence and discards failure information.
-	 *
-	 * @return A native Attempt.
 	 */
 	Attempt function toAttempt() {
 		return isSuccess() ? attempt( variables.resultValue ) : attempt();

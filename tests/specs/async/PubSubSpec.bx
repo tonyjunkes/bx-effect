@@ -6,6 +6,28 @@ class extends="testbox.system.BaseSpec" {
 	function run() {
 		describe( "PubSub", () => {
 
+			it( "rejects null lazily without publishing or occupying subscriber capacity", () => {
+				var hub = PubSub::bounded( 1 );
+				expect( Effect::runSyncExit( hub.publish( null ) ).cause().kind() ).toBe( "Die" );
+				var first = Effect::runSync( hub.subscribe() );
+				var second = Effect::runSync( hub.subscribe() );
+				var invalid = hub.publish( null );
+				expect( first.poll().isPresent() ).toBeFalse();
+				var outcome = Effect::runSyncExit( invalid );
+				expect( outcome.cause().kind() ).toBe( "Die" );
+				expect( outcome.cause().defect().type ).toBe( "bxeffect.InvalidPubSubValueException" );
+				Effect::runSync( hub.publish( "first" ) );
+				var producer = Effect::runFork( hub.publish( "second" ) );
+				expect( first.poll().get() ).toBe( "first" );
+				expect( second.poll().get() ).toBe( "first" );
+				producer.terminationFuture().get( 5000 );
+				expect( first.poll().get() ).toBe( "second" );
+				expect( second.poll().get() ).toBe( "second" );
+				Effect::runSync( hub.shutdown() );
+				expect( Effect::runSyncExit( invalid ).cause().kind() ).toBe( "Die" );
+				expect( first.poll().isPresent() ).toBeFalse();
+			} );
+
 			it( "subscribes lazily and broadcasts only to subscriptions active at publication", () => {
 				var pubSubSource = PubSub::unbounded();
 				var lazySubscription = pubSubSource.subscribe();

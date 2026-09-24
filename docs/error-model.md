@@ -15,6 +15,14 @@ sequential/parallel composition. `Cause::mapFailures( mapper )` transforms
 only expected errors and preserves the original defect/interruption tree.
 `Exit` is either a success value or a Cause.
 
+`Effect::fromExit(outcome)` lifts either Exit branch losslessly.
+`Effect::failCause(failureCause)` re-emits a complete Cause from `catchCause`
+without rebuilding it. `Effect::die(defect)` explicitly describes a defect.
+`catchTags({ NotFound: handler, Unavailable: handler })` copies its handler
+table at construction and invokes only the matching expected-error handler
+at execution. Keys use BoxLang's native case-insensitive struct lookup.
+Unmatched errors, defects, and interruption keep their channels.
+
 Native `Attempt` remains the right type for presence/absence. Convert it with
 `Effect::fromAttempt( value, onEmpty )`; do not use it to model defect detail.
 
@@ -31,6 +39,10 @@ Resolving an unprovided `ServiceTag` is a defect, not an expected error. The
 `bxeffect.context.MissingServiceException` detail contains `requestedTag` and sorted
 `availableTags` values so callers can diagnose incorrect Context/Layer wiring.
 
+ServiceTag equality and hashing use native BoxLang keys, matching Context
+lookup (including case-insensitive names and integer-key normalization).
+`key()` preserves the supplied spelling for diagnostics.
+
 ## Exception naming
 
 Library-thrown custom exception types use
@@ -41,6 +53,7 @@ Namespaces describe stable public areas rather than mirroring every directory.
 | Area | Examples |
 | --- | --- |
 | Core and shared exceptions | `bxeffect.InvalidDeferredOutcomeException`, `bxeffect.EffectFailureException`, `bxeffect.ScopeClosedException` |
+| Invalid messages | `bxeffect.InvalidQueueValueException`, `bxeffect.InvalidPubSubValueException` for null writes, raised lazily as defects |
 | Context and service tags | `bxeffect.context.MissingServiceException`, `bxeffect.context.InvalidServiceTagException` |
 | Observability | `bxeffect.observability.InvalidLoggingObserverLevelException`, `bxeffect.observability.InvalidLoggingObserverTargetException` |
 
