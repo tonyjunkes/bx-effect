@@ -282,7 +282,7 @@ class {
 						break;
 					}
 					if ( successFrame.kind == "CloseLocalScope" ) {
-						var localExit = closeLocalScope( Exit::success( current.value ), runtimeScope, arguments.controlState );
+						var localExit = closeLocalScope( Exit::success( current.value ), runtimeScope, arguments.controlState, interruptionObserved );
 						runtimeScope = successFrame.scope;
 						runtimeLayerMemo = successFrame.layerMemo;
 						current = localExit.isSuccess()
@@ -436,7 +436,7 @@ class {
 							continue;
 						}
 						if ( failureFrame.kind == "CloseLocalScope" ) {
-							var failedLocalExit = closeLocalScope( Exit::failure( current.cause ), runtimeScope, arguments.controlState );
+							var failedLocalExit = closeLocalScope( Exit::failure( current.cause ), runtimeScope, arguments.controlState, interruptionObserved );
 							runtimeScope = failureFrame.scope;
 							runtimeLayerMemo = failureFrame.layerMemo;
 							current = haltInstruction( failedLocalExit.cause() );
@@ -1176,10 +1176,16 @@ class {
 	 * @initialExit Outcome entering the local cleanup boundary.
 	 * @activeScope Local Scope to finish before restoring parent ownership.
 	 * @controlState Optional Fiber control whose pending interruption must retain cleanup failures.
+	 * @interruptionObserved Whether the interpreter already delivered this Fiber's interruption to user code.
 	 */
-	private any function closeLocalScope( required any initialExit, required Scope activeScope, any controlState = null ) {
+	private any function closeLocalScope(
+		required any initialExit,
+		required Scope activeScope,
+		any controlState = null,
+		boolean interruptionObserved = false
+	) {
 		var completedExit = closeOwnedScope( arguments.initialExit, arguments.activeScope, arguments.controlState );
-		if ( completedExit.isFailure() && !isNull( arguments.controlState )
+		if ( !arguments.interruptionObserved && completedExit.isFailure() && !isNull( arguments.controlState )
 			&& arguments.controlState.isInterrupted() && !completedExit.cause().isInterrupted() ) {
 			return Exit::failure( Cause::sequential( Cause::interrupt( arguments.controlState.fiberId() ), completedExit.cause() ) );
 		}

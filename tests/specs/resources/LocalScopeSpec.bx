@@ -7,6 +7,8 @@ import models.effect.Stream@bxeffect;
 import models.effect.context.Context@bxeffect;
 import models.effect.context.Layer@bxeffect;
 import models.effect.context.ServiceTag@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
+import tests.resources.AsyncTestSupport;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -203,6 +205,30 @@ class extends="testbox.system.BaseSpec" {
 				expect( outcome.cause().isInterrupted() ).toBeTrue();
 				expect( outcome.cause().failures() ).toBe( [ "cleanup" ] );
 				expect( followed.get() ).toBe( 0 );
+			} );
+
+			it( "does not resurrect an interruption recovered inside the local body", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var program = Effect::scoped( Effect::sleep( 100 ).catchCause( ( failureCause ) => Effect::fail( "replacement" ) ) )
+					.catchAll( ( error ) => Effect::succeed( error ) );
+				var rootFiber = runtime.runFork( program );
+				try { AsyncTestSupport::awaitCondition( () => clock.pendingCount() == 1 ); }
+				finally { rootFiber.interrupt(); }
+				expect( rootFiber.terminationFuture().get( 5000 ).value() ).toBe( "replacement" );
+			} );
+
+			it( "keeps failed cleanup recoverable after an inner interruption recovery", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var program = Effect::scoped( Effect::acquireRelease( Effect::succeed( "resource" ), ( value ) => Effect::fail( "cleanup" ) )
+					.flatMap( ( ignored ) => Effect::sleep( 100 ).catchCause( ( failureCause ) => Effect::succeed( "recovered" ) ) ) )
+					.catchAll( ( error ) => Effect::succeed( error ) );
+				var rootFiber = runtime.runFork( program );
+				try { AsyncTestSupport::awaitCondition( () => clock.pendingCount() == 1 ); }
+				finally { rootFiber.interrupt(); }
+				expect( rootFiber.terminationFuture().get( 5000 ).value() ).toBe( "cleanup" );
+				expect( rootFiber.hasCleanupFailure() ).toBeFalse();
 			} );
 
 			it( "isolates local Layer builds, shares them with children, and restores the root memo", () => {
