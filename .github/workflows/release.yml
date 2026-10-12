@@ -48,9 +48,7 @@ jobs:
 
       - name: Verify release automation
         if: matrix.boxlang-version == 'latest'
-        run: |
-          python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
-          python3 tests/ci/release_workflow_test.py
+        run: bash tests/ci/release-workflow-test.sh
 
       - name: Run TestBox
         run: |
