@@ -1,10 +1,13 @@
 # BX Effect: Post-1.1 Review and Development Roadmap
 
-Working specification extracted from the [shared conversation](https://chatgpt.com/share/6accf255-4d70-83e9-8b19-d2c3f4184a09)
-and its [linked full review](https://chatgpt.com/s/t_6acc6750da6c819191ae5dcf7aace431).
-The review inspected 1.1.0 source but did not run TestBox or benchmarks. Treat
-performance concerns as hypotheses until measured locally. Claims about other
-projects' release versions are background, not implementation requirements.
+This version-controlled specification captures the post-1.1 review and agreed
+implementation scope. The requirements, deferred work, and constraints are
+recorded below, so the roadmap can be used independently of the original
+conversation.
+
+The initial review inspected 1.1.0 source but did not run TestBox or benchmarks.
+Treat performance concerns as hypotheses until validated against the repository;
+the linked validation record below contains the measured implementation evidence.
 
 ## Immediate implementation scope
 
