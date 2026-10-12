@@ -44,7 +44,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.run_command("git", "init", "--quiet", "--initial-branch=main", str(self.directory))
         self.run_command("git", "config", "user.name", "Release test")
         self.run_command("git", "config", "user.email", "release-test@example.invalid")
-        (self.directory / "box.json").write_text('{"version":"1.2.0"}\n')
+        (self.directory / "box.json").write_text('{"version":"1.2.0","slug":"bx-effect"}\n')
         (self.directory / "ModuleConfig.bx").write_text('this.version = "1.2.0";\n')
         self.run_command("git", "add", ".")
         self.run_command("git", "commit", "--quiet", "-m", "Release fixture")
@@ -59,6 +59,16 @@ class ReleaseWorkflowTest(unittest.TestCase):
                         '[[ "${GH_FAIL:-0}" == 0 ]] || exit 1\n'
                         'printf "%s\\n" "$TEST_RELEASES"\n', newline="\n")
         stub.chmod(0o755)
+        box_stub = self.bin / "box"
+        box_stub.write_text('#!/usr/bin/env bash\nset -euo pipefail\n'
+                            'if [[ "$*" == "forgebox show slug=bx-effect --json" ]]; then\n'
+                            '  [[ "${FORGEBOX_FAIL:-0}" == 0 ]] || exit 1\n'
+                            '  printf "%s\\n" "$TEST_FORGEBOX_ENTRY"\n'
+                            'else\n'
+                            '  [[ "$*" == "forgebox publish" ]]\n'
+                            '  printf "%s\\n" "$*" >> "$TEST_PUBLISH_LOG"\n'
+                            'fi\n', newline="\n")
+        box_stub.chmod(0o755)
 
     def run_command(self, *args):
         return subprocess.run(args, cwd=getattr(self, "directory", ROOT), text=True,
@@ -170,6 +180,40 @@ class ReleaseWorkflowTest(unittest.TestCase):
         result, values = self.decision(github_failure=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("publish", values)
+
+    def forgebox_publish(self, entry, query_failure=False):
+        step = next(step for step in WORKFLOW["jobs"]["publish"]["steps"]
+                    if step["name"] == "Publish to ForgeBox")
+        script = self.directory / "publish.sh"
+        script.write_text(step["run"], newline="\n")
+        log = self.directory / "publish.log"
+        env = dict(os.environ, VERSION="1.2.0", RUNNER_TEMP=self.directory.as_posix(),
+                   TEST_FORGEBOX_ENTRY=json.dumps(entry), FORGEBOX_FAIL=str(int(query_failure)),
+                   TEST_PUBLISH_LOG=log.as_posix())
+        env["PATH"] = str(self.bin) + os.pathsep + env["PATH"]
+        result = subprocess.run([BASH, "-e", "-o", "pipefail", script.as_posix()],
+                                cwd=self.directory, env=env, capture_output=True, text=True)
+        return result, log.read_text() if log.exists() else ""
+
+    def test_unpublished_forgebox_version_is_published_without_force(self):
+        result, log = self.forgebox_publish({"versions": [{"version": "1.1.0"}]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log, "forgebox publish\n")
+
+    def test_retry_after_forgebox_success_does_not_republish(self):
+        result, log = self.forgebox_publish({"versions": [{"version": "1.2.0"}]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log, "")
+
+    def test_forgebox_query_failure_prevents_publication(self):
+        result, log = self.forgebox_publish({"versions": []}, query_failure=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(log, "")
+
+    def test_malformed_forgebox_response_prevents_publication(self):
+        result, log = self.forgebox_publish({"error": "unavailable"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(log, "")
 
 
 if __name__ == "__main__":

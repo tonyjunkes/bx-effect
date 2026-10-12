@@ -181,8 +181,17 @@ jobs:
 
       - name: Publish to ForgeBox
         if: steps.release.outputs.publish == 'true'
-        # Allows an interrupted publish to retry the same tagged commit.
-        run: box forgebox publish --force
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          SLUG="$(jq -er '.slug | select(type == "string" and length > 0)' box.json)"
+          box forgebox show slug="$SLUG" --json > "$RUNNER_TEMP/forgebox-entry.json"
+          jq -e '.versions | type == "array"' "$RUNNER_TEMP/forgebox-entry.json" >/dev/null
+          if jq -e --arg version "$VERSION" 'any(.versions[]; .version == $version)' "$RUNNER_TEMP/forgebox-entry.json" >/dev/null; then
+            echo "ForgeBox version $VERSION already exists; continuing without republishing."
+          else
+            box forgebox publish
+          fi
 
       - name: Create GitHub release
         if: steps.release.outputs.publish == 'true'
