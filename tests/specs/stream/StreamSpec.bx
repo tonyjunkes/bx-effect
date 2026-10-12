@@ -118,8 +118,7 @@ class extends="testbox.system.BaseSpec" {
 
 				expect( Effect::runSync( sourceFlow.runCollect() ) ).toBe( [ 1, 10, 2, 20, 3, 30 ] );
 				expect( order ).toBe( [
-					"map:1", "map:2", "map:3",
-					"tap:1", "tap:10", "tap:2", "tap:20", "tap:3", "tap:30"
+					"map:1", "tap:1", "tap:10", "map:2", "tap:2", "tap:20", "map:3", "tap:3", "tap:30"
 				] );
 			} );
 

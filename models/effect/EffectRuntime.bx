@@ -708,6 +708,13 @@ class {
 					}
 					break;
 
+				case "ForEach":
+					current = sequentialForEach(
+						current.values, current.mapper, current.options,
+						{ index: 1, values: [], failureCause: null }, arguments.controlState
+					).instructionNode();
+					break;
+
 				case "All":
 					try {
 						var allResult = awaitAll(
@@ -1238,6 +1245,55 @@ class {
 	}
 
 	/**
+	 * Advances one sequential mapper in the current interpreter without scheduling a child Fiber.
+	 *
+	 * @values Immutable input snapshot in encounter order.
+	 * @mapper Callback receiving value and one-based index and returning an Effect.
+	 * @options Validated failure mode and discard settings.
+	 * @state Progress private to this execution; each continuation is suspended for stack safety.
+	 * @controlState Runtime-private Fiber cancellation state; null for synchronous root runs.
+	 */
+	private Effect function sequentialForEach(
+		required array values,
+		required function mapper,
+		required struct options,
+		required struct state,
+		any controlState = null
+	) {
+		var inputs = arguments.values;
+		var mapValue = arguments.mapper;
+		var settings = arguments.options;
+		var progress = arguments.state;
+		var controlToUse = arguments.controlState;
+		if ( !isNull( controlToUse ) && controlToUse.isInterrupted() ) {
+			return Effect::haltInstruction( !isNull( progress.failureCause ) && progress.failureCause.isInterrupted()
+				? progress.failureCause : Cause::interrupt( controlToUse.fiberId() ) );
+		}
+		if ( progress.index > inputs.len() ) {
+			return !isNull( progress.failureCause )
+				? Effect::haltInstruction( progress.failureCause )
+				: Effect::succeed( settings.discard ? null : progress.values );
+		}
+		var inputIndex = progress.index++;
+		var itemProgram = Effect::suspend( () => mapValue( inputs[ inputIndex ], inputIndex ) );
+		if ( settings.mode == "failFast" ) {
+			return itemProgram.flatMap( ( value ) => {
+				if ( !settings.discard ) { progress.values.append( value ); }
+				return Effect::suspend( () => sequentialForEach( inputs, mapValue, settings, progress, controlToUse ) );
+			} );
+		}
+		return itemProgram.exit().flatMap( ( itemExit ) => {
+			if ( itemExit.isFailure() ) {
+				progress.failureCause = isNull( progress.failureCause )
+					? itemExit.cause() : Cause::parallel( progress.failureCause, itemExit.cause() );
+			} else if ( !settings.discard ) {
+				progress.values.append( itemExit.value() );
+			}
+			return Effect::suspend( () => sequentialForEach( inputs, mapValue, settings, progress, controlToUse ) );
+		} );
+	}
+
+	/**
 	 * Maintains a bounded set of children and collects outcomes by input index.
 	 *
 	 * @programs Child Effects in input order.
@@ -1264,28 +1320,38 @@ class {
 			? arguments.programs.len()
 			: arguments.options.concurrency;
 		var nextIndex = 1;
-		var running = [];
+		var running = structNew( "ordered" );
+		var completions = {
+			lock: new java.util.concurrent.locks.ReentrantLock(),
+			queue: new ArrayDeque(),
+			signal: futureNew()
+		};
 		var exitsByIndex = {};
 
-		while ( nextIndex <= arguments.programs.len() && running.len() < concurrencyLimit ) {
-			running.append( startIndexedChild(
+		while ( nextIndex <= arguments.programs.len() && running.count() < concurrencyLimit ) {
+			var admitted = startIndexedChild(
 				arguments.programs[ nextIndex ],
 				nextIndex,
 				arguments.inheritedContext,
 				arguments.parentScope,
 				arguments.sharedLayerMemo
-			) );
+			);
+			running[ nextIndex ] = admitted;
+			admitted.completion.then( ( result ) => publishCompletion( completions, result ) );
 			nextIndex++;
 		}
 
-		while ( running.len() > 0 ) {
-			var completedResult = awaitOne( awaitIndexedFactories( running ), arguments.controlState );
+		while ( running.count() > 0 ) {
+			if ( !isNull( arguments.controlState ) && arguments.controlState.isInterrupted() ) {
+				return { isSuccess: false, cause: Cause::interrupt( arguments.controlState.fiberId() ) };
+			}
+			var completedResult = awaitCompletion( completions, arguments.controlState );
 			var completedExit = completedResult.exit;
 			observeChildCleanup( completedResult.fiber, arguments.controlState );
-			running = removeIndexedFiber( running, completedResult.fiberId );
+			structDelete( running, completedResult.index );
 
 			if ( completedExit.isFailure() && arguments.options.mode == "failFast" ) {
-				var failedExit = appendCleanup( completedExit, interruptIndexedFibers( running ), arguments.controlState );
+				var failedExit = appendCleanup( completedExit, interruptIndexedFibers( running.valueArray() ), arguments.controlState );
 				return { isSuccess: false, cause: failedExit.cause() };
 			}
 
@@ -1293,13 +1359,15 @@ class {
 				exitsByIndex[ completedResult.index ] = completedExit;
 			}
 			if ( nextIndex <= arguments.programs.len() ) {
-				running.append( startIndexedChild(
+				var admitted = startIndexedChild(
 					arguments.programs[ nextIndex ],
 					nextIndex,
 					arguments.inheritedContext,
 					arguments.parentScope,
 					arguments.sharedLayerMemo
-				) );
+				);
+				running[ nextIndex ] = admitted;
+				admitted.completion.then( ( result ) => publishCompletion( completions, result ) );
 				nextIndex++;
 			}
 		}
@@ -1325,6 +1393,59 @@ class {
 			values.append( exitsByIndex[ index ].value() );
 		}
 		return { isSuccess: true, values: values };
+	}
+
+	/**
+	 * Publishes a native future completion and wakes the current collection waiter outside the lock.
+	 *
+	 * @state Queue and wakeup state private to one all operation.
+	 * @result Indexed child outcome supplied by the native BoxFuture callback.
+	 */
+	private any function publishCompletion( required struct state, required struct result ) {
+		var wakeup = null;
+		arguments.state.lock.lock();
+		try {
+			arguments.state.queue.addLast( arguments.result );
+			wakeup = arguments.state.signal;
+		} finally {
+			arguments.state.lock.unlock();
+		}
+		wakeup.complete( null );
+		return null;
+	}
+
+	/**
+	 * Drains one completed child, waiting on a cancelable BoxFuture only when the queue is empty.
+	 *
+	 * @state Queue and wakeup state private to one all operation.
+	 * @controlState Optional FiberControl tracking cancellation of the native wait.
+	 */
+	private struct function awaitCompletion( required struct state, any controlState = null ) {
+		while ( true ) {
+			var wakeup = null;
+			arguments.state.lock.lock();
+			try {
+				if ( !arguments.state.queue.isEmpty() ) {
+					return arguments.state.queue.removeFirst();
+				}
+				// Installation and the empty check share the producer lock: a
+				// completion cannot be lost between checking and starting the wait.
+				arguments.state.signal = futureNew();
+				wakeup = arguments.state.signal;
+			} finally {
+				arguments.state.lock.unlock();
+			}
+			if ( !isNull( arguments.controlState ) ) {
+				arguments.controlState.setActiveFuture( wakeup );
+			}
+			try {
+				wakeup.get();
+			} finally {
+				if ( !isNull( arguments.controlState ) ) {
+					arguments.controlState.clearActiveFuture( wakeup );
+				}
+			}
+		}
 	}
 
 	/**

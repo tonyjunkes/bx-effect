@@ -47,6 +47,16 @@ exceptionally. `get()` exposes BoxLang's normal execution wrapper around the
 underlying `bxeffect.EffectFailureException`; choose `runFutureExit` when the future
 should resolve to an `Exit` for both outcomes.
 
+Sequential `forEach` (the default, or `concurrency: 1`) advances each item in
+the current iterative interpreter. It creates each mapper's Effect on demand,
+preserves Context restoration and finalizers, and checks Fiber cancellation
+before starting another item. It does not create a child Fiber per item;
+synchronous user callbacks execute on the thread interpreting the collection.
+Use concurrent options when separate child Fibers are needed. `all` retains
+its child-Fiber execution model even at concurrency 1. Concurrent `all` and
+`forEach` use operation-local native completion notifications; input order
+still determines results and accumulated Causes.
+
 Use `Effect::all`, `race`, or `firstSuccessOf` for concurrent programs. Branches
 inherit the caller's Context and are owned by its Scope. Cancellation is
 best-effort because BoxFuture executors cannot forcibly stop arbitrary user

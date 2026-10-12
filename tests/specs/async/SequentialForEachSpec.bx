@@ -1,0 +1,73 @@
+import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
+import tests.resources.AsyncTestSupport;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Sequential forEach execution", () => {
+			it( "snapshots inputs and keeps independent state for repeated runs", () => {
+				var values = [ 1, 2 ];
+				var program = Effect::forEach( values, ( value, index ) => Effect::succeed( value * index ) );
+				values.append( 3 );
+				expect( Effect::runSync( program ) ).toBe( [ 1, 4 ] );
+				expect( Effect::runSync( program ) ).toBe( [ 1, 4 ] );
+			} );
+
+			it( "restores Context between items and releases use resources before advancing", () => {
+				var tag = ServiceTag::of( "sequential/context" );
+				var order = [];
+				var program = Effect::forEach( [ 1, 2 ], ( value, index ) =>
+					Effect::acquireUseRelease( Effect::succeed( value ),
+						( resource ) => Effect::service( tag ).tap( ( service ) =>
+							Effect::sync( () => order.append( "use:#resource#:#service#" ) ) ),
+						( resource ) => Effect::sync( () => order.append( "release:#resource#" ) )
+					).provideService( tag, "item-#value#" )
+				).flatMap( ( result ) => Effect::service( tag ).map( ( service ) => [ result, service ] ) )
+					.provideService( tag, "outer" );
+				expect( Effect::runSync( program ) ).toBe( [ [ "item-1", "item-2" ], "outer" ] );
+				expect( order ).toBe( [ "use:1:item-1", "release:1", "use:2:item-2", "release:2" ] );
+			} );
+
+			it( "accumulates mapper failures, defects, and cleanup Causes in input order", () => {
+				var outcome = Effect::runSyncExit( Effect::forEach( [ 1, 2, 3 ], ( value, index ) => {
+					if ( value == 2 ) { throw( type: "bxeffect.testing.MapperException", message: "mapper" ); }
+					return Effect::fail( value ).ensuring( Effect::fail( "cleanup-#value#" ) );
+				}, { mode: "accumulate", discard: true } ) );
+				expect( outcome.cause().kind() ).toBe( "Parallel" );
+				expect( outcome.cause().failures() ).toBe( [ 1, "cleanup-1", 3, "cleanup-3" ] );
+				expect( outcome.cause().defects().len() ).toBe( 1 );
+				expect( outcome.cause().isInterrupted() ).toBeFalse();
+			} );
+
+			it( "interrupts a wait without starting another mapper and retains failed cleanup", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var mapped = new java.util.concurrent.atomic.AtomicInteger();
+				var released = new java.util.concurrent.atomic.AtomicInteger();
+				var fiber = runtime.runFork( Effect::forEach( [ 1, 2 ], ( value, index ) => {
+					mapped.incrementAndGet();
+					return Effect::sleep( 10 ).ensuring(
+						Effect::sync( () => released.incrementAndGet() ).flatMap( () => Effect::fail( "cleanup" ) )
+					);
+				}, { mode: "accumulate" } ) );
+				try {
+					AsyncTestSupport::awaitCondition( () => clock.pendingCount() == 1 );
+					fiber.interrupt();
+					var outcome = fiber.terminationFuture().get( 3000 );
+					expect( outcome.cause().isInterrupted() ).toBeTrue();
+					expect( outcome.cause().isDefect() ).toBeFalse();
+					expect( outcome.cause().failures() ).toBe( [ "cleanup" ] );
+					expect( mapped.get() ).toBe( 1 );
+					expect( released.get() ).toBe( 1 );
+				} finally {
+					fiber.interrupt();
+					fiber.terminationFuture().get( 3000 );
+				}
+			} );
+		} );
+	}
+
+}

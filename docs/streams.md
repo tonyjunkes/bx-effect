@@ -21,6 +21,21 @@ Streams use native arrays as pull batches and native `Attempt` for
 end-of-stream. An empty Attempt means normal completion; expected errors,
 defects, and interruption remain in the Effect Cause.
 
+Demand propagates through operators and resource/Context/recovery wrappers.
+`fromArray(users).mapEffect(fetchProfile).take(1)` maps only the first value;
+`filter` examines only enough inputs to find the next match. `takeWhile` must
+inspect its first rejected value, then stops. `grouped(10).take(1)` requests
+only the first ten inputs, and `flatMap` opens one inner Stream at a time.
+An effectful consumer failure stops further upstream transformations.
+
+**Compatibility note:** earlier 1.1.0 array Streams transformed an entire
+source batch before applying downstream limits. Unrequested callbacks, failures,
+and defects now remain unevaluated. Side effects around `flatMap` interleave
+with inner consumption rather than all outer mappings running first. Array
+structure is still snapshotted when `fromArray` is constructed, and each run
+has its own position. Full collection/folding may still process arrays in batches;
+batch size is private and should not be used as an application contract.
+
 ## Stateful and resource-backed sources
 
 `unfoldEffect` produces one value at a time. Its step returns an Effect of empty

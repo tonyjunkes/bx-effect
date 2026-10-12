@@ -12,11 +12,13 @@ class {
 	variables.pullFactory = null;
 	variables.closeFactory = null;
 	variables.closed = new java.util.concurrent.atomic.AtomicBoolean( false );
+	variables.pending = [];
+	variables.pendingIndex = 1;
 
 	/**
 	 * Stores per-consumption pull and close factories with an initially open state.
 	 *
-	 * @pullFactory Zero-argument factory returning an Effect of native Attempt<Array>; empty means completion.
+	 * @pullFactory Factory receiving maximum demand and returning an Effect of native Attempt<Array>; empty means completion.
 	 * @closeFactory Zero-argument cleanup Effect factory; defaults to a successful no-op.
 	 */
 	StreamCursor function init(
@@ -29,23 +31,65 @@ class {
 	}
 
 	/**
-	 * Defers one batch request; a closed cursor completes normally without calling its factory.
+	 * Defers a bounded batch request, retaining oversized source batches for subsequent demand.
+	 *
+	 * @demand Maximum number of values requested by this pull; defaults to the whole available batch.
 	 */
-	Effect function pull() {
-		return Effect::suspend( () => variables.closed.get()
-			? Effect::succeed( attempt() )
-			: variables.pullFactory()
-		);
+	Effect function pull( numeric demand = 2147483647 ) {
+		var requested = arguments.demand;
+		return Effect::suspend( () => {
+			if ( variables.closed.get() || requested <= 0 ) {
+				return Effect::succeed( attempt() );
+			}
+			if ( variables.pendingIndex <= variables.pending.len() ) {
+				return Effect::succeed( emitPending( requested ) );
+			}
+			return variables.pullFactory( requested ).map( ( batchAttempt ) => {
+				if ( !batchAttempt.isPresent() ) {
+					return attempt();
+				}
+				variables.pending = batchAttempt.get();
+				variables.pendingIndex = 1;
+				return emitPending( requested );
+			} );
+		} );
+	}
+
+	/**
+	 * Emits at most the requested count and clears references to an exhausted batch.
+	 *
+	 * @demand Maximum number of values requested by this pull.
+	 */
+	private any function emitPending( required numeric demand ) {
+		var available = variables.pending.len() - variables.pendingIndex + 1;
+		if ( variables.pendingIndex == 1 && available <= arguments.demand ) {
+			var wholeBatch = variables.pending;
+			variables.pending = [];
+			return attempt( wholeBatch );
+		}
+		var emitted = [];
+		var count = min( available, arguments.demand );
+		for ( var index = 1; index <= count; index++ ) {
+			emitted.append( variables.pending[ variables.pendingIndex++ ] );
+		}
+		if ( variables.pendingIndex > variables.pending.len() ) {
+			variables.pending = [];
+			variables.pendingIndex = 1;
+		}
+		return attempt( emitted );
 	}
 
 	/**
 	 * Defers an atomic close claim so the cleanup factory runs at most once, even if it fails.
 	 */
 	Effect function close() {
-		return Effect::suspend( () => variables.closed.compareAndSet( false, true )
-			? variables.closeFactory()
-			: Effect::succeed( null )
-		);
+		return Effect::suspend( () => {
+			if ( !variables.closed.compareAndSet( false, true ) ) {
+				return Effect::succeed( null );
+			}
+			variables.pending = [];
+			return variables.closeFactory();
+		} );
 	}
 
 }

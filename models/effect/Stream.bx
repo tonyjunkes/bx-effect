@@ -57,22 +57,24 @@ class {
 	}
 
 	/**
-	 * Copies the array structure and emits it as one batch for each fresh consumption.
+	 * Copies the array structure and emits only the values requested by each fresh consumption.
 	 *
 	 * @values Input values in encounter order.
 	 */
 	static Stream function fromArray( required array values ) {
 		var sourceValues = copyArray( arguments.values );
 		return new Stream( () => {
-			var emitted = false;
-			return Effect::succeed( new StreamCursor( () => {
-				if ( emitted ) {
+			var position = 1;
+			return Effect::succeed( new StreamCursor( ( demand ) => {
+				if ( position > sourceValues.len() ) {
 					return Effect::succeed( attempt() );
 				}
-				emitted = true;
-				return sourceValues.len() == 0
-					? Effect::succeed( attempt() )
-					: Effect::succeed( attempt( sourceValues ) );
+				var values = [];
+				var end = min( sourceValues.len(), position + demand - 1 );
+				while ( position <= end ) {
+					values.append( sourceValues[ position++ ] );
+				}
+				return Effect::succeed( attempt( values ) );
 			} ) );
 		} );
 	}
@@ -172,7 +174,7 @@ class {
 				Effect::suspend( () => useFunction( resource ).openCursor() ).foldCause(
 					( acquisitionCause ) => Effect::haltInstruction( acquisitionCause ).ensuring( releaseOnce( resource ) ),
 					( innerCursor ) => Effect::succeed( new StreamCursor(
-						() => innerCursor.pull(),
+						( demand ) => innerCursor.pull( demand ),
 						() => innerCursor.close().ensuring( releaseOnce( resource ) )
 					) )
 				)
@@ -222,7 +224,7 @@ class {
 	Stream function map( required function mapper ) {
 		var mapValue = arguments.mapper;
 		return transformCursor( ( sourceCursor ) => new StreamCursor(
-			() => sourceCursor.pull().map( ( batchAttempt ) => {
+			( demand ) => sourceCursor.pull( demand ).map( ( batchAttempt ) => {
 				if ( !batchAttempt.isPresent() ) {
 					return attempt();
 				}
@@ -244,7 +246,7 @@ class {
 	Stream function mapEffect( required function mapper ) {
 		var mapValue = arguments.mapper;
 		return transformCursor( ( sourceCursor ) => new StreamCursor(
-			() => sourceCursor.pull().flatMap( ( batchAttempt ) =>
+			( demand ) => sourceCursor.pull( demand ).flatMap( ( batchAttempt ) =>
 				!batchAttempt.isPresent()
 					? Effect::succeed( attempt() )
 					: Effect::forEach( batchAttempt.get(), ( value, index ) =>
@@ -289,7 +291,7 @@ class {
 		return transformCursor( ( sourceCursor ) => {
 			var takeState = { remaining: requested };
 			return new StreamCursor(
-				() => takePull( sourceCursor, takeState ),
+				( demand ) => takePull( sourceCursor, takeState, demand ),
 				() => sourceCursor.close()
 			);
 		} );
@@ -308,7 +310,7 @@ class {
 				if ( progress.done ) {
 					return Effect::succeed( attempt() );
 				}
-				return sourceCursor.pull().map( ( batchAttempt ) => {
+				return sourceCursor.pull( 1 ).map( ( batchAttempt ) => {
 					if ( !batchAttempt.isPresent() ) {
 						progress.done = true;
 						return attempt();
@@ -340,12 +342,12 @@ class {
 		var reduceValue = arguments.reducer;
 		return transformCursor( ( sourceCursor ) => {
 			var progress = { first: true, value: seed };
-			return new StreamCursor( () => {
+			return new StreamCursor( ( demand ) => {
 				if ( progress.first ) {
 					progress.first = false;
 					return Effect::succeed( attempt( [ progress.value ] ) );
 				}
-				return sourceCursor.pull().map( ( batchAttempt ) => {
+				return sourceCursor.pull( demand ).map( ( batchAttempt ) => {
 					if ( !batchAttempt.isPresent() ) {
 						return attempt();
 					}
@@ -399,7 +401,7 @@ class {
 			progress.group = [];
 			return Effect::succeed( emitted.len() == 0 ? attempt() : attempt( [ emitted ] ) );
 		}
-		return cursorToPull.pull().flatMap( ( batchAttempt ) => {
+		return cursorToPull.pull( groupSize - progress.group.len() ).flatMap( ( batchAttempt ) => {
 			progress.done = !batchAttempt.isPresent();
 			progress.batch = progress.done ? [] : batchAttempt.get();
 			progress.index = 1;
@@ -418,7 +420,7 @@ class {
 		return transformCursor( ( sourceCursor ) => {
 			var dropState = { remaining: requested };
 			return new StreamCursor(
-				() => dropPull( sourceCursor, dropState ),
+				( demand ) => dropPull( sourceCursor, dropState, demand ),
 				() => sourceCursor.close()
 			);
 		} );
@@ -451,7 +453,7 @@ class {
 				index : 1
 			};
 			return new StreamCursor(
-				() => flatMapPull( flatMapState, mapValue ),
+				( demand ) => flatMapPull( flatMapState, mapValue, demand ),
 				() => isNull( flatMapState.inner )
 					? flatMapState.outer.close()
 					: flatMapState.inner.close().ensuring( flatMapState.outer.close() )
@@ -492,7 +494,7 @@ class {
 		return new Stream( () => sourceStream.openCursor()
 			.catchCause( ( openingCause ) => Effect::haltInstruction( openingCause ).ensuring( finalizerProgram ) )
 			.map( ( sourceCursor ) => new StreamCursor(
-				() => sourceCursor.pull(),
+				( demand ) => sourceCursor.pull( demand ),
 				() => sourceCursor.close().ensuring( finalizerProgram )
 			) )
 		);
@@ -510,7 +512,7 @@ class {
 		// so each cursor operation needs its own provisioning boundary.
 		return new Stream( () => sourceStream.openCursor().provide( provided ).map(
 			( sourceCursor ) => new StreamCursor(
-				() => sourceCursor.pull().provide( provided ),
+				( demand ) => sourceCursor.pull( demand ).provide( provided ),
 				() => sourceCursor.close().provide( provided )
 			)
 		) );
@@ -638,7 +640,7 @@ class {
 					recovered : false
 				};
 				return Effect::succeed( new StreamCursor(
-					() => recoverPull( recoveryState, recoveryHandler, shouldRecover ),
+					( demand ) => recoverPull( recoveryState, recoveryHandler, shouldRecover, demand ),
 					() => recoveryState.cursor.close()
 				) );
 			}
@@ -668,7 +670,7 @@ class {
 	private static Effect function filterPull( required any sourceCursor, required function predicate ) {
 		var cursorToPull = arguments.sourceCursor;
 		var keepValue = arguments.predicate;
-		return cursorToPull.pull().flatMap( ( batchAttempt ) => {
+		return cursorToPull.pull( 1 ).flatMap( ( batchAttempt ) => {
 			if ( !batchAttempt.isPresent() ) {
 				return Effect::succeed( attempt() );
 			}
@@ -691,14 +693,15 @@ class {
 	 *
 	 * @sourceCursor Private cursor belonging to this consumption only.
 	 * @state Mutable progress state owned by this cursor or consumption only.
+	 * @demand Maximum number of values requested by the downstream pull.
 	 */
-	private static Effect function takePull( required any sourceCursor, required struct state ) {
+	private static Effect function takePull( required any sourceCursor, required struct state, required numeric demand ) {
 		var cursorToPull = arguments.sourceCursor;
 		var stateToUse = arguments.state;
 		if ( stateToUse.remaining == 0 ) {
 			return Effect::succeed( attempt() );
 		}
-		return cursorToPull.pull().map( ( batchAttempt ) => {
+		return cursorToPull.pull( min( stateToUse.remaining, arguments.demand ) ).map( ( batchAttempt ) => {
 			if ( !batchAttempt.isPresent() ) {
 				stateToUse.remaining = 0;
 				return attempt();
@@ -719,18 +722,20 @@ class {
 	 *
 	 * @sourceCursor Private cursor belonging to this consumption only.
 	 * @state Mutable progress state owned by this cursor or consumption only.
+	 * @demand Maximum number of values requested by the downstream pull.
 	 */
-	private static Effect function dropPull( required any sourceCursor, required struct state ) {
+	private static Effect function dropPull( required any sourceCursor, required struct state, required numeric demand ) {
 		var cursorToPull = arguments.sourceCursor;
 		var stateToUse = arguments.state;
-		return cursorToPull.pull().flatMap( ( batchAttempt ) => {
+		var requested = arguments.demand;
+		return cursorToPull.pull( stateToUse.remaining > 0 ? stateToUse.remaining : requested ).flatMap( ( batchAttempt ) => {
 			if ( !batchAttempt.isPresent() ) {
 				return Effect::succeed( attempt() );
 			}
 			var batch = batchAttempt.get();
 			if ( stateToUse.remaining >= batch.len() ) {
 				stateToUse.remaining -= batch.len();
-				return Effect::suspend( () => dropPull( cursorToPull, stateToUse ) );
+				return Effect::suspend( () => dropPull( cursorToPull, stateToUse, requested ) );
 			}
 			var emitted = [];
 			for ( var index = stateToUse.remaining + 1; index <= batch.len(); index++ ) {
@@ -755,7 +760,7 @@ class {
 				current : firstCursor
 			};
 			return new StreamCursor(
-				() => concatPartsPull( concatState ),
+				( demand ) => concatPartsPull( concatState, demand ),
 				() => isNull( concatState.current )
 					? Effect::succeed( null )
 					: concatState.current.close()
@@ -767,9 +772,11 @@ class {
 	 * Closes exhausted leaves before lazily opening the next one.
 	 *
 	 * @state Mutable progress state owned by this cursor or consumption only.
+	 * @demand Maximum number of values requested by the downstream pull.
 	 */
-	private static Effect function concatPartsPull( required struct state ) {
+	private static Effect function concatPartsPull( required struct state, required numeric demand ) {
 		var stateToUse = arguments.state;
+		var requested = arguments.demand;
 		if ( isNull( stateToUse.current ) ) {
 			if ( stateToUse.index >= stateToUse.streams.len() ) {
 				return Effect::succeed( attempt() );
@@ -777,17 +784,17 @@ class {
 			stateToUse.index++;
 			return stateToUse.streams[ stateToUse.index ].openCursor().flatMap( ( nextCursor ) => {
 				stateToUse.current = nextCursor;
-				return Effect::suspend( () => concatPartsPull( stateToUse ) );
+				return Effect::suspend( () => concatPartsPull( stateToUse, requested ) );
 			} );
 		}
-		return stateToUse.current.pull().flatMap( ( batchAttempt ) => {
+		return stateToUse.current.pull( requested ).flatMap( ( batchAttempt ) => {
 			if ( batchAttempt.isPresent() ) {
 				return Effect::succeed( batchAttempt );
 			}
 			var completedCursor = stateToUse.current;
 			stateToUse.current = null;
 			return completedCursor.close().flatMap(
-				( ignored ) => Effect::suspend( () => concatPartsPull( stateToUse ) )
+				( ignored ) => Effect::suspend( () => concatPartsPull( stateToUse, requested ) )
 			);
 		} );
 	}
@@ -797,19 +804,21 @@ class {
 	 *
 	 * @state Mutable progress state owned by this cursor or consumption only.
 	 * @mapper Callback receiving an outer value and returning an inner Stream.
+	 * @demand Maximum number of values requested by the downstream pull.
 	 */
-	private static Effect function flatMapPull( required struct state, required function mapper ) {
+	private static Effect function flatMapPull( required struct state, required function mapper, required numeric demand ) {
 		var stateToUse = arguments.state;
 		var mapValue = arguments.mapper;
+		var requested = arguments.demand;
 		if ( !isNull( stateToUse.inner ) ) {
-			return stateToUse.inner.pull().flatMap( ( innerAttempt ) => {
+			return stateToUse.inner.pull( requested ).flatMap( ( innerAttempt ) => {
 				if ( innerAttempt.isPresent() ) {
 					return Effect::succeed( innerAttempt );
 				}
 				var completedInner = stateToUse.inner;
 				stateToUse.inner = null;
 				return completedInner.close().flatMap(
-					( ignored ) => Effect::suspend( () => flatMapPull( stateToUse, mapValue ) )
+					( ignored ) => Effect::suspend( () => flatMapPull( stateToUse, mapValue, requested ) )
 				);
 			} );
 		}
@@ -819,17 +828,17 @@ class {
 			return Effect::suspend( () => mapValue( outerValue ).openCursor() ).flatMap(
 				( innerCursor ) => {
 					stateToUse.inner = innerCursor;
-					return Effect::suspend( () => flatMapPull( stateToUse, mapValue ) );
+					return Effect::suspend( () => flatMapPull( stateToUse, mapValue, requested ) );
 				}
 			);
 		}
-		return stateToUse.outer.pull().flatMap( ( outerAttempt ) => {
+		return stateToUse.outer.pull( 1 ).flatMap( ( outerAttempt ) => {
 			if ( !outerAttempt.isPresent() ) {
 				return Effect::succeed( attempt() );
 			}
 			stateToUse.pending = outerAttempt.get();
 			stateToUse.index = 1;
-			return Effect::suspend( () => flatMapPull( stateToUse, mapValue ) );
+			return Effect::suspend( () => flatMapPull( stateToUse, mapValue, requested ) );
 		} );
 	}
 
@@ -839,16 +848,19 @@ class {
 	 * @state Mutable progress state owned by this cursor or consumption only.
 	 * @handler Callback receiving the eligible Cause and returning a recovery Stream.
 	 * @predicate Callback receiving a Cause and returning whether it is eligible for recovery.
+	 * @demand Maximum number of values requested by the downstream pull.
 	 */
 	private static Effect function recoverPull(
 		required struct state,
 		required function handler,
-		required function predicate
+		required function predicate,
+		required numeric demand
 	) {
 		var stateToUse = arguments.state;
 		var recoveryHandler = arguments.handler;
 		var shouldRecover = arguments.predicate;
-		return stateToUse.cursor.pull().catchCause( ( pullCause ) => {
+		var requested = arguments.demand;
+		return stateToUse.cursor.pull( requested ).catchCause( ( pullCause ) => {
 			if ( stateToUse.recovered || !shouldRecover( pullCause ) ) {
 				return Effect::haltInstruction( pullCause );
 			}
@@ -865,7 +877,7 @@ class {
 				return Effect::suspend( () => recoveryHandler( pullCause ).openCursor() ).flatMap(
 					( recoveryCursor ) => {
 						stateToUse.cursor = recoveryCursor;
-						return recoveryCursor.pull();
+						return recoveryCursor.pull( requested );
 					}
 				);
 			} );
@@ -901,7 +913,7 @@ class {
 	private static Effect function consumePulls( required any sourceCursor, required function handler ) {
 		var cursorToPull = arguments.sourceCursor;
 		var consumeValue = arguments.handler;
-		return cursorToPull.pull().flatMap( ( batchAttempt ) =>
+		return cursorToPull.pull( 1 ).flatMap( ( batchAttempt ) =>
 			!batchAttempt.isPresent()
 				? Effect::succeed( null )
 				: Effect::forEach(
