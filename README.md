@@ -179,9 +179,3 @@ box run-script test
 The suite runs through the BoxLang CLI (via CommandBox or an OS install of BoxLang if preferred).
 CI runs the TestBox suite and module-setting checks on BoxLang `1.16.0`, `latest`, and
 `snapshot`. For performance work, see the [benchmarks](benchmarks/README.md).
-
-Main-branch updates run verification without publishing. To release, update
-`box.json`, `ModuleConfig.bx`, and `CHANGELOG.md` together, merge to `main`, then
-push an immutable version tag such as `1.2.0` that exactly matches the package
-version. The tag workflow verifies all three runtimes and an installed consumer
-before publishing to ForgeBox and creating the GitHub release.
