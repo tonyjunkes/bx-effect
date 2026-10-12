@@ -1,9 +1,6 @@
 name: Verify
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
     branches:
       - main
@@ -48,6 +45,10 @@ jobs:
 
       - name: Install development dependencies
         run: box install
+
+      - name: Verify release automation
+        if: matrix.boxlang-version == 'latest'
+        run: bash tests/ci/release-workflow-test.sh
 
       - name: Run TestBox
         run: |
