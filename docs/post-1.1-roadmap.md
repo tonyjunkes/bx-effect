@@ -72,3 +72,6 @@ The proposed sequence is investigation/fixes, Stream and measured collection
 refinement, local scopes/bounded retries, optional native integrations, then
 future features only when justified. This first PR implements the immediate
 scope above; subsequent phases remain separate design and implementation work.
+
+See [the validation record](post-1.1-validation.md) for test totals, review fixes,
+benchmark methods, and the before/after measurements used for this PR.
