@@ -1,0 +1,292 @@
+import models.effect.Effect@bxeffect;
+import models.effect.Cause@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.ManagedRuntime@bxeffect;
+import models.effect.Scope@bxeffect;
+import models.effect.Stream@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Local Effect lifetimes", () => {
+			it( "is lazy and releases once before following work on every run", () => {
+				var events = [];
+				var program = Effect::scoped( resource( events, "local" ) )
+					.tap( ( value ) => Effect::sync( () => events.append( "following" ) ) );
+				expect( events ).toBeEmpty();
+				expect( Effect::runSync( program ) ).toBe( "local" );
+				expect( events ).toBe( [ "acquire:local", "release:local", "following" ] );
+				Effect::runSync( program );
+				expect( events.len() ).toBe( 6 );
+			} );
+
+			it( "keeps nested and outer resources in their own LIFO lifetimes", () => {
+				var events = [];
+				var program = resource( events, "outer" ).flatMap( ( ignored ) =>
+					Effect::scoped( resource( events, "first" ).flatMap( ( ignored ) =>
+						Effect::scoped( resource( events, "inner" ) ).flatMap( ( ignored ) => resource( events, "second" ) )
+					) ).tap( ( ignored ) => Effect::sync( () => events.append( "following" ) ) )
+				);
+				Effect::runSync( program );
+				expect( events ).toBe( [ "acquire:outer", "acquire:first", "acquire:inner", "release:inner", "acquire:second", "release:second", "release:first", "following", "release:outer" ] );
+			} );
+
+			it( "cleans before outer recovery for expected failure, defects, and interruption", () => {
+				for ( var failed in [
+					{ program: Effect::fail( "expected" ), expectedKind: "Fail" },
+					{ program: Effect::die( "defect" ), expectedKind: "Die" },
+					{ program: Effect::failCause( Cause::interrupt( "test" ) ), expectedKind: "Interrupt" }
+				] ) {
+					var events = [];
+					var observedKind = "";
+					var program = Effect::scoped( resource( events, "local" ).flatMap( ( ignored ) => failed.program ) )
+						.catchCause( ( failureCause ) => Effect::sync( () => {
+							observedKind = failureCause.kind();
+							events.append( "recover" );
+							return "recovered";
+						} ) );
+					expect( Effect::runSync( program ) ).toBe( "recovered" );
+					expect( observedKind ).toBe( failed.expectedKind );
+					expect( events ).toBe( [ "acquire:local", "release:local", "recover" ] );
+				}
+			} );
+
+			it( "continues LIFO cleanup and retains failures after the body Cause", () => {
+				var events = [];
+				var program = Effect::scoped( Effect::acquireRelease( Effect::succeed( "first" ), ( value ) =>
+					Effect::sync( () => events.append( value ) ).flatMap( ( ignored ) => Effect::fail( "first-release" ) )
+				).flatMap( ( ignored ) => Effect::acquireRelease( Effect::succeed( "second" ), ( value ) =>
+					Effect::sync( () => events.append( value ) ).flatMap( ( ignored ) => Effect::die( "second-release" ) )
+				) ).flatMap( ( ignored ) => Effect::fail( "body" ) ) );
+				var outcome = Effect::runSyncExit( program );
+				expect( events ).toBe( [ "second", "first" ] );
+				expect( outcome.cause().failures() ).toBe( [ "body", "first-release" ] );
+				expect( outcome.cause().defects() ).toBe( [ "second-release" ] );
+				expect( outcome.cause().kind() ).toBe( "Sequential" );
+			} );
+
+			it( "turns successful work into cleanup failure and permits outer recovery", () => {
+				var program = Effect::scoped( Effect::acquireRelease( Effect::succeed( 1 ), ( value ) => Effect::fail( "release" ) ) );
+				expect( Effect::runSyncExit( program ).cause().error() ).toBe( "release" );
+				var recovered = Effect::runFork( program.catchAll( ( error ) => Effect::succeed( error ) ) );
+				expect( recovered.terminationFuture().get( 5000 ).value() ).toBe( "release" );
+				expect( recovered.hasCleanupFailure() ).toBeFalse();
+			} );
+
+			it( "restores Context and uses acquisition Context for local releases", () => {
+				var label = ServiceTag::of( "local/Label" );
+				var events = [];
+				var program = Effect::scoped( Effect::acquireRelease( Effect::service( label ), ( value ) =>
+					Effect::service( label ).map( ( releaseLabel ) => events.append( releaseLabel & ":" & value ) )
+				).provideService( label, "inner" ) )
+					.flatMap( ( value ) => Effect::service( label ) ).provideService( label, "outer" );
+				expect( Effect::runSync( program ) ).toBe( "outer" );
+				expect( events ).toBe( [ "inner:inner" ] );
+			} );
+
+			it( "awaits child finalizers before releasing local services and following work", () => {
+				var events = new java.util.concurrent.CopyOnWriteArrayList();
+				var started = new CountDownLatch( 1 );
+				var pending = futureNew();
+				var child = Effect::fromBoxFuture( () => { started.countDown(); return pending; } )
+					.ensuring( Effect::sync( () => events.add( "child-cleanup" ) ) );
+				var program = Effect::scoped( Effect::acquireRelease( Effect::succeed( "service" ), ( value ) =>
+					Effect::sync( () => events.add( "release" ) )
+				).flatMap( ( ignored ) => child.fork() ).tap( ( childFiber ) => Effect::sync( () => {
+					if ( !started.await( 5, TimeUnit::SECONDS ) ) { throw( type: "bxeffect.testing.TestTimeoutException", message: "Child did not start" ); }
+					return null;
+				} ) ) ).tap( ( ignored ) => Effect::sync( () => events.add( "following" ) ) );
+				Effect::runSync( program );
+				expect( pending.isCancelled() ).toBeTrue();
+				expect( events.toArray() ).toBe( [ "child-cleanup", "release", "following" ] );
+			} );
+
+			it( "retains failed child cleanup once and recovers before root shutdown", () => {
+				var started = new CountDownLatch( 1 );
+				var child = Effect::fromBoxFuture( () => { started.countDown(); return futureNew(); } ).ensuring( Effect::fail( "child-release" ) );
+				var program = Effect::scoped( child.fork().tap( ( childFiber ) => Effect::sync( () => {
+					if ( !started.await( 5, TimeUnit::SECONDS ) ) { throw( type: "bxeffect.testing.TestTimeoutException", message: "Child did not start" ); }
+					return null;
+				} ) ) ).catchCause( ( failureCause ) => Effect::succeed( failureCause.failures() ) );
+				var rootFiber = Effect::runFork( program );
+				expect( rootFiber.terminationFuture().get( 5000 ).value() ).toBe( [ "child-release" ] );
+				expect( rootFiber.hasCleanupFailure() ).toBeFalse();
+			} );
+
+			it( "does not close a child admitted to the outer lifetime", () => {
+				var releases = new AtomicInteger( 0 );
+				var pending = futureNew();
+				var child = Effect::fromBoxFuture( () => pending ).ensuring( Effect::sync( () => releases.incrementAndGet() ) );
+				var program = child.fork().flatMap( ( outerChild ) => Effect::scoped( Effect::succeed( 1 ) )
+					.tap( ( ignored ) => Effect::sync( () => {
+						expect( outerChild.isDone() ).toBeFalse();
+						expect( releases.get() ).toBe( 0 );
+						pending.complete( "done" );
+						return outerChild.join();
+					} ) ) );
+				Effect::runSync( program );
+				expect( releases.get() ).toBe( 1 );
+			} );
+
+			it( "registers local acquisition before pending interruption and keeps failed cleanup", () => {
+				var entered = new CountDownLatch( 1 );
+				var proceed = new CountDownLatch( 1 );
+				var releases = new AtomicInteger( 0 );
+				var program = Effect::scoped( Effect::acquireRelease( Effect::sync( () => {
+					entered.countDown();
+					if ( !proceed.await( 5, TimeUnit::SECONDS ) ) { throw( type: "bxeffect.testing.TestTimeoutException", message: "Acquisition blocked" ); }
+					return "resource";
+				} ), ( value ) => Effect::sync( () => releases.incrementAndGet() ).flatMap( ( ignored ) => Effect::fail( "release" ) ) ) );
+				var rootFiber = Effect::runFork( program );
+				try { expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue(); rootFiber.interrupt(); }
+				finally { proceed.countDown(); }
+				var outcome = rootFiber.terminationFuture().get( 5000 );
+				expect( releases.get() ).toBe( 1 );
+				expect( outcome.cause().isInterrupted() ).toBeTrue();
+				expect( outcome.cause().failures() ).toBe( [ "release" ] );
+			} );
+
+			it( "registers an outer release after a locally scoped acquisition handoff", () => {
+				var entered = new CountDownLatch( 1 );
+				var proceed = new CountDownLatch( 1 );
+				var releases = new AtomicInteger( 0 );
+				var acquiring = Effect::scoped( Effect::sync( () => {
+					entered.countDown();
+					if ( !proceed.await( 5, TimeUnit::SECONDS ) ) { throw( type: "bxeffect.testing.TestTimeoutException", message: "Acquisition blocked" ); }
+					return "resource";
+				} ) );
+				var rootFiber = Effect::runFork( Effect::acquireRelease( acquiring, ( value ) => Effect::sync( () => releases.incrementAndGet() ) ) );
+				try { expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue(); rootFiber.interrupt(); }
+				finally { proceed.countDown(); }
+				expect( rootFiber.terminationFuture().get( 5000 ).cause().isInterrupted() ).toBeTrue();
+				expect( releases.get() ).toBe( 1 );
+			} );
+
+			it( "awaits asynchronous cleanup before following work", () => {
+				var closing = new CountDownLatch( 1 );
+				var released = futureNew();
+				var followed = new AtomicInteger( 0 );
+				var program = Effect::scoped( Effect::acquireRelease( Effect::succeed( "resource" ), ( value ) =>
+					Effect::fromBoxFuture( () => { closing.countDown(); return released; } )
+				) ).tap( ( value ) => Effect::sync( () => followed.incrementAndGet() ) );
+				var rootFiber = Effect::runFork( program );
+				try {
+					expect( closing.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					expect( rootFiber.terminationFuture().isDone() ).toBeFalse();
+					expect( followed.get() ).toBe( 0 );
+				} finally { released.complete( null ); }
+				expect( rootFiber.terminationFuture().get( 5000 ).value() ).toBe( "resource" );
+				expect( followed.get() ).toBe( 1 );
+			} );
+
+			it( "keeps cleanup protected when interrupted during local closure", () => {
+				var closing = new CountDownLatch( 1 );
+				var released = futureNew();
+				var followed = new AtomicInteger( 0 );
+				var program = Effect::scoped( Effect::acquireRelease( Effect::succeed( "resource" ), ( value ) =>
+					Effect::fromBoxFuture( () => { closing.countDown(); return released; } ).flatMap( ( ignored ) => Effect::fail( "cleanup" ) )
+				) ).tap( ( value ) => Effect::sync( () => followed.incrementAndGet() ) );
+				var rootFiber = Effect::runFork( program );
+				try {
+					expect( closing.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					rootFiber.interrupt();
+					expect( rootFiber.terminationFuture().isDone() ).toBeFalse();
+					expect( released.isCancelled() ).toBeFalse();
+				} finally { released.complete( null ); }
+				var outcome = rootFiber.terminationFuture().get( 5000 );
+				expect( outcome.cause().isInterrupted() ).toBeTrue();
+				expect( outcome.cause().failures() ).toBe( [ "cleanup" ] );
+				expect( followed.get() ).toBe( 0 );
+			} );
+
+			it( "isolates local Layer builds, shares them with children, and restores the root memo", () => {
+				var tag = ServiceTag::of( "local/Service" );
+				var builds = new AtomicInteger( 0 );
+				var releases = new AtomicInteger( 0 );
+				var serviceLayer = Layer::scoped( tag, Effect::acquireRelease( Effect::sync( () => builds.incrementAndGet() ),
+					( value ) => Effect::sync( () => releases.incrementAndGet() ) ) );
+				var localProgram = Effect::scoped( Effect::all( [ Effect::service( tag ).provide( serviceLayer ), Effect::service( tag ).provide( serviceLayer ) ] ) );
+				var program = Effect::service( tag ).provide( serviceLayer ).flatMap( ( first ) => localProgram.flatMap( ( localValues ) =>
+					Effect::service( tag ).provide( serviceLayer ).map( ( after ) => [ first, localValues, after, releases.get() ] )
+				) );
+				expect( Effect::runSync( program ) ).toBe( [ 1, [ 2, 2 ], 1, 1 ] );
+				expect( builds.get() ).toBe( 2 );
+				expect( releases.get() ).toBe( 2 );
+				expect( Effect::runSync( localProgram ) ).toBe( [ 3, 3 ] );
+				expect( releases.get() ).toBe( 3 );
+			} );
+
+			it( "keeps inherited managed services alive after local closure", () => {
+				var tag = ServiceTag::of( "local/Managed" );
+				var releases = new AtomicInteger( 0 );
+				var managed = ManagedRuntime::make( Layer::scoped( tag, Effect::acquireRelease( Effect::succeed( "managed" ),
+					( value ) => Effect::sync( () => releases.incrementAndGet() ) ) ) );
+				try {
+					expect( managed.runSync( Effect::scoped( Effect::service( tag ) ).flatMap( ( ignored ) => Effect::service( tag ) ) ) ).toBe( "managed" );
+					expect( releases.get() ).toBe( 0 );
+				} finally { managed.close(); }
+				expect( releases.get() ).toBe( 1 );
+			} );
+
+			it( "closes Stream resources once inside a local lifetime", () => {
+				var releases = new AtomicInteger( 0 );
+				var source = Stream::acquireRelease( Effect::succeed( "resource" ),
+					( value ) => Effect::sync( () => releases.incrementAndGet() ),
+					( value ) => Stream::fromArray( [ 1, 2 ] ) );
+				expect( Effect::runSync( Effect::scoped( source.take( 1 ).runCollect() ) ) ).toBe( [ 1 ] );
+				expect( releases.get() ).toBe( 1 );
+			} );
+
+			it( "does not report a recovered local defect as terminal or complete the Fiber early", () => {
+				var events = [];
+				var runtime = new EffectRuntime( { observer: ( eventName, details ) => events.append( eventName ) } );
+				var rootFiber = runtime.runFork( Effect::scoped( Effect::die( "local" ) ).catchCause( ( failureCause ) => Effect::succeed( 42 ) ) );
+				expect( rootFiber.terminationFuture().get( 5000 ).value() ).toBe( 42 );
+				expect( events.filter( ( name ) => name == "fiber:completed" ).len() ).toBe( 1 );
+				expect( events.filter( ( name ) => name == "runtime:completed" ).len() ).toBe( 1 );
+				expect( events ).notToInclude( "defect:unhandled" );
+				expect( events.filter( ( name ) => name == "scope:closed" ).len() ).toBe( 2 );
+			} );
+
+			it( "cannot reopen work through a closing or closed enclosing Scope", () => {
+				for ( var closeFinalizers in [ false, true ] ) {
+					var enclosingScope = new Scope();
+					enclosingScope.shutdownChildren();
+					if ( closeFinalizers ) { enclosingScope.close(); }
+					var calls = 0;
+					var runtime = new EffectRuntime();
+					var outcome = runtime.runSyncExitWithContext( Effect::scoped( Effect::sync( () => ++calls ) ), Context::empty(), null, enclosingScope );
+					expect( outcome.cause().kind() ).toBe( "Die" );
+					expect( outcome.cause().defect().type ).toBe( "bxeffect.ScopeClosedException" );
+					expect( calls ).toBe( 0 );
+					enclosingScope.close();
+				}
+			} );
+
+			it( "keeps deeply nested local scopes stack safe", () => {
+				var program = Effect::succeed( 42 );
+				for ( var index = 1; index <= 5000; index++ ) { program = Effect::scoped( program ); }
+				expect( Effect::runSync( program ) ).toBe( 42 );
+			} );
+		} );
+	}
+
+	/**
+	 * Records a lazy acquisition and its release for ownership-order assertions.
+	 * @events Mutable log owned by one specification.
+	 * @label Name of the acquired resource.
+	 */
+	private function resource( required array events, required string label ) {
+		var recorded = arguments.events;
+		var name = arguments.label;
+		return Effect::acquireRelease( Effect::sync( () => { recorded.append( "acquire:" & name ); return name; } ),
+			( value ) => Effect::sync( () => recorded.append( "release:" & value ) ) );
+	}
+
+}

@@ -15,7 +15,7 @@ are implementation details even when BoxLang permits calling them directly.
 
 | Class and import | Supported surface | Evaluation and failure behavior |
 | --- | --- | --- |
-| `models.effect.Effect@bxeffect` | Constructors: `succeed`, `fail`, `failCause`, `die`, `sync`, `try`, `suspend`, `fromAttempt`, `fromResult`, `fromExit`, `service`, `acquireRelease`, `acquireUseRelease`, `fromBoxFuture`, `all`, `forEach`, `race`, `firstSuccessOf`, `sleep`. Operators: `map`, `flatMap`, `tap`, `tapError`, `tapCause`, `exit`, `zip`, `zipWith`, `as`, `asVoid`, `foldCause`, `catchCause`, `catchAll`, `mapError`, `catchIf`, `catchTag`, `catchTags`, `orElse`, `filterOrFail`, `ensuring`, `onExit`, `fork`, `retry`, `repeat`, `timeout`, `provide`, `provideService`. Boundaries: `runSync`, `runSyncExit`, `runFuture`, `runFutureExit`, `runFork`. | Constructors and operators are lazy except validation of invalid options. `fail` is expected failure; thrown user code is a defect; Fiber cancellation is interruption. `catchAll`/`tapError` handle only a pure expected failure. `catchCause`/`tapCause` see the complete Cause. |
+| `models.effect.Effect@bxeffect` | Constructors: `succeed`, `fail`, `failCause`, `die`, `sync`, `try`, `suspend`, `fromAttempt`, `fromResult`, `fromExit`, `service`, `acquireRelease`, `acquireUseRelease`, `scoped`, `fromBoxFuture`, `all`, `forEach`, `race`, `firstSuccessOf`, `sleep`. Operators: `map`, `flatMap`, `tap`, `tapError`, `tapCause`, `exit`, `zip`, `zipWith`, `as`, `asVoid`, `foldCause`, `catchCause`, `catchAll`, `mapError`, `catchIf`, `catchTag`, `catchTags`, `orElse`, `filterOrFail`, `ensuring`, `onExit`, `fork`, `retry`, `repeat`, `timeout`, `provide`, `provideService`. Boundaries: `runSync`, `runSyncExit`, `runFuture`, `runFutureExit`, `runFork`. | Constructors and operators are lazy except validation of invalid options. `fail` is expected failure; thrown user code is a defect; Fiber cancellation is interruption. `catchAll`/`tapError` handle only a pure expected failure. `catchCause`/`tapCause` see the complete Cause. |
 | `models.effect.Cause@bxeffect` | `fail`, `die`, `interrupt`, `sequential`, `parallel`; `kind`, `error`, `defect`, `fiberId`, `left`, `right`, `isFailure`, `isDefect`, `isInterrupted`, `failures`, `defects`, `mapFailures`, `pretty`. | Immutable complete failure tree. Cause construction is eager value construction and runs no Effects. |
 | `models.effect.Exit@bxeffect` | `success`, `failure`; `isSuccess`, `isFailure`, `value`, `cause`, `match`. | Immutable complete Effect outcome. |
 | `models.effect.Result@bxeffect` | `success`, `failure`, `fromAttempt`; `isSuccess`, `isFailure`, `value`, `error`, `map`, `flatMap`, `mapError`, `match`, `toAttempt`. | Immutable pure value with success or expected failure only. It does not represent defects or interruption. |
@@ -26,11 +26,16 @@ unbounded child-Fiber execution. `forEach` defaults to sequential execution
 in the current interpreter without per-item child Fibers. Accumulation waits
 for all selected work and retains Causes in input order.
 
+`Effect::scoped(program)` runs within a fresh local Scope and Layer memo.
+Children and acquired resources finish before following work or outer recovery.
+Bindings inherited from an outer Scope keep their original lifetime. See
+[resource safety](resources.md) for nesting and provisioning placement.
+
 ## Runtime, resources, and concurrency
 
 | Class and import | Supported surface | Ownership contract |
 | --- | --- | --- |
-| `models.effect.EffectRuntime@bxeffect` | Constructor options `executor`, `clock`, `observer`; `runSync`, `runSyncExit`, `runFuture`, `runFutureExit`, `runFork`, `executor`, `clock`. | One root Scope and Layer memo per run. Runtime owns no executor or Clock lifecycle. |
+| `models.effect.EffectRuntime@bxeffect` | Constructor options `executor`, `clock`, `observer`; `runSync`, `runSyncExit`, `runFuture`, `runFutureExit`, `runFork`, `executor`, `clock`. | One root Scope and Layer memo per run; `Effect::scoped` adds local lifetimes with their own memo. Runtime owns no executor or Clock lifecycle. |
 | `models.effect.ManagedRuntime@bxeffect` | `make(layer, options)`; `runSync`, `runSyncExit`, `runFuture`, `runFutureExit`, `runFork`, `close`, `closeFuture`, `isClosed`. | Lazily builds and privately reuses one Layer. `close` interrupts active runs, waits for run finalization, then releases managed services once. Runs after closing starts fail with tagged `ManagedRuntimeClosed`. |
 | `models.effect.Scope@bxeffect` | `addFinalizer`, `addRelease`, `addChild`, `interruptChildren`, `close`, `isClosed`. | Advanced explicit Scope primitive. Finalizers are idempotent LIFO entries. Most applications should use `acquireRelease` instead. |
 | `models.effect.Fiber@bxeffect` | `await`, `join`, `poll`, `interrupt`, `isDone`, `id`. | Returned by `runFork`/`fork`. Interruption is best effort; `await` preserves an `Exit`, while `join` throws on failure. |
@@ -52,7 +57,7 @@ creates or owns an executor pool.
 | `models.effect.context.Layer@bxeffect` | `succeed`, `effect`, `scoped`, `merge`; `build`, `provide`. | Ordered service recipe. Builders are lazy; scoped acquisition belongs to the active runtime Scope. |
 | `models.effect.Clock@bxeffect` | `now`, `sleep`. | Live runtime Clock. `sleep` returns a native BoxFuture. |
 | `models.effect.testing.TestClock@bxeffect` | `sleep`, `advance`, `now`, `pendingCount`. | Published deterministic test support with no TestBox dependency. |
-| `models.effect.Schedule@bxeffect` | `recurs`, `spaced`, `fixed`, `exponential`, `and`, `or`, `whileInput`, `untilInput`, `jittered`, `coerce`, `next`. | Immutable retry/repeat decision policy; not cron or BoxLang Scheduler. |
+| `models.effect.Schedule@bxeffect` | `recurs`, `spaced`, `fixed`, `exponential`, `and`, `or`, `whileInput`, `untilInput`, `maxDelay`, `jittered`, `coerce`, `next`. | Immutable retry/repeat decision policy; `maxDelay` bounds each wait, not total elapsed time. Not cron or BoxLang Scheduler. |
 
 ## Streams and observability
 

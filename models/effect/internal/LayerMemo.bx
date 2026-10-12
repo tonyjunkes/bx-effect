@@ -1,7 +1,7 @@
 import bxModules.bxEffect.models.effect.Exit;
 
 /**
- * Runtime-private Layer build coordination shared by a root runtime and its
+ * Runtime-private Layer build coordination shared by a Scope owner and its
  * child Fibers. A successful build stays memoized; a failed build is delivered
  * to current waiters and then removed so a later provision can retry.
  */

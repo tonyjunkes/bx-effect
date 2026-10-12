@@ -2,6 +2,18 @@
 
 All notable changes to BX Effect are documented here.
 
+## 1.3.0 - 10-12-2026
+
+- Add `Effect::scoped(program)` for local resource and child-Fiber lifetimes.
+  Interrupt and await children, then release resources in LIFO order before
+  following work or outer recovery, retaining all cleanup failures.
+- Isolate Layer memoization per local lifetime while sharing builds with its
+  children and preserving inherited Context and ManagedRuntime services.
+- Add `Schedule.maxDelay(duration, unit)` for capped retry/repeat waits,
+  including deterministic fixed-schedule anchors and finite retry composition.
+- Cover local interruption, asynchronous cleanup, Layer ownership, and capped
+  TestClock retry timing; benchmark deeply nested local scopes for stack safety.
+
 ## 1.2.0 - 10-12-2026
 
 - Propagate Stream element demand through transformations, resources, provisioning,

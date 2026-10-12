@@ -10,14 +10,40 @@ request.timeout( 5, "seconds" );
 ```
 
 Available constructors are `recurs`, `spaced`, `fixed`, and `exponential`.
-Schedules can be composed with `and`, `or`, `whileInput`, `untilInput`, and
-`jittered`:
+Schedules can be composed with `and`, `or`, `whileInput`, `untilInput`,
+`maxDelay`, and `jittered`:
 
 ```boxlang
 policy = Schedule::exponential( 100 )
 	.jittered( 0.8, 1.2 )
 	.whileInput( error => error.retryable );
 ```
+
+Cap backoff and limit retries by composing a maximum wait with a recurrence
+count:
+
+```boxlang
+policy = Schedule::exponential( 250 )
+	.maxDelay( 10000 )
+	.and( Schedule::recurs( 5 ) );
+
+retried = Effect::scoped( oneAttempt ).retry( policy );
+```
+
+This allows at most five retries after the initial attempt. `maxDelay` caps
+each computed wait, not the execution time or total elapsed retry budget. It
+accepts the same units as the constructors and returns a new policy without
+changing its source. A zero cap removes waits while retaining the underlying
+continuation decision. Wrapping each attempt in `scoped` releases that attempt's
+resources before its retry wait; wrapping the entire retry instead retains them
+until the complete retry program finishes.
+
+Modifiers apply in composition order. Put `maxDelay` after `jittered`, `and`,
+or `or` when the cap must include their computed delays. A later modifier can
+increase a previously capped wait. When a fixed schedule's wait is shortened,
+its next timing anchor becomes the actual capped start target; an uncapped wait
+or immediate overrun restart retains the normal fixed-schedule anchor.
+
 `retry` only retries expected failures; defects remain defects. `repeat`
 continues after success and returns the final successful value. `timeout` fails
 with `{ _tag: "TimeoutError", duration, unit }` and requests interruption for

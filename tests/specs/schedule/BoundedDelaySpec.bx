@@ -1,0 +1,95 @@
+import models.effect.Effect@bxeffect;
+import models.effect.Cause@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.Schedule@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
+import tests.resources.AsyncTestSupport;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Capped Schedule delays", () => {
+			it( "caps exponential delays without mutating the original schedule", () => {
+				var original = Schedule::exponential( 250 );
+				var capped = original.maxDelay( 1000 );
+				expect( capped.next( 0, null ).delay ).toBe( 250 );
+				expect( capped.next( 1, null ).delay ).toBe( 500 );
+				expect( capped.next( 2, null ).delay ).toBe( 1000 );
+				expect( capped.next( 5, null ).delay ).toBe( 1000 );
+				expect( original.next( 5, null ).delay ).toBe( 8000 );
+				expect( capped.next( 5, null ).unit ).toBe( "milliseconds" );
+			} );
+
+			it( "supports units, zero waits, and finite recurrence limits", () => {
+				var policy = Schedule::exponential( 1, "seconds" ).maxDelay( 2, "seconds" ).and( Schedule::recurs( 3 ) );
+				expect( policy.next( 0, null ).delay ).toBe( 1000 );
+				expect( policy.next( 2, null ).delay ).toBe( 2000 );
+				expect( policy.next( 3, null ).continue ).toBeFalse();
+				expect( Schedule::spaced( 100 ).maxDelay( 0 ).next( 0, null ).delay ).toBe( 0 );
+				expect( Schedule::recurs( 0 ).maxDelay( 5 ).next( 0, null ).continue ).toBeFalse();
+			} );
+
+			it( "applies caps in composition order and preserves input predicates", () => {
+				expect( Schedule::spaced( 100 ).jittered( 2, 2 ).maxDelay( 150 ).next( 0, null ).delay ).toBe( 150 );
+				expect( Schedule::spaced( 100 ).maxDelay( 50 ).jittered( 2, 2 ).next( 0, null ).delay ).toBe( 100 );
+				expect( Schedule::spaced( 100 ).and( Schedule::spaced( 500 ) ).maxDelay( 50 ).next( 0, null ).delay ).toBe( 50 );
+				expect( Schedule::spaced( 100 ).whileInput( ( value ) => value == "retry" ).maxDelay( 50 ).next( 0, "stop" ).continue ).toBeFalse();
+			} );
+
+			it( "reanchors fixed schedules only when their wait is shortened", () => {
+				var capped = Schedule::fixed( 20 ).maxDelay( 5 );
+				var first = capped.next( 0, null, 0, 0 );
+				expect( first.delay ).toBe( 5 );
+				expect( first.nextScheduledAt ).toBe( 5 );
+				expect( capped.next( 1, null, first.nextScheduledAt, 5 ).nextScheduledAt ).toBe( 10 );
+				var overrun = capped.next( 0, null, 0, 35 );
+				expect( overrun.delay ).toBe( 0 );
+				expect( overrun.nextScheduledAt ).toBe( 35 );
+				expect( Schedule::fixed( 20 ).maxDelay( 100 ).next( 0, null, 0, 8 ).nextScheduledAt ).toBe( 20 );
+			} );
+
+			it( "validates the cap eagerly", () => {
+				expect( () => Schedule::exponential( 1 ).maxDelay( -1 ) ).toThrow( type: "bxeffect.InvalidScheduleException" );
+				expect( () => Schedule::exponential( 1 ).maxDelay( 1, "fortnights" ) ).toThrow( type: "bxeffect.InvalidTimeUnitException" );
+			} );
+
+			it( "retains bounded delays at very large recurrence counts", () => {
+				expect( Schedule::exponential( 1 ).maxDelay( 1000 ).next( 2048, null ).delay ).toBe( 1000 );
+			} );
+
+			it( "retries lazily with capped TestClock waits and releases each local attempt", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var starts = new java.util.concurrent.CopyOnWriteArrayList();
+				var releases = new java.util.concurrent.atomic.AtomicInteger( 0 );
+				var attempt = Effect::scoped( Effect::acquireRelease( Effect::sync( () => { starts.add( clock.now() ); return starts.size(); } ),
+					( value ) => Effect::sync( () => releases.incrementAndGet() ) ).flatMap( ( value ) => Effect::fail( "retry" ) ) );
+				var program = attempt.retry( Schedule::exponential( 10 ).maxDelay( 15 ).and( Schedule::recurs( 3 ) ) );
+				expect( starts.size() ).toBe( 0 );
+				var rootFiber = runtime.runFork( program );
+				try {
+					for ( var delay in [ 10, 15, 15 ] ) {
+						AsyncTestSupport::awaitCondition( () => clock.pendingCount() == 1 );
+						expect( releases.get() ).toBe( starts.size() );
+						clock.advance( delay );
+					}
+					var outcome = rootFiber.terminationFuture().get( 5000 );
+					expect( outcome.cause().kind() ).toBe( "Fail" );
+					expect( starts.toArray() ).toBe( [ 0, 10, 25, 40 ] );
+					expect( releases.get() ).toBe( 4 );
+				} finally { rootFiber.interrupt(); rootFiber.terminationFuture().get( 5000 ); }
+			} );
+
+			it( "keeps defect and interruption out of bounded retry", () => {
+				for ( var failed in [ { program: Effect::die( "defect" ), expectedKind: "Die" }, { program: Effect::failCause( Cause::interrupt( "test" ) ), expectedKind: "Interrupt" } ] ) {
+					var clock = new TestClock();
+					var runtime = new EffectRuntime( { clock: clock } );
+					var outcome = runtime.runSyncExit( failed.program.retry( Schedule::exponential( 10 ).maxDelay( 15 ).and( Schedule::recurs( 3 ) ) ) );
+					expect( outcome.cause().kind() ).toBe( failed.expectedKind );
+					expect( clock.pendingCount() ).toBe( 0 );
+				}
+			} );
+		} );
+	}
+
+}

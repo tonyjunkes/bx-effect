@@ -20,14 +20,29 @@ Contexts are immutable by contract: provisioning copies the service map and
 restores the surrounding context across success and failure. `Layer.merge`
 builds in declaration order, so a later Layer can consume an earlier service.
 
-Within one root runtime execution, providing the same `Layer` instance more
+Within one runtime Scope, providing the same `Layer` instance more
 than once reuses its output bindings. Concurrent child Fibers share one in-flight
 build as well: the first builder publishes its completed outputs to the other
-waiters. A successful build remains memoized through root Scope closure; a
+waiters. A successful build remains memoized through that Scope's closure; a
 failed build is delivered to current waiters and removed so a later provision
 can retry. Shared scoped acquisition and release therefore happen once at the
-owning root Scope. Separate Layer instances and independent runtime executions
+owning Scope. Separate Layer instances and independent runtime executions
 remain independent; this is not a process-wide service cache.
+
+`Effect::scoped(program)` starts a fresh local Scope and Layer memo. Children
+inside it share local builds, and a later local Scope rebuilds the same Layer
+instance rather than reusing a released service. Closing restores the outer
+memo. Inherited services are available without rebuilding or transferring their
+ownership:
+
+```boxlang
+localServices = Effect::scoped( work.provide( DatabaseLive ) );
+outerServices = Effect::scoped( work ).provide( DatabaseLive );
+```
+
+The first form releases the built service before following work; the second
+builds it in the outer Scope, so it stays alive until that Scope closes. The
+same rule preserves application-owned services inherited from ManagedRuntime.
 
 Memoized outputs are merged into each caller's own input Context, so an
 unrelated service from the first caller cannot overwrite a later caller's
