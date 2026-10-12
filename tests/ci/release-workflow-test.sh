@@ -83,6 +83,7 @@ main_trigger() {
     grep -A2 '^  push:$' | grep -Fxq '      - main'
   grep -Fxq '    needs: tests' "$workflow"
   grep -Fxq '  cancel-in-progress: false' "$workflow"
+  step 'Read and validate release version' | grep -Fxq '        id: release'
   [[ -n "$(step 'Verify installed consumer')" ]]
 }
 publication_guards() {
@@ -92,7 +93,10 @@ publication_guards() {
   done
   awk '/^  publish:$/ { found=1 } found { print }' "$workflow" | grep -Fxq '      contents: write'
   # Tag pushes need checkout credentials; the verification job keeps them disabled.
-  ! awk '/^  publish:$/ { found=1 } found { print }' "$workflow" | grep -q 'persist-credentials: false'
+  if awk '/^  publish:$/ { found=1 } found { print }' "$workflow" | grep -q 'persist-credentials: false'; then
+    echo 'Publish checkout must retain credentials for its tag push.' >&2
+    return 1
+  fi
   [[ "$(grep -n 'name: Tag release commit' "$workflow" | cut -d: -f1)" -lt "$(grep -n 'name: Publish to ForgeBox' "$workflow" | cut -d: -f1)" ]]
   [[ "$(grep -n 'name: Publish to ForgeBox' "$workflow" | cut -d: -f1)" -lt "$(grep -n 'name: Create GitHub release' "$workflow" | cut -d: -f1)" ]]
 }
