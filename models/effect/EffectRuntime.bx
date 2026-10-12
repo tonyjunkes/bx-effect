@@ -440,6 +440,13 @@ class {
 							runtimeScope = failureFrame.scope;
 							runtimeLayerMemo = failureFrame.layerMemo;
 							current = haltInstruction( failedLocalExit.cause() );
+							// Closure can deliver a pending request while this unwind is
+							// already in progress. Acknowledge it before outer recovery,
+							// which must not receive the same interruption a second time.
+							if ( !interruptionObserved && !isNull( arguments.controlState )
+								&& arguments.controlState.isInterrupted() && current.cause.isInterrupted() ) {
+								interruptionObserved = true;
+							}
 							continue;
 						}
 						if ( failureFrame.kind == "Ensuring" ) {

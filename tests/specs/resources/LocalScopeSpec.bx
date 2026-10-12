@@ -207,6 +207,25 @@ class extends="testbox.system.BaseSpec" {
 				expect( followed.get() ).toBe( 0 );
 			} );
 
+			it( "delivers cancellation arriving during failed-body cleanup once to outer recovery", () => {
+				var closing = new CountDownLatch( 1 );
+				var released = futureNew();
+				var observedCause = null;
+				var program = Effect::scoped( Effect::acquireRelease( Effect::succeed( "resource" ), ( value ) =>
+					Effect::fromBoxFuture( () => { closing.countDown(); return released; } ).flatMap( ( ignored ) => Effect::fail( "cleanup" ) )
+				).flatMap( ( value ) => Effect::fail( "body" ) ) ).catchCause( ( failureCause ) => Effect::sync( () => {
+					observedCause = failureCause;
+					return "recovered";
+				} ) );
+				var rootFiber = Effect::runFork( program );
+				try { expect( closing.await( 5, TimeUnit::SECONDS ) ).toBeTrue(); rootFiber.interrupt(); }
+				finally { released.complete( null ); }
+				expect( rootFiber.terminationFuture().get( 5000 ).value() ).toBe( "recovered" );
+				expect( observedCause.isInterrupted() ).toBeTrue();
+				expect( observedCause.failures() ).toBe( [ "body", "cleanup" ] );
+				expect( rootFiber.hasCleanupFailure() ).toBeFalse();
+			} );
+
 			it( "does not resurrect an interruption recovered inside the local body", () => {
 				var clock = new TestClock();
 				var runtime = new EffectRuntime( { clock: clock } );
