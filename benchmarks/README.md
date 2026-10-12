@@ -54,7 +54,9 @@ initial before/after samples; these are local evidence, not performance promises
 
 `CollectionRuntimeBench.bxm` compares a 10,000-value native loop with sequential
 `forEach`, and measures 1,000 immediate Effects at concurrency 1, 8, 32, 128,
-and unbounded. Immediate Effects isolate runtime/completion bookkeeping from
+and unbounded. It first warms 10,000 native children independently of `forEach`
+so the inline and Fiber-based variants prepare the child runtime equally.
+Immediate Effects isolate runtime/completion bookkeeping from
 I/O latency; `ConcurrencyBench.bxm` separately checks delayed work. StreamBench
 also asserts that a 100,000-value `mapEffect(...).take(1)` calls its mapper once.
 

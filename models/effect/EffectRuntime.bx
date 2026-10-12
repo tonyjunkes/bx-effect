@@ -1335,7 +1335,7 @@ class {
 		var exitsByIndex = {};
 
 		while ( nextIndex <= arguments.programs.len() && running.count() < concurrencyLimit ) {
-			var admitted = startIndexedChild(
+			var admitted = startQueuedChild(
 				arguments.programs[ nextIndex ],
 				nextIndex,
 				arguments.inheritedContext,
@@ -1367,7 +1367,7 @@ class {
 				exitsByIndex[ completedResult.index ] = completedExit;
 			}
 			if ( nextIndex <= arguments.programs.len() ) {
-				var admitted = startIndexedChild(
+				var admitted = startQueuedChild(
 					arguments.programs[ nextIndex ],
 					nextIndex,
 					arguments.inheritedContext,
@@ -1633,15 +1633,13 @@ class {
 	 * @inheritedContext Service bindings inherited by each child Fiber.
 	 * @parentScope Root Scope that atomically admits and owns the children.
 	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
-	 * @completionState Optional operation-local notification queue; null retains ordinary completion futures.
 	 */
 	private struct function startIndexedChild(
 		required Effect program,
 		required numeric index,
 		required Context inheritedContext,
 		required Scope parentScope,
-		required LayerMemo sharedLayerMemo,
-		any completionState = null
+		required LayerMemo sharedLayerMemo
 	) {
 		var programToRun = arguments.program;
 		var contextToUse = arguments.inheritedContext;
@@ -1655,17 +1653,46 @@ class {
 		) );
 		var childIndex = arguments.index;
 		var childId = childFiber.id();
+		return {
+			index : childIndex,
+			fiber : childFiber,
+			completion : childFiber.completionFuture().then( ( completedExit ) => {
+				index : childIndex,
+				fiber : childFiber,
+				fiberId : childId,
+				exit : completedExit
+			} )
+		};
+	}
+
+	/**
+	 * Attaches operation-local success and rejection notifications to an admitted child.
+	 *
+	 * @program Child Effect to execute.
+	 * @index Input position retained for ordered outcomes.
+	 * @inheritedContext Context inherited by the child.
+	 * @parentScope Scope owning the child lifetime.
+	 * @sharedLayerMemo Runtime-local Layer build memo shared with the child.
+	 * @completionState Queue and wakeup state owned by this collection.
+	 */
+	private struct function startQueuedChild(
+		required Effect program,
+		required numeric index,
+		required Context inheritedContext,
+		required Scope parentScope,
+		required LayerMemo sharedLayerMemo,
+		required struct completionState
+	) {
+		var admitted = startIndexedChild( arguments.program, arguments.index,
+			arguments.inheritedContext, arguments.parentScope, arguments.sharedLayerMemo );
 		var notifications = arguments.completionState;
-		// BoxFuture inherits native handle(): keep rejections as throwable
-		// records before asyncAny can convert them to diagnostic structs.
-		var completion = childFiber.completionFuture().handle( ( completedExit, error ) => {
-			var result = isNull( error )
-				? { index: childIndex, fiber: childFiber, fiberId: childId, exit: completedExit }
-				: { index: childIndex, waitError: error };
-			if ( !isNull( notifications ) ) { publishCompletion( notifications, result ); }
-			return result;
+		var childIndex = arguments.index;
+		// Native handle() retains throwable identity before asyncAny's diagnostic conversion.
+		admitted.completion.handle( ( result, error ) => {
+			publishCompletion( notifications, isNull( error ) ? result : { index: childIndex, waitError: error } );
+			return null;
 		} );
-		return { index: childIndex, fiber: childFiber, completion: completion };
+		return admitted;
 	}
 
 	/**
@@ -1804,8 +1831,13 @@ class {
 		}
 		try {
 			var completed = completionFuture.get();
-			if ( structKeyExists( completed, "waitError" ) ) {
-				throw( object: completed.waitError );
+			if ( !structKeyExists( completed, "exit" ) ) {
+				// asyncAny can turn native rejection into a diagnostic struct.
+				// Recover the original throwable from the rejected dependent view
+				// instead of losing fatal-error identity in that conversion.
+				for ( var candidate in arguments.completions ) {
+					if ( candidate.isCompletedExceptionally() ) { candidate.get(); }
+				}
 			}
 			return completed;
 		} finally {

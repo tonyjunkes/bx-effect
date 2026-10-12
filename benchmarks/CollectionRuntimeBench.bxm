@@ -4,6 +4,13 @@ import benchmarks.BenchmarkSupport;
 
 values = [];
 for ( index = 1; index <= 10000; index++ ) { values.append( index ); }
+// Warm native child execution independently of forEach. The baseline forEach
+// schedules 60,000 warmup/sample children; the sequential candidate schedules
+// none. Without this common warmup, later small-limit measurements have unequal
+// JIT preparation even though each individual scenario has its own warmup.
+childWarmup = [];
+for ( index = 1; index <= 10000; index++ ) { childWarmup.append( Effect::succeed( index ) ); }
+Effect::runSync( Effect::all( childWarmup, { concurrency: 8 } ) );
 nativeMeasurement = BenchmarkSupport::measure( () => {
 	var total = 0;
 	for ( var value in values ) { total += value; }
