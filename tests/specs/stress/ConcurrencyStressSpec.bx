@@ -7,6 +7,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Random;
+import tests.resources.AsyncTestSupport;
 
 /** Repeated, seeded races with bounded gates and no sleep-based ordering. */
 class extends="testbox.system.BaseSpec" {
@@ -16,7 +17,7 @@ class extends="testbox.system.BaseSpec" {
 			it( "cancels concurrent acquisition and retains every failed release exactly once", () => {
 				var randomizer = new Random( 1102026 );
 				for ( var iteration = 1; iteration <= 12; iteration++ ) {
-					var width = 2 + randomizer.nextInt( 7 );
+					var width = 9 + randomizer.nextInt( 8 );
 					var entered = new CountDownLatch( width );
 					var proceed = new CountDownLatch( 1 );
 					var released = new AtomicInteger();
@@ -53,21 +54,26 @@ class extends="testbox.system.BaseSpec" {
 					var builds = new AtomicInteger();
 					var releases = new AtomicInteger();
 					var entered = new CountDownLatch( 1 );
-					var ready = new CountDownLatch( 8 );
+					var ready = new CountDownLatch( 16 );
+					var workers = new java.util.concurrent.CopyOnWriteArrayList();
 					var pending = futureNew();
 					var shared = Layer::scoped( tag, Effect::acquireRelease(
 						Effect::fromBoxFuture( () => { builds.incrementAndGet(); entered.countDown(); return pending; } ),
 						( resource ) => Effect::sync( () => releases.incrementAndGet() ) ) );
-					var branch = Effect::sync( () => ready.countDown() )
+					var branch = Effect::sync( () => { workers.add( java.lang.Thread::currentThread() ); ready.countDown(); } )
 						.flatMap( () => Effect::service( tag ).provide( shared ) );
-					var fiber = Effect::runFork( Effect::all( [ branch, branch, branch, branch, branch, branch, branch, branch ] ) );
+					var branches = [];
+					for ( var index = 1; index <= 16; index++ ) { branches.append( branch ); }
+					var fiber = Effect::runFork( Effect::all( branches ) );
 					try {
 						awaitGate( ready );
 						awaitGate( entered );
+						awaitBlockedWorkers( workers, 16 );
 						pending.complete( "shared" );
 						var outcome = fiber.terminationFuture().get( 5000 );
 						expect( outcome.isSuccess() ).toBeTrue();
-						expect( outcome.value() ).toBe( [ "shared", "shared", "shared", "shared", "shared", "shared", "shared", "shared" ] );
+						expect( outcome.value().len() ).toBe( 16 );
+						for ( var service in outcome.value() ) { expect( service ).toBe( "shared" ); }
 						expect( builds.get() ).toBe( 1 );
 						expect( releases.get() ).toBe( 1 );
 					} finally {
@@ -81,15 +87,15 @@ class extends="testbox.system.BaseSpec" {
 			it( "retains input-order Causes across shuffled accumulated completions", () => {
 				var randomizer = new Random( 1102026 );
 				for ( var iteration = 1; iteration <= 12; iteration++ ) {
-					var entered = new CountDownLatch( 8 );
+					var entered = new CountDownLatch( 16 );
 					var pending = [];
 					var branches = [];
-					var order = [ 1, 2, 3, 4, 5, 6, 7, 8 ];
-					for ( var index = 1; index <= 8; index++ ) {
+					var order = [ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 ];
+					for ( var index = 1; index <= 16; index++ ) {
 						pending.append( futureNew() );
 						branches.append( gatedBranch( pending[ index ], entered ) );
 					}
-					for ( var index = 8; index > 1; index-- ) {
+					for ( var index = 16; index > 1; index-- ) {
 						var chosen = 1 + randomizer.nextInt( index );
 						var previous = order[ index ];
 						order[ index ] = order[ chosen ];
@@ -101,7 +107,7 @@ class extends="testbox.system.BaseSpec" {
 						for ( var index in order ) { pending[ index ].complete( index ); }
 						var outcome = fiber.terminationFuture().get( 5000 );
 						expect( outcome.cause().kind() ).toBe( "Parallel" );
-						expect( outcome.cause().failures() ).toBe( [ 1, 3, 5, 7 ] );
+						expect( outcome.cause().failures() ).toBe( [ 1, 3, 5, 7, 9, 11, 13, 15 ] );
 						expect( outcome.cause().isInterrupted() ).toBeFalse();
 						expect( outcome.cause().isDefect() ).toBeFalse();
 					} finally {
@@ -119,12 +125,14 @@ class extends="testbox.system.BaseSpec" {
 					Effect::runSync( queueSource.offer( "buffered" ).zip( hub.publish( "buffered" ) ) );
 					var entered = new CountDownLatch( 8 );
 					var producers = [];
+					var workers = new java.util.concurrent.CopyOnWriteArrayList();
 					for ( var index = 1; index <= 4; index++ ) {
-						producers.append( Effect::runFork( Effect::sync( () => entered.countDown() ).flatMap( () => queueSource.offer( "later" ) ) ) );
-						producers.append( Effect::runFork( Effect::sync( () => entered.countDown() ).flatMap( () => hub.publish( "later" ) ) ) );
+						producers.append( Effect::runFork( Effect::sync( () => { workers.add( java.lang.Thread::currentThread() ); entered.countDown(); } ).flatMap( () => queueSource.offer( "later" ) ) ) );
+						producers.append( Effect::runFork( Effect::sync( () => { workers.add( java.lang.Thread::currentThread() ); entered.countDown(); } ).flatMap( () => hub.publish( "later" ) ) ) );
 					}
 					try {
 						awaitGate( entered );
+						awaitBlockedWorkers( workers, 8 );
 						var shutdowns = Effect::runSync( Effect::all( [ queueSource.shutdown(), queueSource.shutdown(), hub.shutdown(), hub.shutdown() ] ) );
 						expect( shutdowns[ 1 ] || shutdowns[ 2 ] ).toBeTrue();
 						expect( shutdowns[ 1 ] && shutdowns[ 2 ] ).toBeFalse();
@@ -156,6 +164,24 @@ class extends="testbox.system.BaseSpec" {
 		if ( !arguments.gate.await( 5, TimeUnit::SECONDS ) ) {
 			throw( type: "bxeffect.testing.TestTimeoutException", message: "Stress gate timed out (seed 1102026)" );
 		}
+	}
+
+	/**
+	 * Confirms actual blocking at the only wait in each admitted branch.
+	 *
+	 * @workers Native interpreter threads captured immediately before the known wait.
+	 * @count Number of workers expected in this test iteration.
+	 */
+	private void function awaitBlockedWorkers( required any workers, required numeric count ) {
+		var captured = arguments.workers;
+		var expected = arguments.count;
+		AsyncTestSupport::awaitCondition( () => {
+			if ( captured.size() != expected ) { return false; }
+			for ( var worker in captured ) {
+				if ( worker.getState().toString() != "WAITING" ) { return false; }
+			}
+			return true;
+		}, 5000 );
 	}
 
 	/**

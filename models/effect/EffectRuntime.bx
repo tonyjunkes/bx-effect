@@ -1319,13 +1319,19 @@ class {
 		var concurrencyLimit = arguments.options.concurrency == "unbounded"
 			? arguments.programs.len()
 			: arguments.options.concurrency;
+		if ( concurrencyLimit <= 8 ) {
+			return awaitSmallAll( arguments.programs, arguments.inheritedContext,
+				arguments.parentScope, arguments.sharedLayerMemo, arguments.options, arguments.controlState );
+		}
 		var nextIndex = 1;
-		var running = structNew( "ordered" );
+		// Small active sets are cheaper with the existing native asyncAny path.
+		// Callback notifications remove the measured scanning cost at larger limits.
 		var completions = {
 			lock: new java.util.concurrent.locks.ReentrantLock(),
 			queue: new ArrayDeque(),
 			signal: futureNew()
 		};
+		var running = structNew( "ordered" );
 		var exitsByIndex = {};
 
 		while ( nextIndex <= arguments.programs.len() && running.count() < concurrencyLimit ) {
@@ -1334,10 +1340,10 @@ class {
 				nextIndex,
 				arguments.inheritedContext,
 				arguments.parentScope,
-				arguments.sharedLayerMemo
+				arguments.sharedLayerMemo,
+				completions
 			);
 			running[ nextIndex ] = admitted;
-			admitted.completion.then( ( result ) => publishCompletion( completions, result ) );
 			nextIndex++;
 		}
 
@@ -1351,7 +1357,9 @@ class {
 			structDelete( running, completedResult.index );
 
 			if ( completedExit.isFailure() && arguments.options.mode == "failFast" ) {
-				var failedExit = appendCleanup( completedExit, interruptIndexedFibers( running.valueArray() ), arguments.controlState );
+				var failedExit = appendCleanup( completedExit, interruptIndexedFibers(
+					running.valueArray()
+				), arguments.controlState );
 				return { isSuccess: false, cause: failedExit.cause() };
 			}
 
@@ -1364,33 +1372,114 @@ class {
 					nextIndex,
 					arguments.inheritedContext,
 					arguments.parentScope,
-					arguments.sharedLayerMemo
+					arguments.sharedLayerMemo,
+					completions
 				);
 				running[ nextIndex ] = admitted;
-				admitted.completion.then( ( result ) => publishCompletion( completions, result ) );
 				nextIndex++;
 			}
 		}
 
+		return collectAllOutcomes( arguments.programs.len(), exitsByIndex, discardResults );
+	}
+
+	/**
+	 * Uses native asyncAny for a small bounded active set, collecting outcomes by input index.
+	 *
+	 * @programs Child Effects in input order.
+	 * @inheritedContext Service bindings inherited by each child Fiber.
+	 * @parentScope Root Scope that atomically admits and owns the children.
+	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
+	 * @options Validated concurrency and mode settings controlling child admission and failure collection.
+	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
+	 */
+	private struct function awaitSmallAll(
+		required array programs,
+		required Context inheritedContext,
+		required Scope parentScope,
+		required LayerMemo sharedLayerMemo,
+		required struct options,
+		any controlState = null
+	) {
+		var discardResults = structKeyExists( arguments.options, "discard" ) && arguments.options.discard;
+		if ( arguments.programs.len() == 0 ) {
+			return { isSuccess: true, values: discardResults ? null : [] };
+		}
+
+		var concurrencyLimit = arguments.options.concurrency == "unbounded"
+			? arguments.programs.len()
+			: arguments.options.concurrency;
+		var nextIndex = 1;
+		var running = [];
+		var exitsByIndex = {};
+
+		while ( nextIndex <= arguments.programs.len() && running.len() < concurrencyLimit ) {
+			running.append( startIndexedChild(
+				arguments.programs[ nextIndex ],
+				nextIndex,
+				arguments.inheritedContext,
+				arguments.parentScope,
+				arguments.sharedLayerMemo
+			) );
+			nextIndex++;
+		}
+
+		while ( running.len() > 0 ) {
+			var completedResult = awaitOne( awaitIndexedFactories( running ), arguments.controlState );
+			var completedExit = completedResult.exit;
+			observeChildCleanup( completedResult.fiber, arguments.controlState );
+			running = removeIndexedFiber( running, completedResult.fiberId );
+
+			if ( completedExit.isFailure() && arguments.options.mode == "failFast" ) {
+				var failedExit = appendCleanup( completedExit, interruptIndexedFibers( running ), arguments.controlState );
+				return { isSuccess: false, cause: failedExit.cause() };
+			}
+
+			if ( !discardResults || completedExit.isFailure() ) {
+				exitsByIndex[ completedResult.index ] = completedExit;
+			}
+			if ( nextIndex <= arguments.programs.len() ) {
+				running.append( startIndexedChild(
+					arguments.programs[ nextIndex ],
+					nextIndex,
+					arguments.inheritedContext,
+					arguments.parentScope,
+					arguments.sharedLayerMemo
+				) );
+				nextIndex++;
+			}
+		}
+
+		return collectAllOutcomes( arguments.programs.len(), exitsByIndex, discardResults );
+	}
+
+	/**
+	 * Assembles ordered values or accumulated Causes independently of completion strategy.
+	 *
+	 * @count Number of input programs.
+	 * @outcomes Indexed completed Exits, omitting successful entries when discarding.
+	 * @discard Whether successful output should be discarded.
+	 */
+	private struct function collectAllOutcomes( required numeric count, required struct outcomes, required boolean discard ) {
 		var combinedCause = null;
-		for ( var index = 1; index <= arguments.programs.len(); index++ ) {
+		for ( var index = 1; index <= arguments.count; index++ ) {
 			// Completion order varies; input indices keep accumulated Causes stable.
-			if ( structKeyExists( exitsByIndex, index ) && exitsByIndex[ index ].isFailure() ) {
+			if ( structKeyExists( arguments.outcomes, index ) && arguments.outcomes[ index ].isFailure() ) {
 				combinedCause = isNull( combinedCause )
-					? exitsByIndex[ index ].cause()
-					: Cause::parallel( combinedCause, exitsByIndex[ index ].cause() );
+					? arguments.outcomes[ index ].cause()
+					: Cause::parallel( combinedCause, arguments.outcomes[ index ].cause() );
 			}
 		}
 		if ( !isNull( combinedCause ) ) {
 			return { isSuccess: false, cause: combinedCause };
 		}
-		if ( discardResults ) {
+		if ( arguments.discard ) {
 			return { isSuccess: true, values: null };
 		}
 
 		var values = [];
-		for ( var index = 1; index <= arguments.programs.len(); index++ ) {
-			values.append( exitsByIndex[ index ].value() );
+		for ( var index = 1; index <= arguments.count; index++ ) {
+			values.append( arguments.outcomes[ index ].value() );
 		}
 		return { isSuccess: true, values: values };
 	}
@@ -1426,7 +1515,11 @@ class {
 			arguments.state.lock.lock();
 			try {
 				if ( !arguments.state.queue.isEmpty() ) {
-					return arguments.state.queue.removeFirst();
+					var completed = arguments.state.queue.removeFirst();
+					if ( structKeyExists( completed, "waitError" ) ) {
+						throw( object: completed.waitError );
+					}
+					return completed;
 				}
 				// Installation and the empty check share the producer lock: a
 				// completion cannot be lost between checking and starting the wait.
@@ -1540,13 +1633,15 @@ class {
 	 * @inheritedContext Service bindings inherited by each child Fiber.
 	 * @parentScope Root Scope that atomically admits and owns the children.
 	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
+	 * @completionState Optional operation-local notification queue; null retains ordinary completion futures.
 	 */
 	private struct function startIndexedChild(
 		required Effect program,
 		required numeric index,
 		required Context inheritedContext,
 		required Scope parentScope,
-		required LayerMemo sharedLayerMemo
+		required LayerMemo sharedLayerMemo,
+		any completionState = null
 	) {
 		var programToRun = arguments.program;
 		var contextToUse = arguments.inheritedContext;
@@ -1560,16 +1655,17 @@ class {
 		) );
 		var childIndex = arguments.index;
 		var childId = childFiber.id();
-		return {
-			index : childIndex,
-			fiber : childFiber,
-			completion : childFiber.completionFuture().then( ( completedExit ) => {
-				index : childIndex,
-				fiber : childFiber,
-				fiberId : childId,
-				exit : completedExit
-			} )
-		};
+		var notifications = arguments.completionState;
+		// BoxFuture inherits native handle(): keep rejections as throwable
+		// records before asyncAny can convert them to diagnostic structs.
+		var completion = childFiber.completionFuture().handle( ( completedExit, error ) => {
+			var result = isNull( error )
+				? { index: childIndex, fiber: childFiber, fiberId: childId, exit: completedExit }
+				: { index: childIndex, waitError: error };
+			if ( !isNull( notifications ) ) { publishCompletion( notifications, result ); }
+			return result;
+		} );
+		return { index: childIndex, fiber: childFiber, completion: completion };
 	}
 
 	/**
@@ -1707,7 +1803,11 @@ class {
 			arguments.controlState.setActiveFuture( completionFuture );
 		}
 		try {
-			return completionFuture.get();
+			var completed = completionFuture.get();
+			if ( structKeyExists( completed, "waitError" ) ) {
+				throw( object: completed.waitError );
+			}
+			return completed;
 		} finally {
 			if ( !isNull( arguments.controlState ) ) {
 				arguments.controlState.clearActiveFuture( completionFuture );

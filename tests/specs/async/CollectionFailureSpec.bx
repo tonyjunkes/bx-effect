@@ -1,0 +1,33 @@
+import models.effect.Effect@bxeffect;
+import models.effect.internal.ThrowablePolicy@bxeffect;
+import java.lang.LinkageError;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Exceptional collection completions", () => {
+			it( "propagates fatal native rejection through both completion strategies without hanging", () => {
+				for ( var width in [ 4, 12 ] ) {
+					for ( var failureMode in [ "failFast", "accumulate" ] ) {
+						var branches = [ Effect::sync( () => throw( object: new LinkageError( "fatal child" ) ) ) ];
+						for ( var index = 2; index <= width; index++ ) { branches.append( Effect::succeed( index ) ); }
+						var fiber = Effect::runFork( Effect::all( branches, { mode: failureMode } ) );
+						var escapedError = null;
+						try {
+							fiber.completionFuture().get( 3000 );
+						} catch ( any error ) {
+							escapedError = error;
+						} finally {
+							fiber.interrupt();
+							fiber.terminationFuture().get( 3000 );
+						}
+						expect( ThrowablePolicy::isFatal( escapedError ) ).toBeTrue(
+							"width=#width# mode=#failureMode# error=#isNull( escapedError ) ? 'none' : escapedError.message#"
+						);
+					}
+				}
+			} );
+		} );
+	}
+
+}

@@ -69,6 +69,10 @@ class {
 				if ( position > sourceValues.len() ) {
 					return Effect::succeed( attempt() );
 				}
+				if ( position == 1 && demand >= sourceValues.len() ) {
+					position = sourceValues.len() + 1;
+					return Effect::succeed( attempt( sourceValues ) );
+				}
 				var values = [];
 				var end = min( sourceValues.len(), position + demand - 1 );
 				while ( position <= end ) {
