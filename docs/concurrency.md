@@ -47,6 +47,17 @@ exceptionally. `get()` exposes BoxLang's normal execution wrapper around the
 underlying `bxeffect.EffectFailureException`; choose `runFutureExit` when the future
 should resolve to an `Exit` for both outcomes.
 
+Sequential `forEach` (the default, or `concurrency: 1`) advances each item in
+the current iterative interpreter. It creates each mapper's Effect on demand,
+preserves Context restoration and finalizers, and checks Fiber cancellation
+before starting another item. It does not create a child Fiber per item;
+synchronous user callbacks execute on the thread interpreting the collection.
+Use concurrent options when separate child Fibers are needed. `all` retains
+its child-Fiber execution model even at concurrency 1. Concurrent `all` and
+`forEach` use operation-local native completion notifications for larger active
+sets, retaining native `asyncAny` for small limits. Input order still determines
+results and accumulated Causes; this private strategy does not change the API.
+
 Use `Effect::all`, `race`, or `firstSuccessOf` for concurrent programs. Branches
 inherit the caller's Context and are owned by its Scope. Cancellation is
 best-effort because BoxFuture executors cannot forcibly stop arbitrary user
@@ -108,8 +119,8 @@ Effect::forEach( users, ( user, index ) => saveUser( user ), {
 Pass `{ discard: true }` when the work matters but collected values do not.
 The interpreter drops successful branch outputs instead of building a result
 array. Input descriptions are still finite and eager; use Stream for pull-based
-input. Prefer a bounded concurrency limit for large collections: unbounded
-completion selection still traverses the active set.
+input. Prefer a bounded concurrency limit to control active child work. Larger
+collections consume notifications without repeatedly scanning the active set.
 
 Failed loser cleanup is retained by `race`, `firstSuccessOf`, and fail-fast
 `all`, in sequence after the primary outcome. A successful winner can therefore

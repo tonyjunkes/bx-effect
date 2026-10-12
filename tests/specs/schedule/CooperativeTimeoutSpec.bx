@@ -1,0 +1,52 @@
+import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
+import tests.resources.AsyncTestSupport;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Cooperative timeout boundary", () => {
+			it( "waits for non-cooperative synchronous code and cleanup after the deadline", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var entered = new java.util.concurrent.CountDownLatch( 1 );
+				var releaseWork = new java.util.concurrent.CountDownLatch( 1 );
+				var cleanupEntered = new java.util.concurrent.CountDownLatch( 1 );
+				var releaseCleanup = new java.util.concurrent.CountDownLatch( 1 );
+				var timeUnit = createObject( "java", "java.util.concurrent.TimeUnit" );
+				var source = Effect::sync( () => {
+					entered.countDown();
+					if ( !releaseWork.await( 3, timeUnit.SECONDS ) ) {
+						throw( type: "bxeffect.testing.GateTimeoutException", message: "work gate" );
+					}
+					return "late";
+				} ).ensuring( Effect::sync( () => {
+					cleanupEntered.countDown();
+					if ( !releaseCleanup.await( 3, timeUnit.SECONDS ) ) {
+						throw( type: "bxeffect.testing.GateTimeoutException", message: "cleanup gate" );
+					}
+				} ) );
+				var outcomeFuture = runtime.runFutureExit( source.timeout( 10 ) );
+				try {
+					expect( entered.await( 3, timeUnit.SECONDS ) ).toBeTrue();
+					AsyncTestSupport::awaitCondition( () => clock.pendingCount() == 1 );
+					clock.advance( 10 );
+					expect( outcomeFuture.isDone() ).toBeFalse();
+					releaseWork.countDown();
+					expect( cleanupEntered.await( 3, timeUnit.SECONDS ) ).toBeTrue();
+					expect( outcomeFuture.isDone() ).toBeFalse();
+					releaseCleanup.countDown();
+					var outcome = outcomeFuture.get( 3000 );
+					expect( outcome.cause().kind() ).toBe( "Fail" );
+					expect( outcome.cause().error()._tag ).toBe( "TimeoutError" );
+				} finally {
+					releaseWork.countDown();
+					releaseCleanup.countDown();
+					outcomeFuture.get( 3000 );
+				}
+			} );
+		} );
+	}
+
+}

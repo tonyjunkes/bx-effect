@@ -1,0 +1,138 @@
+import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import models.effect.Stream@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import models.effect.testing.TestClock@bxeffect;
+import tests.resources.AsyncTestSupport;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Stream element demand", () => {
+			it( "executes only the requested mapEffect and tap operations", () => {
+				var mapped = [];
+				var observed = [];
+				var program = Stream::fromArray( [ 1, 2, 3 ] )
+					.mapEffect( ( value ) => Effect::sync( () => { mapped.append( value ); return value; } ) )
+					.tap( ( value ) => Effect::sync( () => observed.append( value ) ) )
+					.take( 1 ).runCollect();
+				expect( mapped ).toBeEmpty();
+				expect( Effect::runSync( program ) ).toBe( [ 1 ] );
+				expect( mapped ).toBe( [ 1 ] );
+				expect( observed ).toBe( [ 1 ] );
+				expect( Effect::runSync( program ) ).toBe( [ 1 ] );
+				expect( mapped ).toBe( [ 1, 1 ] );
+			} );
+
+			it( "does not evaluate unused values through map, filter, and takeWhile", () => {
+				var mapped = [];
+				var filtered = [];
+				var tested = [];
+				var values = Effect::runSync( Stream::fromArray( [ 1, 2, 3, 4 ] )
+					.map( ( value ) => { mapped.append( value ); return value; } )
+					.filter( ( value ) => { filtered.append( value ); return value >= 2; } )
+					.takeWhile( ( value ) => { tested.append( value ); return value < 3; } )
+					.runCollect() );
+				expect( values ).toBe( [ 2 ] );
+				expect( mapped ).toBe( [ 1, 2, 3 ] );
+				expect( filtered ).toBe( [ 1, 2, 3 ] );
+				expect( tested ).toBe( [ 2, 3 ] );
+			} );
+
+			it( "propagates demand through resource, Context, cleanup, and concatenation wrappers", () => {
+				var tag = new ServiceTag( "demand" );
+				var mapped = [];
+				var releases = 0;
+				var source = Stream::acquireRelease( Effect::succeed( "resource" ),
+					( resource ) => Effect::sync( () => releases++ ),
+					( resource ) => Stream::fromArray( [ 1, 2, 3 ] )
+						.mapEffect( ( value ) => Effect::service( tag ).tap( ( service ) =>
+							Effect::sync( () => mapped.append( value ) ) ).as( value ) ) )
+					.provide( Context::empty().add( tag, "service" ) )
+					.ensuring( Effect::succeed( null ) )
+					.concat( Stream::fail( "unused" ) );
+				expect( Effect::runSync( source.take( 1 ).runCollect() ) ).toBe( [ 1 ] );
+				expect( mapped ).toBe( [ 1 ] );
+				expect( releases ).toBe( 1 );
+			} );
+
+			it( "requests only one group and one inner Stream at a time", () => {
+				var mapped = [];
+				var values = Effect::runSync( Stream::fromArray( [ 1, 2, 3, 4 ] )
+					.map( ( value ) => { mapped.append( value ); return value; } )
+					.grouped( 2 ).take( 1 ).runCollect() );
+				expect( values ).toBe( [ [ 1, 2 ] ] );
+				expect( mapped ).toBe( [ 1, 2 ] );
+				mapped = [];
+				expect( Effect::runSync( Stream::fromArray( [ 1, 2, 3 ] )
+					.map( ( value ) => { mapped.append( value ); return value; } )
+					.flatMap( ( value ) => Stream::fromArray( [ value, value * 10 ] ) )
+					.take( 1 ).runCollect() ) ).toBe( [ 1 ] );
+				expect( mapped ).toBe( [ 1 ] );
+			} );
+
+			it( "stops upstream work when an effectful consumer fails", () => {
+				var mapped = [];
+				var releases = 0;
+				var outcome = Effect::runSyncExit( Stream::fromArray( [ 1, 2, 3 ] )
+					.mapEffect( ( value ) => Effect::sync( () => { mapped.append( value ); return value; } ) )
+					.ensuring( Effect::sync( () => releases++ ) )
+					.runForEach( ( value ) => Effect::fail( "stop" ) ) );
+				expect( outcome.cause().kind() ).toBe( "Fail" );
+				expect( outcome.cause().error() ).toBe( "stop" );
+				expect( mapped ).toBe( [ 1 ] );
+				expect( releases ).toBe( 1 );
+			} );
+
+			it( "does not observe a failure or defect beyond take's demand", () => {
+				var source = Stream::fromArray( [ 1, 2 ] ).mapEffect( ( value ) =>
+					value == 1 ? Effect::succeed( value ) : Effect::fail( "unused" ) );
+				expect( Effect::runSync( source.take( 1 ).runCollect() ) ).toBe( [ 1 ] );
+				expect( Effect::runSyncExit( source.runCollect() ).cause().kind() ).toBe( "Fail" );
+				var defective = Stream::fromArray( [ 1, 2 ] ).map( ( value ) => {
+					if ( value == 2 ) { throw( type: "bxeffect.testing.UnusedValueException", message: "unused" ); }
+					return value;
+				} );
+				expect( Effect::runSync( defective.take( 1 ).runCollect() ) ).toBe( [ 1 ] );
+				expect( Effect::runSyncExit( defective.runCollect() ).cause().kind() ).toBe( "Die" );
+			} );
+
+			it( "propagates demand through recovery, drop, scan, and nested take", () => {
+				var mapped = [];
+				var source = Stream::fail( "recover" ).catchAll( ( error ) =>
+					Stream::fromArray( [ 1, 2, 3, 4 ] ).map( ( value ) => { mapped.append( value ); return value; } ) );
+				expect( Effect::runSync( source.drop( 1 ).scan( 0, ( total, value ) => total + value )
+					.take( 3 ).take( 2 ).runCollect() ) ).toBe( [ 0, 2 ] );
+				expect( mapped ).toBe( [ 1, 2 ] );
+				mapped = [];
+				expect( Effect::runSync( source.take( 0 ).runCollect() ) ).toBeEmpty();
+				expect( mapped ).toBeEmpty();
+			} );
+
+			it( "interrupts element consumption before another mapping and releases its resource", () => {
+				var clock = new TestClock();
+				var runtime = new EffectRuntime( { clock: clock } );
+				var mapped = new java.util.concurrent.atomic.AtomicInteger();
+				var released = new java.util.concurrent.atomic.AtomicInteger();
+				var source = Stream::acquireRelease( Effect::succeed( "resource" ),
+					( resource ) => Effect::sync( () => released.incrementAndGet() ),
+					( resource ) => Stream::fromArray( [ 1, 2, 3 ] ).mapEffect( ( value ) =>
+						Effect::sync( () => mapped.incrementAndGet() ).as( value ) ) );
+				var fiber = runtime.runFork( source.runForEach( ( value ) => Effect::sleep( 10 ) ) );
+				try {
+					AsyncTestSupport::awaitCondition( () => clock.pendingCount() == 1 );
+					fiber.interrupt();
+					var outcome = fiber.terminationFuture().get( 3000 );
+					expect( outcome.cause().kind() ).toBe( "Interrupt" );
+					expect( mapped.get() ).toBe( 1 );
+					expect( released.get() ).toBe( 1 );
+				} finally {
+					fiber.interrupt();
+					fiber.terminationFuture().get( 3000 );
+				}
+			} );
+		} );
+	}
+
+}

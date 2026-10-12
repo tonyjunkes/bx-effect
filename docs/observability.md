@@ -38,6 +38,10 @@ Fiber terminal events apply to forked execution. `defect:unhandled` is emitted
 when a runtime reaches a terminal failure Cause containing a defect; recovery
 inside the program prevents the event because no defect reached the boundary.
 
+Sequential `forEach` runs its items in the current interpreter and does not
+create per-item Fibers or emit per-item Fiber events. Concurrent `forEach` and
+`all` create child Fibers, so their branches emit Fiber events.
+
 Observer exceptions are ignored after the normal fatal-throwable policy is
 applied. They therefore cannot change an Effect result or prevent finalizers.
 This keeps observability diagnostic-only.

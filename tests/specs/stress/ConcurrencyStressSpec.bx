@@ -1,0 +1,200 @@
+import models.effect.Effect@bxeffect;
+import models.effect.PubSub@bxeffect;
+import models.effect.Queue@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Random;
+import tests.resources.AsyncTestSupport;
+
+/** Repeated, seeded races with bounded gates and no sleep-based ordering. */
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Repeated concurrency races (seed 1102026)", () => {
+			it( "cancels concurrent acquisition and retains every failed release exactly once", () => {
+				var randomizer = new Random( 1102026 );
+				for ( var iteration = 1; iteration <= 12; iteration++ ) {
+					var width = 9 + randomizer.nextInt( 8 );
+					var entered = new CountDownLatch( width );
+					var proceed = new CountDownLatch( 1 );
+					var released = new AtomicInteger();
+					var branches = [];
+					for ( var index = 1; index <= width; index++ ) {
+						branches.append( Effect::acquireRelease( Effect::sync( () => {
+							entered.countDown();
+							awaitGate( proceed );
+							return "resource";
+						} ), ( resource ) => Effect::sync( () => released.incrementAndGet() )
+							.flatMap( () => Effect::fail( "release" ) ) ) );
+					}
+					var fiber = Effect::runFork( Effect::all( branches ) );
+					try {
+						awaitGate( entered );
+						fiber.interrupt();
+						proceed.countDown();
+						var outcome = fiber.terminationFuture().get( 5000 );
+						expect( outcome.cause().isInterrupted() ).toBeTrue();
+						expect( outcome.cause().isDefect() ).toBeFalse();
+						expect( outcome.cause().failures().len() ).toBe( width );
+						expect( released.get() ).toBe( width );
+					} finally {
+						proceed.countDown();
+						fiber.interrupt();
+						fiber.terminationFuture().get( 5000 );
+					}
+				}
+			} );
+
+			it( "shares a gated Layer build and one root release across contending branches", () => {
+				for ( var iteration = 1; iteration <= 12; iteration++ ) {
+					var tag = ServiceTag::of( "stress/shared" );
+					var builds = new AtomicInteger();
+					var releases = new AtomicInteger();
+					var entered = new CountDownLatch( 1 );
+					var ready = new CountDownLatch( 16 );
+					var workers = new java.util.concurrent.CopyOnWriteArrayList();
+					var pending = futureNew();
+					var shared = Layer::scoped( tag, Effect::acquireRelease(
+						Effect::fromBoxFuture( () => { builds.incrementAndGet(); entered.countDown(); return pending; } ),
+						( resource ) => Effect::sync( () => releases.incrementAndGet() ) ) );
+					var branch = Effect::sync( () => { workers.add( java.lang.Thread::currentThread() ); ready.countDown(); } )
+						.flatMap( () => Effect::service( tag ).provide( shared ) );
+					var branches = [];
+					for ( var index = 1; index <= 16; index++ ) { branches.append( branch ); }
+					var fiber = Effect::runFork( Effect::all( branches ) );
+					try {
+						awaitGate( ready );
+						awaitGate( entered );
+						awaitBlockedWorkers( workers, 16 );
+						pending.complete( "shared" );
+						var outcome = fiber.terminationFuture().get( 5000 );
+						expect( outcome.isSuccess() ).toBeTrue();
+						expect( outcome.value().len() ).toBe( 16 );
+						for ( var service in outcome.value() ) { expect( service ).toBe( "shared" ); }
+						expect( builds.get() ).toBe( 1 );
+						expect( releases.get() ).toBe( 1 );
+					} finally {
+						pending.complete( "shared" );
+						fiber.interrupt();
+						fiber.terminationFuture().get( 5000 );
+					}
+				}
+			} );
+
+			it( "retains input-order Causes across shuffled accumulated completions", () => {
+				var randomizer = new Random( 1102026 );
+				for ( var iteration = 1; iteration <= 12; iteration++ ) {
+					var entered = new CountDownLatch( 16 );
+					var pending = [];
+					var branches = [];
+					var order = [ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 ];
+					for ( var index = 1; index <= 16; index++ ) {
+						pending.append( futureNew() );
+						branches.append( gatedBranch( pending[ index ], entered ) );
+					}
+					for ( var index = 16; index > 1; index-- ) {
+						var chosen = 1 + randomizer.nextInt( index );
+						var previous = order[ index ];
+						order[ index ] = order[ chosen ];
+						order[ chosen ] = previous;
+					}
+					var fiber = Effect::runFork( Effect::all( branches, { mode: "accumulate" } ) );
+					try {
+						awaitGate( entered );
+						for ( var index in order ) { pending[ index ].complete( index ); }
+						var outcome = fiber.terminationFuture().get( 5000 );
+						expect( outcome.cause().kind() ).toBe( "Parallel" );
+						expect( outcome.cause().failures() ).toBe( [ 1, 3, 5, 7, 9, 11, 13, 15 ] );
+						expect( outcome.cause().isInterrupted() ).toBeFalse();
+						expect( outcome.cause().isDefect() ).toBeFalse();
+					} finally {
+						fiber.interrupt();
+						fiber.terminationFuture().get( 5000 );
+					}
+				}
+			} );
+
+			it( "wakes bounded Queue and PubSub producers during simultaneous shutdown", () => {
+				for ( var iteration = 1; iteration <= 12; iteration++ ) {
+					var queueSource = Queue::bounded( 1 );
+					var hub = PubSub::bounded( 1 );
+					var subscriptions = Effect::runSync( Effect::all( [ hub.subscribe(), hub.subscribe() ] ) );
+					Effect::runSync( queueSource.offer( "buffered" ).zip( hub.publish( "buffered" ) ) );
+					var entered = new CountDownLatch( 8 );
+					var producers = [];
+					var workers = new java.util.concurrent.CopyOnWriteArrayList();
+					for ( var index = 1; index <= 4; index++ ) {
+						producers.append( Effect::runFork( Effect::sync( () => { workers.add( java.lang.Thread::currentThread() ); entered.countDown(); } ).flatMap( () => queueSource.offer( "later" ) ) ) );
+						producers.append( Effect::runFork( Effect::sync( () => { workers.add( java.lang.Thread::currentThread() ); entered.countDown(); } ).flatMap( () => hub.publish( "later" ) ) ) );
+					}
+					try {
+						awaitGate( entered );
+						awaitBlockedWorkers( workers, 8 );
+						var shutdowns = Effect::runSync( Effect::all( [ queueSource.shutdown(), queueSource.shutdown(), hub.shutdown(), hub.shutdown() ] ) );
+						expect( shutdowns[ 1 ] || shutdowns[ 2 ] ).toBeTrue();
+						expect( shutdowns[ 1 ] && shutdowns[ 2 ] ).toBeFalse();
+						expect( shutdowns[ 3 ] || shutdowns[ 4 ] ).toBeTrue();
+						expect( shutdowns[ 3 ] && shutdowns[ 4 ] ).toBeFalse();
+						for ( var index = 1; index <= producers.len(); index++ ) {
+							var outcome = producers[ index ].terminationFuture().get( 5000 );
+							expect( outcome.cause().kind() ).toBe( "Fail" );
+							expect( outcome.cause().error()._tag ).toBe( index % 2 == 1 ? "QueueShutdown" : "PubSubShutdown" );
+						}
+						expect( Effect::runSync( queueSource.take() ) ).toBe( "buffered" );
+						expect( queueSource.size() ).toBe( 0 );
+					} finally {
+						Effect::runSync( queueSource.shutdown().zip( hub.shutdown() ) );
+						for ( var producer in producers ) { producer.interrupt(); producer.terminationFuture().get( 5000 ); }
+						for ( var subscription in subscriptions ) { Effect::runSync( subscription.unsubscribe() ); }
+					}
+				}
+			} );
+		} );
+	}
+
+	/**
+	 * Waits for a deterministic test rendezvous with a bounded failure path.
+	 *
+	 * @gate Native latch owned by this test iteration.
+	 */
+	private void function awaitGate( required any gate ) {
+		if ( !arguments.gate.await( 5, TimeUnit::SECONDS ) ) {
+			throw( type: "bxeffect.testing.TestTimeoutException", message: "Stress gate timed out (seed 1102026)" );
+		}
+	}
+
+	/**
+	 * Confirms actual blocking at the only wait in each admitted branch.
+	 *
+	 * @workers Native interpreter threads captured immediately before the known wait.
+	 * @count Number of workers expected in this test iteration.
+	 */
+	private void function awaitBlockedWorkers( required any workers, required numeric count ) {
+		var captured = arguments.workers;
+		var expected = arguments.count;
+		AsyncTestSupport::awaitCondition( () => {
+			if ( captured.size() != expected ) { return false; }
+			for ( var worker in captured ) {
+				if ( worker.getState().toString() != "WAITING" ) { return false; }
+			}
+			return true;
+		}, 5000 );
+	}
+
+	/**
+	 * Captures one wait source so shuffled completions cannot change input identity.
+	 *
+	 * @pending Native future completed explicitly by the test controller.
+	 * @entered Rendezvous counting admitted branches.
+	 */
+	private any function gatedBranch( required any pending, required any entered ) {
+		var waiter = arguments.pending;
+		var rendezvous = arguments.entered;
+		return Effect::fromBoxFuture( () => { rendezvous.countDown(); return waiter; } )
+			.flatMap( ( value ) => value % 2 == 1 ? Effect::fail( value ) : Effect::succeed( value ) );
+	}
+
+}

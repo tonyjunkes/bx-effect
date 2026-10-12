@@ -2,6 +2,20 @@
 
 All notable changes to BX Effect are documented here.
 
+## 1.2.0 - 10-12-2026
+
+- Propagate Stream element demand through transformations, resources, provisioning,
+  recovery, grouping, and concatenation. Unrequested array callbacks no longer run;
+  see the Stream guide for the side-effect timing compatibility note.
+- Execute sequential `forEach` in the iterative interpreter and collect concurrent
+  completions through operation-local native BoxFuture notifications.
+- Document cooperative timeouts that await work termination and cleanup, and
+  preserve fatal native rejection through both collection completion strategies.
+- Strengthen sequential cancellation, cleanup, and concurrent coordination
+  coverage. Add collection and selective Stream measurements.
+- Verify BoxLang 1.16.0 alongside latest/snapshot, verify main updates, and publish
+  only explicit matching version tags without forced republishing.
+
 ## 1.1.0 - 9-23-2026
 
 - Add `acquireUseRelease`, `fromExit`, `failCause`, `die`, and `catchTags`, plus

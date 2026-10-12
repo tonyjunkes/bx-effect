@@ -16,7 +16,7 @@ class {
 	/**
 	 * Stores per-consumption pull and close factories with an initially open state.
 	 *
-	 * @pullFactory Zero-argument factory returning an Effect of native Attempt<Array>; empty means completion.
+	 * @pullFactory Private factory receiving maximum demand and yielding at most that many values as Attempt<Array>.
 	 * @closeFactory Zero-argument cleanup Effect factory; defaults to a successful no-op.
 	 */
 	StreamCursor function init(
@@ -29,12 +29,16 @@ class {
 	}
 
 	/**
-	 * Defers one batch request; a closed cursor completes normally without calling its factory.
+	 * Defers bounded demand to the private source; a closed cursor completes without calling its factory.
+	 * All built-in factories must honor demand without evaluating later values.
+	 *
+	 * @demand Maximum requested values; defaults to the whole available batch.
 	 */
-	Effect function pull() {
-		return Effect::suspend( () => variables.closed.get()
+	Effect function pull( numeric demand = 2147483647 ) {
+		var requested = arguments.demand;
+		return Effect::suspend( () => variables.closed.get() || requested <= 0
 			? Effect::succeed( attempt() )
-			: variables.pullFactory()
+			: variables.pullFactory( requested )
 		);
 	}
 

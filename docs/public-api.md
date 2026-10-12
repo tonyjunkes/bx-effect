@@ -21,8 +21,10 @@ are implementation details even when BoxLang permits calling them directly.
 | `models.effect.Result@bxeffect` | `success`, `failure`, `fromAttempt`; `isSuccess`, `isFailure`, `value`, `error`, `map`, `flatMap`, `mapError`, `match`, `toAttempt`. | Immutable pure value with success or expected failure only. It does not represent defects or interruption. |
 
 `Effect::all` and `Effect::forEach` accept `concurrency` and `mode` (`failFast`
-or `accumulate`); `forEach` additionally accepts `discard`. Accumulation waits
-for all selected branches and retains Causes in input order.
+or `accumulate`); `forEach` additionally accepts `discard`. `all` defaults to
+unbounded child-Fiber execution. `forEach` defaults to sequential execution
+in the current interpreter without per-item child Fibers. Accumulation waits
+for all selected work and retains Causes in input order.
 
 ## Runtime, resources, and concurrency
 

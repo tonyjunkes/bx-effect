@@ -24,6 +24,13 @@ with `{ _tag: "TimeoutError", duration, unit }` and requests interruption for
 the losing fiber. Delays use the runtime Clock; the default live Clock delegates
 to BoxFuture's native delayed executor.
 
+Timeouts are **cooperative**. The runtime interrupts and awaits the losing
+Fiber, including its finalizers, before returning. Synchronous user code that
+ignores cancellation and slow cleanup can therefore extend execution beyond
+the configured duration. A timeout does not abandon resources or forcibly stop
+arbitrary code. Configure native HTTP/client/database deadlines as well when
+the underlying operation needs its own limit.
+
 Live `Clock.now()` measures monotonic milliseconds using `System.nanoTime()`,
 anchored to wall time when that Clock instance is created. Wall-clock adjustments
 do not change recurrence delays. It is an elapsed-time clock, not an authoritative

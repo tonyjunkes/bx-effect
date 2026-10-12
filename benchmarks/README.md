@@ -51,3 +51,16 @@ The scripts cover:
 Stream concatenation construction, and bounded `forEach(discard:true)`. Run it
 with the same isolated-home/config flags above. The release audit records the
 initial before/after samples; these are local evidence, not performance promises.
+
+`CollectionRuntimeBench.bxm` compares a 10,000-value native loop with sequential
+`forEach`, and measures 1,000 immediate Effects at concurrency 1, 8, 32, 128,
+and unbounded. It first warms 10,000 native children independently of `forEach`
+so the inline and Fiber-based variants prepare the child runtime equally.
+Immediate Effects isolate runtime/completion bookkeeping from
+I/O latency; `ConcurrencyBench.bxm` separately checks delayed work. StreamBench
+also asserts that a 100,000-value `mapEffect(...).take(1)` calls its mapper once.
+
+The repeated, seeded `tests.specs.stress` suite covers acquisition/cancellation,
+Layer contention, failed releases, shuffled completions and simultaneous bounded
+Queue/PubSub shutdown. It runs in the full suite; use the normal runner with
+`--directory=tests.specs.stress` to repeat it independently.

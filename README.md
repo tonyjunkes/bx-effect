@@ -177,5 +177,5 @@ box run-script test
 ```
 
 The suite runs through the BoxLang CLI (via CommandBox or an OS install of BoxLang if preferred).
-CI runs the TestBox suite and module-setting checks on BoxLang `latest` and
+CI runs the TestBox suite and module-setting checks on BoxLang `1.16.0`, `latest`, and
 `snapshot`. For performance work, see the [benchmarks](benchmarks/README.md).

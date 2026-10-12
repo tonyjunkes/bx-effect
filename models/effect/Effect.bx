@@ -360,6 +360,14 @@ class {
 			discardResults = arguments.options.discard;
 		}
 
+		var normalizedOptions = normalizeAllOptions( allOptions );
+		normalizedOptions.discard = discardResults;
+		if ( normalizedOptions.concurrency == 1 ) {
+			var snapshot = [];
+			for ( var value in arguments.values ) { snapshot.append( value ); }
+			return new Effect( { kind: "ForEach", values: snapshot, mapper: arguments.mapper, options: normalizedOptions } );
+		}
+
 		var programs = [];
 		// Capture each value/index now, but invoke its mapper only inside Suspend.
 		// This preserves laziness even when all() later starts branches concurrently.
@@ -371,8 +379,6 @@ class {
 			) );
 		}
 
-		var normalizedOptions = normalizeAllOptions( allOptions );
-		normalizedOptions.discard = discardResults;
 		return new Effect( { kind: "All", effects: programs, options: normalizedOptions } );
 	}
 
@@ -743,7 +749,8 @@ class {
 	}
 
 	/**
-	 * Races the program against a Clock delay and a tagged TimeoutError; waits for loser cleanup.
+	 * Cooperatively races a Clock delay and tagged TimeoutError, awaiting loser termination and cleanup.
+	 * User code that ignores interruption can extend execution beyond the configured duration.
 	 *
 	 * @duration Non-negative delay or elapsed amount in the supplied unit.
 	 * @unit Time unit; defaults to milliseconds when omitted.

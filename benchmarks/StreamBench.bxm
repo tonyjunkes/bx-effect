@@ -11,6 +11,17 @@ for ( index = 1; index <= 100000; index++ ) {
 	mappedValues.append( index );
 }
 
+selectiveMeasurement = BenchmarkSupport::measure( () => {
+	var mapperCalls = 0;
+	var result = Effect::runSync( Stream::fromArray( mappedValues )
+		.mapEffect( ( value ) => Effect::sync( () => { mapperCalls++; return value; } ) )
+		.take( 1 ).runCollect() );
+	return { result: result, mapperCalls: mapperCalls };
+} );
+if ( selectiveMeasurement.value.result != [ 1 ] || selectiveMeasurement.value.mapperCalls != 1 ) {
+	throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Selective Stream evaluated unrequested values" );
+}
+
 mapMeasurement = BenchmarkSupport::measure( () => Effect::runSync(
 	Stream::fromArray( mappedValues )
 		.map( ( value ) => value + 1 )
@@ -72,6 +83,6 @@ if (
 }
 
 writeOutput(
-	"mappedValues=100000 mapMedianMs=#mapMeasurement.medianMs# repeatedPulls=#pullCount# pullMedianMs=#pullMeasurement.medianMs# queueValues=#queueValues# queueMedianMs=#queueMeasurement.medianMs# interruptMedianMs=#interruptMeasurement.medianMs# retainedBytes=#retainedBytes# samples=5"
+	"selectiveMapperCalls=1 selectiveMedianMs=#selectiveMeasurement.medianMs# mappedValues=100000 mapMedianMs=#mapMeasurement.medianMs# repeatedPulls=#pullCount# pullMedianMs=#pullMeasurement.medianMs# queueValues=#queueValues# queueMedianMs=#queueMeasurement.medianMs# interruptMedianMs=#interruptMeasurement.medianMs# retainedBytes=#retainedBytes# samples=5"
 );
 </bx:script>
