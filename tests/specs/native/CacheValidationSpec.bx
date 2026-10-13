@@ -1,0 +1,128 @@
+import examples.native.CachedLookup;
+import examples.native.UserValidation;
+import models.effect.Effect@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import tests.resources.AsyncTestSupport;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class extends="testbox.system.BaseSpec" {
+	function run() {
+		describe( "Native cache and validation recipes", () => {
+			it( "loads lazily, reuses the native entry, and stores TTL in seconds", () => {
+				var provider = cache();
+				var cacheTag = ServiceTag::of( "native/Cache" );
+				var cacheKey = "bxeffect/" & createUUID();
+				var loads = new AtomicInteger( 0 );
+				var program = CachedLookup::load( cacheTag, cacheKey, () => loads.incrementAndGet(), 60 ).provideService( cacheTag, provider );
+				try {
+					expect( loads.get() ).toBe( 0 );
+					expect( provider.get( cacheKey ).isEmpty() ).toBeTrue();
+					expect( Effect::runSync( program ) ).toBe( 1 );
+					expect( Effect::runSync( program ) ).toBe( 1 );
+					expect( loads.get() ).toBe( 1 );
+					expect( provider.getCachedObjectMetadata( cacheKey ).timeout ).toBe( 60 );
+				} finally { provider.clear( cacheKey ); }
+			} );
+
+			it( "lets native expiration trigger a fresh load", () => {
+				var provider = cache();
+				var cacheTag = ServiceTag::of( "native/Cache" );
+				var cacheKey = "bxeffect/" & createUUID();
+				var loads = new AtomicInteger( 0 );
+				var program = CachedLookup::load( cacheTag, cacheKey, () => loads.incrementAndGet(), 1 ).provideService( cacheTag, provider );
+				try {
+					expect( Effect::runSync( program ) ).toBe( 1 );
+					AsyncTestSupport::awaitCondition( () => provider.get( cacheKey ).isEmpty(), 5000 );
+					expect( Effect::runSync( program ) ).toBe( 2 );
+				} finally { provider.clear( cacheKey ); }
+			} );
+
+			it( "delegates concurrent miss coordination to the native provider", () => {
+				var provider = cache();
+				var cacheTag = ServiceTag::of( "native/Cache" );
+				var cacheKey = "bxeffect/" & createUUID();
+				var entered = new CountDownLatch( 1 );
+				var proceed = new CountDownLatch( 1 );
+				var loads = new AtomicInteger( 0 );
+				var program = CachedLookup::load( cacheTag, cacheKey, () => {
+					loads.incrementAndGet();
+					entered.countDown();
+					if ( !proceed.await( 5, TimeUnit::SECONDS ) ) { throw( type: "bxeffect.testing.TestTimeoutException", message: "Cache load timed out" ); }
+					return "loaded";
+				} );
+				var programs = [];
+				var workers = new java.util.concurrent.atomic.AtomicReferenceArray( 8 );
+				for ( var index = 1; index <= 8; index++ ) { programs.append( observeCacheWorker( program, workers, index - 1 ) ); }
+				var rootFiber = Effect::runFork( Effect::all( programs ).provideService( cacheTag, provider ) );
+				try {
+					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					AsyncTestSupport::awaitCondition( () => cacheWorkersWaiting( workers ), 3000 );
+					proceed.countDown();
+					var outcome = rootFiber.terminationFuture().get( 5000 );
+					expect( outcome.value().len() ).toBe( 8 );
+					for ( var value in outcome.value() ) { expect( value ).toBe( "loaded" ); }
+					expect( loads.get() ).toBe( 1 );
+				} finally { proceed.countDown(); rootFiber.interrupt(); rootFiber.terminationFuture().get( 5000 ); provider.clear( cacheKey ); }
+			} );
+
+			it( "preserves loader defects and missing service wiring defects", () => {
+				var provider = cache();
+				var cacheTag = ServiceTag::of( "native/Cache" );
+				var cacheKey = "bxeffect/" & createUUID();
+				var program = CachedLookup::load( cacheTag, cacheKey, () => { throw( type: "bxeffect.testing.LoaderException", message: "broken" ); } );
+				try {
+					var outcome = Effect::runSyncExit( program.provideService( cacheTag, provider ) );
+					expect( outcome.cause().kind() ).toBe( "Die" );
+					expect( provider.get( cacheKey ).isEmpty() ).toBeTrue();
+					var missing = Effect::runSyncExit( program );
+					expect( missing.cause().kind() ).toBe( "Die" );
+					expect( missing.cause().defect().type ).toBe( "bxeffect.context.MissingServiceException" );
+				} finally { provider.clear( cacheKey ); }
+			} );
+
+			it( "turns missing and invalid native input checks into expected tagged errors", () => {
+				for ( var input in [ "invalid", [], {}, { email: "bad", age: -1 }, { email: "sam@example.com", age: 1.5 } ] ) {
+					var outcome = Effect::runSyncExit( UserValidation::validate( input ) );
+					expect( outcome.cause().kind() ).toBe( "Fail" );
+					expect( outcome.cause().error()._tag ).toBe( "InvalidUser" );
+					expect( outcome.cause().error().errors.len() ).toBeGT( 0 );
+				}
+				expect( Effect::runSync( UserValidation::validate( {} ).catchTag( "InvalidUser", ( error ) => Effect::succeed( "invalid" ) ) ) ).toBe( "invalid" );
+			} );
+
+			it( "returns selected valid fields and leaves later programming failures as defects", () => {
+				var program = UserValidation::validate( { email: "sam@example.com", age: 35, other: "ignored" } );
+				expect( Effect::runSync( program ) ).toBe( { email: "sam@example.com", age: 35 } );
+				var outcome = Effect::runSyncExit( program.map( ( value ) => { throw( type: "bxeffect.testing.MappingException", message: "bug" ); } ) );
+				expect( outcome.cause().kind() ).toBe( "Die" );
+			} );
+		} );
+	}
+
+	/**
+	 * Captures the worker executing the native lookup before entering its producer or miss lock.
+	 * @program Cache lookup Effect whose native wait is observed.
+	 * @workers Test-owned atomic worker references.
+	 * @position Zero-based reference slot for this caller.
+	 */
+	private any function observeCacheWorker( required any program, required any workers, required numeric position ) {
+		var lookup = arguments.program;
+		var recorded = arguments.workers;
+		var slot = arguments.position;
+		return Effect::sync( () => { recorded.set( slot, java.lang.Thread::currentThread() ); return null; } ).flatMap( ( ignored ) => lookup );
+	}
+
+	/**
+	 * Requires every worker to block before releasing the producer, forcing a contended miss.
+	 * @workers Atomic references filled by each admitted lookup.
+	 */
+	private boolean function cacheWorkersWaiting( required any workers ) {
+		for ( var index = 0; index < arguments.workers.length(); index++ ) {
+			var worker = arguments.workers.get( index );
+			if ( isNull( worker ) || ![ "BLOCKED", "WAITING", "TIMED_WAITING" ].contains( worker.getState().toString() ) ) { return false; }
+		}
+		return true;
+	}
+}

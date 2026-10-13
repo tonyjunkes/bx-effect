@@ -1,0 +1,34 @@
+import models.effect.Effect@bxeffect;
+import models.effect.ManagedRuntime@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import models.effect.observability.LoggingObserver@bxeffect;
+
+/** Application owns its ManagedRuntime; the native runtime owns its cache provider. */
+class {
+
+	this.name = "BXEffectNativeExample";
+
+	/** Creates the application-owned runtime without eagerly building services. */
+	boolean function onApplicationStart() {
+		var cacheTag = ServiceTag::of( "example/Cache" );
+		application.effectRuntime = ManagedRuntime::make(
+			Layer::effect( cacheTag, Effect::sync( () => cache( "default" ) ) ),
+			{ observer: LoggingObserver::make( "application" ) }
+		);
+		return true;
+	}
+
+	/**
+	 * Stops and finalizes active work before the application releases its runtime.
+	 * @applicationScope Scope passed by the host to its application-end callback.
+	 */
+	void function onApplicationEnd( required struct applicationScope ) {
+		if ( !structKeyExists( arguments.applicationScope, "effectRuntime" ) ) { return; }
+		var closeExit = arguments.applicationScope.effectRuntime.close();
+		if ( closeExit.isFailure() ) {
+			writeLog( text: closeExit.cause().pretty(), type: "Error", log: "application" );
+		}
+	}
+
+}

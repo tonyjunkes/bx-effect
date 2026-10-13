@@ -1,0 +1,23 @@
+import models.effect.Effect@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+
+/** Application recipe using the supplied native cache provider and its loading policy. */
+class {
+
+	/**
+	 * Loads a value on a cache miss, with the provider owning atomic loading and expiration.
+	 * @cacheTag Service binding for the application's native ICacheProvider.
+	 * @cacheKey Key owned by this application feature.
+	 * @loader Synchronous native value loader invoked only on a miss.
+	 * @ttlSeconds Native cache lifetime in seconds; zero means eternal.
+	 */
+	static Effect function load( required ServiceTag cacheTag, required string cacheKey, required function loader, numeric ttlSeconds = 60 ) {
+		var keyToLoad = arguments.cacheKey;
+		var valueLoader = arguments.loader;
+		var lifetime = arguments.ttlSeconds;
+		return Effect::service( arguments.cacheTag ).flatMap( provider =>
+			Effect::sync( () => provider.getOrSet( keyToLoad, valueLoader, lifetime ) )
+		);
+	}
+
+}

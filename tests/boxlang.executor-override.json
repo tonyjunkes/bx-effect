@@ -1,6 +1,7 @@
 {
   "modulesDirectory": [
-    "${user-dir}/.."
+    "${user-dir}/..",
+    "${user-dir}/boxlang_modules"
   ],
   "modules": {
     "bxEffect": {

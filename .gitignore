@@ -1,6 +1,7 @@
 .vscode/
 .idea/
 testbox/
+boxlang_modules/
 .boxlang/
 *.class
 *.jar

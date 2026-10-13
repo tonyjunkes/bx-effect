@@ -176,6 +176,15 @@ box install
 box run-script test
 ```
 
+Development installation includes the pinned Derby module for native JDBC
+integration tests. It is excluded from the published package and is not a
+production dependency. The [application example](examples/application/Index.bxm)
+can be run from the checkout with:
+
+```bash
+box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json examples/application/Index.bxm
+```
+
 The suite runs through the BoxLang CLI (via CommandBox or an OS install of BoxLang if preferred).
 CI runs the TestBox suite and module-setting checks on BoxLang `1.16.0`, `latest`, and
 `snapshot`. For performance work, see the [benchmarks](benchmarks/README.md).

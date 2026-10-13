@@ -1,0 +1,30 @@
+import models.effect.Effect@bxeffect;
+
+/** A single synchronous native transaction; datasource configuration belongs to the application. */
+class {
+
+	/**
+	 * Writes two records atomically, mapping native database exceptions to an expected failure.
+	 * @datasourceName Configured native datasource whose records table has an integer primary key.
+	 * @firstId First parameterized record identifier.
+	 * @secondId Second parameterized record identifier.
+	 */
+	static Effect function write( required string datasourceName, required numeric firstId, required numeric secondId ) {
+		var nameToUse = arguments.datasourceName;
+		var identifiers = [ arguments.firstId, arguments.secondId ];
+		return Effect::suspend( () => {
+			try {
+				transaction datasource=nameToUse {
+					for ( var identifier in identifiers ) {
+						queryExecute( "INSERT INTO records (id) VALUES (:id)",
+							{ id: { value: identifier, sqltype: "integer" } }, { datasource: nameToUse } );
+					}
+				}
+			} catch ( database error ) {
+				return Effect::fail( { _tag: "DatabaseError", message: error.message } );
+			}
+			return Effect::succeed( identifiers.len() );
+		} );
+	}
+
+}
