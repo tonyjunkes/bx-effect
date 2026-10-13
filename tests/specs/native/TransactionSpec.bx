@@ -39,12 +39,12 @@ class extends="testbox.system.BaseSpec" {
 			it( "observes native transaction context across a joined async Effect boundary", () => {
 				var nameToUse = variables.database.name();
 				var testDatabase = variables.database;
-				var callerManager = getBoxContext().getRequestContext().getConnectionManager();
+				var callerManager = testDatabase.connectionManager();
 				transaction datasource=nameToUse {
 					var inside = Effect::runFuture( Effect::sync( () => {
-						testDatabase.bindToCurrentRequest();
+						testDatabase.bindToCurrentContext();
 						var active = isInTransaction();
-						expect( active ).toBe( getBoxContext().getRequestContext().getConnectionManager() == callerManager );
+						expect( active ).toBe( testDatabase.connectionManager() == callerManager );
 						queryExecute( "INSERT INTO records VALUES (2)", [], { datasource: nameToUse } );
 						return active;
 					} ) ).get( 5000 );
@@ -106,7 +106,7 @@ class extends="testbox.system.BaseSpec" {
 				var entered = new CountDownLatch( 1 );
 				var proceed = new CountDownLatch( 1 );
 				var program = Effect::sync( () => {
-					testDatabase.bindToCurrentRequest();
+					testDatabase.bindToCurrentContext();
 					transaction datasource=nameToUse {
 						queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } );
 						entered.countDown();
