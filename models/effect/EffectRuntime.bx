@@ -17,8 +17,9 @@ import java.util.ArrayDeque;
  * io-tasks virtual-thread executor; runFuture callers remain non-blocking.
  *
  * Each root execution owns a Scope and Layer memo. Child interpreters inherit
- * Context values and share root ownership; only the owner shuts down children
- * and drains Scope finalizers. Observer callbacks are diagnostic-only.
+ * Context values and share their enclosing Scope and memo. Scoped instructions
+ * introduce local ownership; each owner shuts down children before draining
+ * finalizers. Observer callbacks are diagnostic-only.
  */
 class {
 
@@ -280,6 +281,15 @@ class {
 						runtimeContext = successFrame.context;
 						break;
 					}
+					if ( successFrame.kind == "CloseLocalScope" ) {
+						var localExit = closeLocalScope( Exit::success( current.value ), runtimeScope, arguments.controlState, interruptionObserved );
+						runtimeScope = successFrame.scope;
+						runtimeLayerMemo = successFrame.layerMemo;
+						current = localExit.isSuccess()
+							? { kind: "Succeed", value: localExit.value() }
+							: haltInstruction( localExit.cause() );
+						break;
+					}
 					if ( successFrame.kind == "RegisterUseFinalizer" ) {
 						continuations.addLast( {
 							kind : "Ensuring",
@@ -423,6 +433,20 @@ class {
 						}
 						if ( failureFrame.kind == "RestoreContext" ) {
 							runtimeContext = failureFrame.context;
+							continue;
+						}
+						if ( failureFrame.kind == "CloseLocalScope" ) {
+							var failedLocalExit = closeLocalScope( Exit::failure( current.cause ), runtimeScope, arguments.controlState, interruptionObserved );
+							runtimeScope = failureFrame.scope;
+							runtimeLayerMemo = failureFrame.layerMemo;
+							current = haltInstruction( failedLocalExit.cause() );
+							// Closure can deliver a pending request while this unwind is
+							// already in progress. Acknowledge it before outer recovery,
+							// which must not receive the same interruption a second time.
+							if ( !interruptionObserved && !isNull( arguments.controlState )
+								&& arguments.controlState.isInterrupted() && current.cause.isInterrupted() ) {
+								interruptionObserved = true;
+							}
 							continue;
 						}
 						if ( failureFrame.kind == "Ensuring" ) {
@@ -847,6 +871,24 @@ class {
 						}
 						break;
 
+				case "Scoped":
+					try {
+						var openedScope = runtimeScope.openLocalScope();
+						continuations.addLast( {
+							kind : "CloseLocalScope",
+							scope : runtimeScope,
+							layerMemo : runtimeLayerMemo
+						} );
+						runtimeScope = openedScope;
+						// Children share local builds; restoring the parent memo avoids
+						// reusing services that this local lifetime has released.
+						runtimeLayerMemo = new LayerMemo();
+						current = current.effect.instructionNode();
+					} catch ( any error ) {
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					}
+					break;
+
 				case "AcquireRelease":
 					continuations.addLast( {
 						kind : "RegisterFinalizer",
@@ -1020,6 +1062,7 @@ class {
 		var frameKind = arguments.continuations.peekLast().kind;
 		return frameKind == "RegisterFinalizer"
 			|| frameKind == "RegisterUseFinalizer"
+			|| frameKind == "CloseLocalScope"
 			|| frameKind == "RestoreContext";
 	}
 
@@ -1102,28 +1145,57 @@ class {
 	) {
 		var completedExit = arguments.initialExit;
 		if ( arguments.closeScope ) {
-			notifyObserver( "scope:closing", { exit: completedExit } );
-			completedExit = appendCleanup( completedExit, arguments.activeScope.shutdownChildren(), arguments.controlState );
-			// Children may still use root resources during their own finalization.
-			// Drain releases only after every admitted child interpreter has stopped.
-			for ( var finalizerEntry in arguments.activeScope.close() ) {
-				var finalizerExit = runFinalizerEntry( finalizerEntry );
-				if ( finalizerExit.isFailure() ) {
-					recordCleanup( finalizerExit.cause(), arguments.controlState );
-					completedExit = completedExit.isSuccess()
-						? Exit::failure( finalizerExit.cause() )
-						: Exit::failure(
-							Cause::sequential( completedExit.cause(), finalizerExit.cause() )
-						);
-				}
-			}
-			notifyObserver( "scope:closed", { exit: completedExit } );
+			completedExit = closeOwnedScope( completedExit, arguments.activeScope, arguments.controlState );
 		}
 		if ( !isNull( arguments.controlState ) ) {
 			arguments.controlState.completeCleanup( completedExit );
 		}
 		notifyTerminalEvents( completedExit, arguments.controlState );
 		notifyObserver( "runtime:completed", { exit: completedExit } );
+		return completedExit;
+	}
+
+	/**
+	 * Closes one owned lifetime without reporting interpreter or Fiber termination.
+	 *
+	 * @initialExit Outcome before child shutdown and LIFO releases.
+	 * @activeScope Root or local Scope whose work must finish before its resources are released.
+	 * @controlState Optional Fiber control for cleanup provenance, not finalizer cancellation.
+	 */
+	private any function closeOwnedScope( required any initialExit, required Scope activeScope, any controlState = null ) {
+		var completedExit = arguments.initialExit;
+		notifyObserver( "scope:closing", { exit: completedExit } );
+		completedExit = appendCleanup( completedExit, arguments.activeScope.shutdownChildren(), arguments.controlState );
+		// Children may still use this lifetime's resources during finalization.
+		for ( var finalizerEntry in arguments.activeScope.close() ) {
+			var finalizerExit = runFinalizerEntry( finalizerEntry );
+			if ( finalizerExit.isFailure() ) {
+				completedExit = appendCleanup( completedExit, finalizerExit.cause(), arguments.controlState );
+			}
+		}
+		notifyObserver( "scope:closed", { exit: completedExit } );
+		return completedExit;
+	}
+
+	/**
+	 * Preserves failed local cleanup when pending interruption follows an acquisition handoff.
+	 *
+	 * @initialExit Outcome entering the local cleanup boundary.
+	 * @activeScope Local Scope to finish before restoring parent ownership.
+	 * @controlState Optional Fiber control whose pending interruption must retain cleanup failures.
+	 * @interruptionObserved Whether the interpreter already delivered this Fiber's interruption to user code.
+	 */
+	private any function closeLocalScope(
+		required any initialExit,
+		required Scope activeScope,
+		any controlState = null,
+		boolean interruptionObserved = false
+	) {
+		var completedExit = closeOwnedScope( arguments.initialExit, arguments.activeScope, arguments.controlState );
+		if ( !arguments.interruptionObserved && completedExit.isFailure() && !isNull( arguments.controlState )
+			&& arguments.controlState.isInterrupted() && !completedExit.cause().isInterrupted() ) {
+			return Exit::failure( Cause::sequential( Cause::interrupt( arguments.controlState.fiberId() ), completedExit.cause() ) );
+		}
 		return completedExit;
 	}
 

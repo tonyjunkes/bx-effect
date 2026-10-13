@@ -42,6 +42,11 @@ Sequential `forEach` runs its items in the current interpreter and does not
 create per-item Fibers or emit per-item Fiber events. Concurrent `forEach` and
 `all` create child Fibers, so their branches emit Fiber events.
 
+`Effect::scoped` emits closing/closed events for its local Scope without
+starting another interpreter or reporting a Fiber terminal event. Root Scope
+events still occur at the runtime boundary. A defect recovered outside the
+local Scope remains recovered and is not reported as unhandled.
+
 Observer exceptions are ignored after the normal fatal-throwable policy is
 applied. They therefore cannot change an Effect result or prevent finalizers.
 This keeps observability diagnostic-only.

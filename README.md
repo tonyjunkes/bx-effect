@@ -25,9 +25,9 @@ BoxLang applications.
 | --- | --- |
 | Workflow composition | Transform results with `map`, chain operations with `flatMap`, and observe values with `tap`. |
 | Error handling | Recover from expected errors while keeping unexpected defects and interruption distinguishable. Inspect complete outcomes with `Exit` and `Cause`. |
-| Retries and timing | Retry failed operations, repeat successful ones, add delays, and set timeouts with reusable `Schedule` policies. |
+| Retries and timing | Retry failed operations, cap backoff waits with `Schedule.maxDelay`, repeat successful ones, and set timeouts. |
 | Concurrency | Run batches with a concurrency limit, race operations, and manage running work through Fibers. Integrate existing `BoxFuture` APIs. |
-| Resource cleanup | Pair acquisition with release and run finalizers on success, failure, or interruption. |
+| Resource cleanup | Pair acquisition with release and use `Effect::scoped` for local lifetimes that finish children and cleanup before following work. |
 | Dependency management | Supply services through `Context` and `Layer`, and reuse services across runs with `ManagedRuntime`. |
 | Coordination | Signal completion with `Deferred`, limit access with `Semaphore`, buffer work with `Queue`, and broadcast through `PubSub`. |
 | Streams | Transform and consume sequences on demand, including Queue and PubSub sources, with cleanup when consumption ends. |

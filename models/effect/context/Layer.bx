@@ -8,7 +8,7 @@ import bxModules.bxEffect.models.effect.context.ServiceTag;
  * `scoped()` is a semantic alias for a resource-producing Layer. The supplied
  * Effect registers its release action with the enclosing runtime Scope.
  * Recipes are ordered builder closures, not a declared dependency graph.
- * Runtime provisioning shares builds by Layer instance identity within a root
+ * Runtime provisioning shares builds by Layer instance identity within a Scope
  * lifetime; direct build calls invoke the recipe without that memo boundary.
  */
 class {

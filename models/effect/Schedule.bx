@@ -161,6 +161,34 @@ class {
 	}
 
 	/**
+	 * Caps each recurrence wait without changing the policy's continuation decision.
+	 *
+	 * @duration Non-negative maximum wait between executions, not a total elapsed budget.
+	 * @unit Time unit for the maximum wait; defaults to milliseconds.
+	 */
+	Schedule function maxDelay( required numeric duration, string unit = "milliseconds" ) {
+		if ( arguments.duration < 0 ) {
+			throw( type: "bxeffect.InvalidScheduleException", message: "Schedule.maxDelay() requires a non-negative duration" );
+		}
+		var maximumMillis = toMillis( arguments.duration, arguments.unit );
+		var sourceSchedule = this;
+		return Schedule::custom( ( recurrence, value, scheduledAt, nowMillis ) => {
+			var decision = sourceSchedule.next( recurrence, value, scheduledAt, nowMillis );
+			var originalDelay = toMillis( decision.delay, decision.unit );
+			var cappedDelay = min( originalDelay, maximumMillis );
+			var timingAnchor = structKeyExists( decision, "nextScheduledAt" ) ? decision.nextScheduledAt : null;
+			return {
+				continue : decision.continue,
+				delay : cappedDelay,
+				unit : "milliseconds",
+				nextScheduledAt : !isNull( timingAnchor ) && cappedDelay < originalDelay
+					? nowMillis + cappedDelay
+					: timingAnchor
+			};
+		} );
+	}
+
+	/**
 	 * Scales each computed delay by a random factor in the supplied range.
 	 *
 	 * @minimum Non-negative minimum jitter multiplier; defaults to 0.8.

@@ -173,6 +173,15 @@ class {
 	}
 
 	/**
+	 * Runs within a fresh local lifetime, awaiting children and releases before following work or recovery.
+	 *
+	 * @program Effect whose acquisitions and forked children belong to the local Scope.
+	 */
+	static Effect function scoped( required Effect program ) {
+		return new Effect( { kind: "Scoped", effect: arguments.program } );
+	}
+
+	/**
 	 * Creates and awaits a native BoxFuture only when executed; rejected futures become defects unless interrupted.
 	 *
 	 * @futureFactory Zero-argument factory returning a native BoxFuture at execution time.

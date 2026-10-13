@@ -1,5 +1,6 @@
 <bx:script>
 import models.effect.Effect@bxeffect;
+import models.effect.Schedule@bxeffect;
 import models.effect.Stream@bxeffect;
 
 if ( Effect::runSync( Effect::succeed( 41 ).map( value => value + 1 ) ) != 42 ) {
@@ -8,6 +9,17 @@ if ( Effect::runSync( Effect::succeed( 41 ).map( value => value + 1 ) ) != 42 ) 
 
 if ( arrayToList( Effect::runSync( Stream::fromArray( [ 1, 2 ] ).runCollect() ) ) != "1,2" ) {
 	throw( type: "bxeffect.testing.ConsumerSmokeFailedException", message: "Stream import or execution failed" );
+}
+
+releases = 0;
+localProgram = Effect::scoped( Effect::acquireRelease( Effect::succeed( 41 ),
+	value => Effect::sync( () => releases++ ) ) ).map( value => value + 1 );
+if ( Effect::runSync( localProgram ) != 42 || releases != 1 ) {
+	throw( type: "bxeffect.testing.ConsumerSmokeFailedException", message: "Local Scope execution or cleanup failed" );
+}
+
+if ( Schedule::exponential( 250 ).maxDelay( 1000 ).and( Schedule::recurs( 5 ) ).next( 4, null ).delay != 1000 ) {
+	throw( type: "bxeffect.testing.ConsumerSmokeFailedException", message: "Capped Schedule import or execution failed" );
 }
 
 println( "BX_EFFECT_CONSUMER_SMOKE_OK" );

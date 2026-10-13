@@ -22,6 +22,35 @@ Use `ensuring` for an unconditional cleanup Effect and `onExit` when cleanup
 needs the complete `Exit`. If cleanup fails, BX Effect retains that failure: it
 replaces a prior success or is appended sequentially to the program Cause.
 
+Use `Effect::scoped(program)` when several acquisitions and forked children
+should share a shorter lifetime than the entire runtime run:
+
+```boxlang
+saved = Effect::scoped(
+	Effect::acquireRelease(
+		Effect::sync( () => datasource.getConnection() ),
+		db => Effect::sync( () => db.close() )
+	).flatMap( db => saveBatch( db ) )
+);
+
+program = saved.flatMap( result => notifySaved( result ) );
+```
+
+Construction is lazy. Every execution creates a fresh local Scope. When its
+body finishes on any exit, the Scope stops child admission, interrupts and
+awaits its admitted Fibers, then runs all releases once in LIFO order. Following
+work and recovery outside `scoped` begin only after this cleanup finishes.
+Interruption remains cooperative; slow child work or cleanup can extend the
+lifetime. Cleanup failures replace success or follow the body's Cause in
+sequence, and outer `catchCause` can recover the complete failure.
+
+Nested scopes close from the inside out. Resources and children already owned
+by an outer Scope keep their outer lifetime; inherited Context bindings remain
+available. Return computed values from a local Scope: a resource acquired
+inside it has already been released by the time following work receives its
+result. Layer builds made inside the local Scope belong to that lifetime;
+see [services and Layers](services-and-layers.md) for provisioning placement.
+
 Use `Effect::acquireUseRelease(acquire, use, release)` for a shorter lifetime,
 such as one connection per batch item. Release runs before the following Effect
 or outer recovery, rather than waiting for the root Scope to end. Its callback

@@ -26,18 +26,26 @@ for ( index = 1; index <= iterations; index++ ) {
 
 flatMapMeasurement = BenchmarkSupport::measure( () => Effect::runSync( flatMapProgram ) );
 
+scopeDepth = 5000;
+scopedProgram = Effect::succeed( scopeDepth );
+for ( index = 1; index <= scopeDepth; index++ ) {
+	scopedProgram = Effect::scoped( scopedProgram );
+}
+scopeMeasurement = BenchmarkSupport::measure( () => Effect::runSync( scopedProgram ) );
+
 if (
 	directMeasurement.value != iterations
 	|| mapMeasurement.value != iterations
 	|| flatMapMeasurement.value != iterations
+	|| scopeMeasurement.value != scopeDepth
 ) {
 	throw(
 		type: "bxeffect.benchmarks.BenchmarkFailureException",
-		message: "Expected direct, map, and flatMap results to equal #iterations#"
+		message: "Unexpected direct, map, flatMap, or nested Scope benchmark result"
 	);
 }
 
 writeOutput(
-	"iterations=#iterations# samples=5 directMinMs=#directMeasurement.minimumMs# directMedianMs=#directMeasurement.medianMs# mapMinMs=#mapMeasurement.minimumMs# mapMedianMs=#mapMeasurement.medianMs# flatMapMinMs=#flatMapMeasurement.minimumMs# flatMapMedianMs=#flatMapMeasurement.medianMs#"
+	"iterations=#iterations# samples=5 directMinMs=#directMeasurement.minimumMs# directMedianMs=#directMeasurement.medianMs# mapMinMs=#mapMeasurement.minimumMs# mapMedianMs=#mapMeasurement.medianMs# flatMapMinMs=#flatMapMeasurement.minimumMs# flatMapMedianMs=#flatMapMeasurement.medianMs# scopeDepth=#scopeDepth# scopeMinMs=#scopeMeasurement.minimumMs# scopeMedianMs=#scopeMeasurement.medianMs#"
 );
 </bx:script>

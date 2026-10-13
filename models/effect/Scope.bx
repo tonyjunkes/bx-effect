@@ -2,7 +2,7 @@ import bxModules.bxEffect.models.effect.context.Context;
 import bxModules.bxEffect.models.effect.Cause;
 
 /**
- * Owns Effect finalizers for one runtime execution.
+ * Owns Effect finalizers and children for one root or local lifetime.
  *
  * Finalizers are returned in LIFO order on close. A closed Scope rejects new
  * finalizers so resource acquisition cannot silently leak after completion.
@@ -66,6 +66,16 @@ class {
 		var childToAdd = arguments.fiber;
 		withChildAdmission( () => variables.children.add( childToAdd ) );
 		return this;
+	}
+
+	/**
+	 * Opens an interpreter-owned local lifetime while the enclosing Scope admits work.
+	 *
+	 * Its owning Fiber is already tracked by the enclosing Scope. The interpreter
+	 * closes this local Scope before its owner terminates.
+	 */
+	Scope function openLocalScope() {
+		return withChildAdmission( () => new Scope() );
 	}
 
 	/**
