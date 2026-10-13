@@ -38,17 +38,21 @@ class extends="testbox.system.BaseSpec" {
 
 			it( "observes native transaction context across a joined async Effect boundary", () => {
 				var nameToUse = variables.database.name();
+				var testDatabase = variables.database;
+				var callerManager = getBoxContext().getRequestContext().getConnectionManager();
 				transaction datasource=nameToUse {
-					queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } );
 					var inside = Effect::runFuture( Effect::sync( () => {
+						testDatabase.bindToCurrentRequest();
 						var active = isInTransaction();
+						expect( active ).toBe( getBoxContext().getRequestContext().getConnectionManager() == callerManager );
 						queryExecute( "INSERT INTO records VALUES (2)", [], { datasource: nameToUse } );
 						return active;
 					} ) ).get( 5000 );
-					expect( inside ).toBeTrue();
+					queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } );
 					transactionRollback();
 				}
-				expect( variables.database.count() ).toBe( 0 );
+				// Native versions either share the caller's manager or give async work a new one.
+				expect( variables.database.count() ).toBe( inside ? 0 : 1 );
 			} );
 
 			it( "shows an Exit failure is a native value and does not trigger automatic rollback", () => {
@@ -98,9 +102,11 @@ class extends="testbox.system.BaseSpec" {
 
 			it( "observes pending interruption after a non-cooperative native transaction commits", () => {
 				var nameToUse = variables.database.name();
+				var testDatabase = variables.database;
 				var entered = new CountDownLatch( 1 );
 				var proceed = new CountDownLatch( 1 );
 				var program = Effect::sync( () => {
+					testDatabase.bindToCurrentRequest();
 					transaction datasource=nameToUse {
 						queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } );
 						entered.countDown();

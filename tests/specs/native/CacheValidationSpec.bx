@@ -53,15 +53,16 @@ class extends="testbox.system.BaseSpec" {
 					return "loaded";
 				} );
 				var programs = [];
-				var workers = new java.util.concurrent.atomic.AtomicReferenceArray( 8 );
-				for ( var index = 1; index <= 8; index++ ) { programs.append( observeCacheWorker( program, workers, index - 1 ) ); }
+				// Two callers force contention without exhausting Java 21 carriers inside native monitor waits.
+				var workers = new java.util.concurrent.atomic.AtomicReferenceArray( 2 );
+				for ( var index = 1; index <= 2; index++ ) { programs.append( observeCacheWorker( program, workers, index - 1 ) ); }
 				var rootFiber = Effect::runFork( Effect::all( programs ).provideService( cacheTag, provider ) );
 				try {
 					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
 					AsyncTestSupport::awaitCondition( () => cacheWorkersWaiting( workers ), 3000 );
 					proceed.countDown();
 					var outcome = rootFiber.terminationFuture().get( 5000 );
-					expect( outcome.value().len() ).toBe( 8 );
+					expect( outcome.value().len() ).toBe( 2 );
 					for ( var value in outcome.value() ) { expect( value ).toBe( "loaded" ); }
 					expect( loads.get() ).toBe( 1 );
 				} finally { proceed.countDown(); rootFiber.interrupt(); rootFiber.terminationFuture().get( 5000 ); provider.clear( cacheKey ); }

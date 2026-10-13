@@ -171,9 +171,12 @@ Nested synchronous Effect work can use the surrounding native transaction.
 `transactionRollback()` explicitly before leaving the block. Returning an `Exit`
 or a failed Effect description by itself does not tell JDBC to roll back.
 
-Native transaction context is visible to a joined async Effect in the tested
-BoxLang runtimes. That visibility is not separate transaction ownership. Keep
-transaction work sequential within its native block. For partial rollback,
+Async transaction propagation depends on the native BoxLang version. The minimum
+runtime shares the caller's transaction context with joined async work; newer
+runtimes can give async work a separate connection manager. An async query can
+therefore commit independently of the caller's rollback. Do not rely on a Fiber
+boundary to either propagate or isolate a transaction. Keep transaction work
+sequential within its synchronous native block. For partial rollback,
 use an explicit native savepoint; implicit nested-block behavior depends on
 native runtime configuration and version.
 
