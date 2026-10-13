@@ -83,7 +83,8 @@ class extends="testbox.system.BaseSpec" {
 			} );
 
 			it( "turns missing and invalid native input checks into expected tagged errors", () => {
-				for ( var input in [ "invalid", [], {}, { email: "bad", age: -1 }, { email: "sam@example.com", age: 1.5 } ] ) {
+				for ( var input in [ "invalid", [], {}, { email: "bad", age: -1 }, { email: "sam@example.com", age: 1.5 },
+					{ email: {}, age: 35 }, { email: [], age: 35 }, { email: "sam@example.com", age: {} }, { email: "sam@example.com", age: [] } ] ) {
 					var outcome = Effect::runSyncExit( UserValidation::validate( input ) );
 					expect( outcome.cause().kind() ).toBe( "Fail" );
 					expect( outcome.cause().error()._tag ).toBe( "InvalidUser" );

@@ -12,6 +12,27 @@ import java.util.concurrent.TimeUnit;
 class extends="testbox.system.BaseSpec" {
 	function run() {
 		describe( "Native application-owned ManagedRuntime", () => {
+			it( "balances native request registration beneath a nested caller context", () => {
+				var previous = RequestBoxContext::getCurrent();
+				var sentinel = new ScriptingRequestBoxContext( getBoxRuntime().getRuntimeContext(), false );
+				var requestResult = {};
+				RequestBoxContext::setCurrent( sentinel );
+				try {
+					requestResult = executeExampleRequest();
+					expect( RequestBoxContext::getCurrent() ).toBe( sentinel );
+					RequestBoxContext::removeCurrent();
+					expect( RequestBoxContext::getCurrent() ).toBe( previous );
+				} finally {
+					try {
+						if ( structKeyExists( requestResult, "owner" ) ) { stopExample( requestResult.owner ); }
+						cache().clear( "example/user/sam@example.com" );
+					} finally {
+						while ( RequestBoxContext::getCurrent() != previous ) { RequestBoxContext::removeCurrent(); }
+						sentinel.shutdown();
+					}
+				}
+			} );
+
 			it( "shares services across real native requests and closes from application-end", () => {
 				var first = executeExampleRequest();
 				var owner = first.owner;
@@ -71,7 +92,6 @@ class extends="testbox.system.BaseSpec" {
 
 	/** Executes the actual example Application.bx and request in a native request context. */
 	private struct function executeExampleRequest() {
-		var previous = getBoxContext().getRequestContext();
 		var requestContext = new ScriptingRequestBoxContext( getBoxRuntime().getRuntimeContext(), false );
 		var examplePath = new File( getDirectoryFromPath( getCurrentTemplatePath() ) & "../../../examples/application/Index.bxm" ).getCanonicalPath();
 		RequestBoxContext::setCurrent( requestContext );
@@ -84,6 +104,9 @@ class extends="testbox.system.BaseSpec" {
 				runtime: owner.getApplicationScope().effectRuntime,
 				outcome: requestContext.getScopeNearby( Key::request ).effectExampleExit
 			};
-		} finally { requestContext.shutdown(); RequestBoxContext::setCurrent( previous ); }
+		} finally {
+			try { requestContext.shutdown(); }
+			finally { RequestBoxContext::removeCurrent(); }
+		}
 	}
 }
