@@ -1,0 +1,29 @@
+import models.effect.Effect@bxeffect;
+
+/** Application input policy expressed through native validators and one expected error tag. */
+class {
+
+	/**
+	 * Validates required email and whole-number age using the native isValid function.
+	 * @input Submitted user fields; additional fields are left outside this policy.
+	 */
+	static Effect function validate( required any input ) {
+		var submitted = arguments.input;
+		return Effect::suspend( () => {
+			if ( !isStruct( submitted ) ) {
+				return Effect::fail( { _tag: "InvalidUser", errors: [ { field: "user", message: "A user object is required" } ] } );
+			}
+			var errors = [];
+			if ( !structKeyExists( submitted, "email" ) || !isValid( "email", submitted.email ) ) {
+				errors.append( { field: "email", message: "A valid email is required" } );
+			}
+			if ( !structKeyExists( submitted, "age" ) || !isValid( "integer", submitted.age ) || !isValid( "range", submitted.age, 0, 130 ) ) {
+				errors.append( { field: "age", message: "Age must be a whole number from 0 to 130" } );
+			}
+			return errors.len() > 0
+				? Effect::fail( { _tag: "InvalidUser", errors: errors } )
+				: Effect::succeed( { email: submitted.email, age: submitted.age } );
+		} );
+	}
+
+}

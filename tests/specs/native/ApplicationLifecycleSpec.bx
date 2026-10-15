@@ -1,0 +1,112 @@
+import models.effect.Effect@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import models.effect.observability.LoggingObserver@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
+import ortus.boxlang.runtime.context.ScriptingRequestBoxContext;
+import ortus.boxlang.runtime.context.RequestBoxContext;
+import ortus.boxlang.runtime.scopes.Key;
+import java.io.File;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+class extends="testbox.system.BaseSpec" {
+	function run() {
+		describe( "Native application-owned ManagedRuntime", () => {
+			it( "balances native request registration beneath a nested caller context", () => {
+				var previous = RequestBoxContext::getCurrent();
+				var sentinel = new ScriptingRequestBoxContext( getBoxRuntime().getRuntimeContext(), false );
+				var requestResult = {};
+				RequestBoxContext::setCurrent( sentinel );
+				try {
+					requestResult = executeExampleRequest();
+					expect( RequestBoxContext::getCurrent() ).toBe( sentinel );
+					RequestBoxContext::removeCurrent();
+					expect( RequestBoxContext::getCurrent() ).toBe( previous );
+				} finally {
+					try {
+						if ( structKeyExists( requestResult, "owner" ) ) { stopExample( requestResult.owner ); }
+						cache().clear( "example/user/sam@example.com" );
+					} finally {
+						while ( RequestBoxContext::getCurrent() != previous ) { RequestBoxContext::removeCurrent(); }
+						sentinel.shutdown();
+					}
+				}
+			} );
+
+			it( "shares services across real native requests and closes from application-end", () => {
+				var first = executeExampleRequest();
+				var owner = first.owner;
+				var managed = first.runtime;
+				try {
+					var second = executeExampleRequest();
+					expect( first.outcome.isSuccess() ).toBeTrue();
+					expect( first.outcome.value().email ).toBe( "sam@example.com" );
+					expect( second.runtime ).toBe( managed );
+					expect( second.outcome.value() ).toBe( first.outcome.value() );
+					expect( managed.isClosed() ).toBeFalse();
+				} finally { stopExample( owner ); cache().clear( "example/user/sam@example.com" ); }
+				expect( managed.isClosed() ).toBeTrue();
+				expect( managed.runSyncExit( Effect::succeed( 1 ) ).cause().error()._tag ).toBe( "ManagedRuntimeClosed" );
+			} );
+
+			it( "awaits active request cleanup without shutting down the externally owned cache", () => {
+				var started = new CountDownLatch( 1 );
+				var pending = futureNew();
+				var released = new CountDownLatch( 1 );
+				var requestResult = executeExampleRequest();
+				var managed = requestResult.runtime;
+				var cacheTag = ServiceTag::of( "example/Cache" );
+				var provider = managed.runSync( Effect::service( cacheTag ) );
+				var rootFiber = managed.runFork( Effect::fromBoxFuture( () => { started.countDown(); return pending; } )
+					.ensuring( Effect::sync( () => { released.countDown(); return null; } ) ) );
+				try { expect( started.await( 5, TimeUnit::SECONDS ) ).toBeTrue(); }
+				finally { stopExample( requestResult.owner ); }
+				expect( released.getCount() ).toBe( 0 );
+				expect( rootFiber.terminationFuture().get( 5000 ).cause().isInterrupted() ).toBeTrue();
+				expect( pending.isCancelled() ).toBeTrue();
+				expect( provider.get( "example/user/sam@example.com" ).isPresent() ).toBeTrue();
+				provider.clear( "example/user/sam@example.com" );
+			} );
+
+			it( "writes observer diagnostics through a native named logger", () => {
+				var loggerName = "bxeffect-native-" & lCase( replace( createUUID(), "-", "", "all" ) );
+				var runtime = new EffectRuntime( { observer: LoggingObserver::make( loggerName ) } );
+				expect( runtime.runSync( Effect::succeed( 42 ) ) ).toBe( 42 );
+				var logFile = new File( getBoxRuntime().getConfiguration().logging.logsDirectory & "/" & loggerName & ".log" ).getCanonicalPath();
+				expect( fileExists( logFile ) ).toBeTrue();
+				var contents = fileRead( logFile );
+				expect( contents ).toInclude( "BX Effect [runtime:started]" );
+				expect( contents ).toInclude( "BX Effect [runtime:completed]" );
+			} );
+		} );
+	}
+
+	/**
+	 * Stops the native application and removes its stopped registry entry.
+	 * @owner Native application created by the example request.
+	 */
+	private void function stopExample( required any owner ) {
+		try { arguments.owner.shutdown( true ); }
+		finally { getBoxRuntime().getApplicationService().removeApplication( arguments.owner.getName() ); }
+	}
+
+	/** Executes the actual example Application.bx and request in a native request context. */
+	private struct function executeExampleRequest() {
+		var requestContext = new ScriptingRequestBoxContext( getBoxRuntime().getRuntimeContext(), false );
+		var examplePath = new File( getDirectoryFromPath( getCurrentTemplatePath() ) & "../../../examples/application/Index.bxm" ).getCanonicalPath();
+		RequestBoxContext::setCurrent( requestContext );
+		try {
+			requestContext.loadApplicationDescriptor( new File( examplePath ).toURI() );
+			getBoxRuntime().executeTemplate( examplePath, requestContext );
+			var owner = requestContext.getApplicationListener().getApplication();
+			return {
+				owner: owner,
+				runtime: owner.getApplicationScope().effectRuntime,
+				outcome: requestContext.getScopeNearby( Key::request ).effectExampleExit
+			};
+		} finally {
+			try { requestContext.shutdown(); }
+			finally { RequestBoxContext::removeCurrent(); }
+		}
+	}
+}

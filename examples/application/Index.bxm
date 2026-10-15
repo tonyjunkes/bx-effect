@@ -1,0 +1,11 @@
+<bx:script>
+import examples.native.CachedLookup;
+import examples.native.UserValidation;
+import models.effect.context.ServiceTag@bxeffect;
+
+// Build request work in the request that will execute it.
+program = UserValidation::validate( { email: "sam@example.com", age: 35 } ).flatMap( user =>
+	CachedLookup::load( ServiceTag::of( "example/Cache" ), "example/user/#user.email#", () => user, 60 )
+);
+request.effectExampleExit = application.effectRuntime.runSyncExit( program );
+</bx:script>

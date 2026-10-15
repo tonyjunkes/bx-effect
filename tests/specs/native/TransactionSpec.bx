@@ -1,0 +1,126 @@
+import examples.native.SaveRecords;
+import models.effect.Effect@bxeffect;
+import tests.resources.NativeDatabase;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+class extends="testbox.system.BaseSpec" {
+	function beforeAll() { variables.database = new NativeDatabase(); }
+	function afterAll() { variables.database.close(); }
+
+	function run() {
+		describe( "Native JDBC transaction boundaries", () => {
+			beforeEach( () => variables.database.reset() );
+
+			it( "writes lazily and commits a complete native transaction", () => {
+				var program = SaveRecords::write( variables.database.name(), 1, 2 );
+				expect( variables.database.count() ).toBe( 0 );
+				expect( Effect::runSync( program ) ).toBe( 2 );
+				expect( variables.database.count() ).toBe( 2 );
+			} );
+
+			it( "rolls back the first write before mapping a database exception", () => {
+				var outcome = Effect::runSyncExit( SaveRecords::write( variables.database.name(), 1, 1 ) );
+				expect( outcome.cause().kind() ).toBe( "Fail" );
+				expect( outcome.cause().error()._tag ).toBe( "DatabaseError" );
+				expect( variables.database.count() ).toBe( 0 );
+			} );
+
+			it( "keeps nested synchronous Effect queries inside native rollback", () => {
+				var nameToUse = variables.database.name();
+				transaction datasource=nameToUse {
+					expect( Effect::runSync( Effect::sync( () => isInTransaction() ) ) ).toBeTrue();
+					Effect::runSync( Effect::sync( () => queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } ) ) );
+					transactionRollback();
+				}
+				expect( variables.database.count() ).toBe( 0 );
+			} );
+
+			it( "observes native transaction context across a joined async Effect boundary", () => {
+				var nameToUse = variables.database.name();
+				var testDatabase = variables.database;
+				var callerManager = testDatabase.connectionManager();
+				transaction datasource=nameToUse {
+					var inside = Effect::runFuture( Effect::sync( () => {
+						testDatabase.bindToCurrentContext();
+						var active = isInTransaction();
+						expect( active ).toBe( testDatabase.connectionManager() == callerManager );
+						queryExecute( "INSERT INTO records VALUES (2)", [], { datasource: nameToUse } );
+						return active;
+					} ) ).get( 5000 );
+					queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } );
+					transactionRollback();
+				}
+				// Native versions either share the caller's manager or give async work a new one.
+				expect( variables.database.count() ).toBe( inside ? 0 : 1 );
+			} );
+
+			it( "shows an Exit failure is a native value and does not trigger automatic rollback", () => {
+				var nameToUse = variables.database.name();
+				var outcome = null;
+				transaction datasource=nameToUse {
+					queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } );
+					outcome = Effect::runSyncExit( Effect::fail( "rejected" ) );
+				}
+				expect( outcome.cause().error() ).toBe( "rejected" );
+				expect( variables.database.count() ).toBe( 1 );
+			} );
+
+			it( "rolls back explicitly when using an Exit outcome", () => {
+				var nameToUse = variables.database.name();
+				var outcome = null;
+				transaction datasource=nameToUse {
+					queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } );
+					outcome = Effect::runSyncExit( Effect::fail( "rejected" ) );
+					if ( outcome.isFailure() ) { transactionRollback(); }
+				}
+				expect( Effect::runSyncExit( Effect::fromExit( outcome ) ).cause().kind() ).toBe( "Fail" );
+				expect( variables.database.count() ).toBe( 0 );
+			} );
+
+			it( "rolls back when a nested throwing runtime boundary fails", () => {
+				var nameToUse = variables.database.name();
+				expect( () => {
+					transaction datasource=nameToUse {
+						queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } );
+						Effect::runSync( Effect::fail( "rejected" ) );
+					}
+				} ).toThrow( type: "bxeffect.EffectFailureException" );
+				expect( variables.database.count() ).toBe( 0 );
+			} );
+
+			it( "uses an explicit native savepoint for partial rollback", () => {
+				var nameToUse = variables.database.name();
+				transaction datasource=nameToUse {
+					queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } );
+					transactionSetSavepoint( "beforeSecond" );
+					queryExecute( "INSERT INTO records VALUES (2)", [], { datasource: nameToUse } );
+					transactionRollback( "beforeSecond" );
+				}
+				expect( variables.database.count() ).toBe( 1 );
+			} );
+
+			it( "observes pending interruption after a non-cooperative native transaction commits", () => {
+				var nameToUse = variables.database.name();
+				var testDatabase = variables.database;
+				var entered = new CountDownLatch( 1 );
+				var proceed = new CountDownLatch( 1 );
+				var program = Effect::sync( () => {
+					testDatabase.bindToCurrentContext();
+					transaction datasource=nameToUse {
+						queryExecute( "INSERT INTO records VALUES (1)", [], { datasource: nameToUse } );
+						entered.countDown();
+						if ( !proceed.await( 5, TimeUnit::SECONDS ) ) { throw( type: "bxeffect.testing.TestTimeoutException", message: "Transaction gate timed out" ); }
+						queryExecute( "INSERT INTO records VALUES (2)", [], { datasource: nameToUse } );
+					}
+					return "committed";
+				} );
+				var rootFiber = Effect::runFork( program );
+				try { expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue(); rootFiber.interrupt(); }
+				finally { proceed.countDown(); }
+				expect( rootFiber.terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
+				expect( variables.database.count() ).toBe( 2 );
+			} );
+		} );
+	}
+}

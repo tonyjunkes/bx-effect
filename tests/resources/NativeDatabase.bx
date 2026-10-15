@@ -1,0 +1,44 @@
+import ortus.boxlang.runtime.jdbc.DataSource;
+import java.lang.Class;
+
+/** Test-only Derby fixture; each instance owns one named pool and an in-memory database. */
+class {
+	variables.pool = null;
+	variables.databaseName = "";
+
+	/** Creates a unique native datasource and a simple parameterized-write target. */
+	NativeDatabase function init() {
+		variables.databaseName = "bxeffect_" & replace( createUUID(), "-", "", "all" );
+		variables.pool = DataSource::fromStruct( variables.databaseName, {
+			driver: "derby", connectionString: "jdbc:derby:memory:#variables.databaseName#;create=true",
+			maxConnections: 4, minConnections: 0
+		} );
+		bindToCurrentContext();
+		queryExecute( "CREATE TABLE records (id INT PRIMARY KEY)", [], { datasource: variables.databaseName } );
+		return this;
+	}
+
+	/** Returns the datasource name for native transaction and query options. */
+	string function name() { return variables.databaseName; }
+
+	/** Registers the fixture-owned pool in the current native JDBC context without transferring a transaction. */
+	void function bindToCurrentContext() {
+		connectionManager().register( variables.pool );
+	}
+
+	/** Returns the nearest JDBC-capable context's manager, including native async thread contexts. */
+	any function connectionManager() {
+		return getBoxContext().getParentOfType( Class::forName( "ortus.boxlang.runtime.context.IJDBCCapableContext" ) ).getConnectionManager();
+	}
+
+	/** Returns the number of committed records outside a transaction. */
+	numeric function count() {
+		return queryExecute( "SELECT COUNT(*) AS total FROM records", [], { datasource: variables.databaseName } ).total[ 1 ];
+	}
+
+	/** Clears committed data before each example while retaining the same native pool. */
+	void function reset() { queryExecute( "DELETE FROM records", [], { datasource: variables.databaseName } ); }
+
+	/** Shuts down the fixture-owned pool after all interpreter work has terminated. */
+	void function close() { variables.pool.shutdown(); }
+}

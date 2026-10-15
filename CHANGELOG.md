@@ -2,6 +2,20 @@
 
 All notable changes to BX Effect are documented here.
 
+## 1.3.1 - 10-14-2026
+
+- Add runnable application-owned ManagedRuntime, native BoxCache loading/TTL,
+  and native validation recipes with integration coverage.
+- Verify JDBC rollback, nested synchronous Effects, async context visibility,
+  explicit savepoints, failure values, and cooperative interruption with real
+  in-memory Derby transactions.
+- Replace the shared JDBC connection example with named datasource bindings;
+  document native transaction ownership and rollback boundaries.
+- Pin a development-only Derby driver and exclude installed development modules
+  from packaging. No public Effect API or production dependency changes.
+- Update the development TestBox dependency to stable 7.2.0+21.
+- Raise the minimum supported BoxLang version to 1.18.0 and update both CI matrices.
+
 ## 1.3.0 - 10-12-2026
 
 - Add `Effect::scoped(program)` for local resource and child-Fiber lifetimes.
