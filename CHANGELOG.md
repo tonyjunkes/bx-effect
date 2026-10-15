@@ -14,6 +14,7 @@ All notable changes to BX Effect are documented here.
 - Pin a development-only Derby driver and exclude installed development modules
   from packaging. No public Effect API or production dependency changes.
 - Update the development TestBox dependency to stable 7.2.0+21.
+- Raise the minimum supported BoxLang version to 1.18.0 and update both CI matrices.
 
 ## 1.3.0 - 10-12-2026
 

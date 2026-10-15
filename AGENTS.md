@@ -1,5 +1,5 @@
 <!-- FOR AI AGENTS | Verify commands and runtime assumptions against README.md and CI. -->
-<!-- Last updated: 2026-09-23 | Last verified: 2026-09-23 -->
+<!-- Last updated: 2026-10-14 | Last verified: 2026-09-23 -->
 
 # AGENTS.md
 
@@ -8,7 +8,7 @@ overrides it for files in that subtree.
 
 ## Project
 
-BX Effect is a BoxLang 1.16.0+ and Java 21+ module that adds lazy, composable
+BX Effect is a BoxLang 1.18.0+ and Java 21+ module that adds lazy, composable
 Effect semantics while reusing BoxLang's runtime facilities. It is
 Effect-inspired, not an API-compatible TypeScript Effect port.
 
@@ -33,8 +33,8 @@ entry points and setup.
 | `models/effect/internal/` | Private Fiber control, Layer memoization, Stream cursors, and throwable/tagged-error policies |
 | `ModuleConfig.bx`, `box.json` | Module settings, identity, packaging, and version metadata |
 | `tests/specs/` | TestBox contracts grouped by subsystem |
-| `.github/workflows/pr.yml` | PR TestBox checks on `latest` and `snapshot`, including the executor override |
-| `.github/workflows/release.yml` | TestBox on `latest` and `snapshot`, plus an installed-consumer smoke check before publishing from `main` |
+| `.github/workflows/pr.yml` | PR TestBox checks on `1.18.0`, `latest`, and `snapshot`, including the executor override |
+| `.github/workflows/release.yml` | TestBox on `1.18.0`, `latest`, and `snapshot`, plus an installed-consumer smoke check before publishing from `main` |
 
 BX Effect is module-first: its BoxLang module must be installed, registered,
 and activated. Public applications import `models.effect.Effect@bxeffect` and
@@ -207,9 +207,8 @@ change `--directory` to a package such as `tests.specs.core`,
 executable, use `boxlang` in place of `box boxlang cli`.
 
 Keep `--bx-home .boxlang/test` on checkout test and benchmark commands so an
-installed module cannot shadow the checkout. The supported minimum remains
-BoxLang `1.16.0`, but the current PR matrix runs `latest` and `snapshot`; verify
-minimum-runtime compatibility separately for parser-facing or platform changes.
+installed module cannot shadow the checkout. The supported minimum is BoxLang
+`1.18.0`; both CI matrices run that minimum plus `latest` and `snapshot`.
 
 Inspect TestBox totals, not only the process exit code: the runner can exit zero
 with failing specs. Both workflows write JSON reports and check

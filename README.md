@@ -16,7 +16,7 @@ BoxLang applications.
 
 ## Requirements
 
-- BoxLang 1.16.0+
+- BoxLang 1.18.0+
 - Java 21+
 
 ## Supported Features
@@ -186,5 +186,5 @@ box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json examples/
 ```
 
 The suite runs through the BoxLang CLI (via CommandBox or an OS install of BoxLang if preferred).
-CI runs the TestBox suite and module-setting checks on BoxLang `1.16.0`, `latest`, and
+CI runs the TestBox suite and module-setting checks on BoxLang `1.18.0`, `latest`, and
 `snapshot`. For performance work, see the [benchmarks](benchmarks/README.md).

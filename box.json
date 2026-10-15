@@ -22,7 +22,7 @@
         "functional-programming"
     ],
     "boxlang":{
-        "minimumVersion":"1.16.0",
+        "minimumVersion":"1.18.0",
         "moduleName":"bxeffect"
     },
     "private":false,
