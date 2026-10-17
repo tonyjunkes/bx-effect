@@ -1,6 +1,6 @@
 {
     "name":"BX Effect",
-    "version":"1.3.1",
+    "version":"1.3.2",
     "location":"",
     "author":"Tony Junkes",
     "homepage":"https://github.com/tonyjunkes/bx-effect",
@@ -33,15 +33,18 @@
         }
     ],
     "scripts":{
-        "test":"boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs --stream --write-report=false --properties-summary=false --stacktrace=short"
+        "test":"boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs --stream --write-report=false --properties-summary=false --stacktrace=short",
+        "test:frameworks":"boxlang cli --bx-home .boxlang/framework-runner --bx-config tests/boxlang.json tests/RunFrameworks.bx"
     },
     "devDependencies":{
         "testbox":"^7.2.0+21",
-        "bx-derby":"1.1.0+5"
+        "bx-derby":"1.1.0+5",
+        "bx-coldbox":"8.3.0+36"
     },
     "installPaths":{
         "testbox":"testbox/",
-        "bx-derby":"boxlang_modules/bx-derby/"
+        "bx-derby":"boxlang_modules/bx-derby/",
+        "bx-coldbox":".frameworks/coldbox/"
     },
     "ignore":[
         "**/.*",

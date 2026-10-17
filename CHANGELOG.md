@@ -2,6 +2,20 @@
 
 All notable changes to BX Effect are documented here.
 
+## 1.3.2 - 10-16-2026
+
+- Include a portable `SKILL.md` for application development with BX Effect.
+- Add runnable standalone WireBox and ColdBox recipes with explicit ManagedRuntime
+  mappings and lazy Layers that reuse container-owned application services.
+- Close active Effect work before framework service teardown, including ColdBox
+  reinitialization, and retain expected validation errors as HTTP 400 responses.
+- Add standalone injection/shutdown coverage and real HTTP handler, reinit, and
+  application-end checks through BoxLang MiniServer in PR and release verification.
+- Group framework specs under one hierarchy and expose HTTP verification through
+  `box run-script test:frameworks`, using native BoxLang and TestBox server support.
+- Pin development-only ColdBox for BoxLang 8.3.0+36. The kernel and production
+  dependencies remain independent of the frameworks.
+
 ## 1.3.1 - 10-14-2026
 
 - Add runnable application-owned ManagedRuntime, native BoxCache loading/TTL,

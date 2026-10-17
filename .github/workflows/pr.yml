@@ -50,6 +50,10 @@ jobs:
         if: matrix.boxlang-version == 'latest'
         run: bash tests/ci/release-workflow-test.sh
 
+      - name: Verify ColdBox HTTP integration
+        if: matrix.boxlang-version == 'latest'
+        run: boxlang --bx-home .boxlang/framework-runner --bx-config tests/boxlang.json tests/RunFrameworks.bx
+
       - name: Run TestBox
         run: |
           boxlang --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx \

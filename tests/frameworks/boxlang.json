@@ -1,0 +1,11 @@
+{
+  "modulesDirectory": [
+    "${user-dir}/..",
+    "${user-dir}/boxlang_modules",
+    "${user-dir}/.frameworks"
+  ],
+  "modules": {
+    "bxEffect": { "enabled": true },
+    "compat-cfml": { "enabled": false }
+  }
+}

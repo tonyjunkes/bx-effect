@@ -143,6 +143,10 @@ runs. For services shared across repeated runs, use
 
 ## Guides
 
+For AI-assisted application development, copy [SKILL.md](SKILL.md) into your
+agent's skills directory as `bx-effect/SKILL.md`. It covers public API usage,
+failure channels, and resource ownership without requiring this repository.
+
 Start with [Getting started](docs/getting-started.md), then choose a guide for
 the next concern in your application:
 
@@ -176,9 +180,9 @@ box install
 box run-script test
 ```
 
-Development installation includes the pinned Derby module for native JDBC
-integration tests. It is excluded from the published package and is not a
-production dependency. The [application example](examples/application/Index.bxm)
+Development installation includes pinned Derby and ColdBox modules for JDBC and
+framework integration tests. These are excluded from the published
+package and are not production dependencies. The [application example](examples/application/Index.bxm)
 can be run from the checkout with:
 
 ```bash
@@ -188,3 +192,28 @@ box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json examples/
 The suite runs through the BoxLang CLI (via CommandBox or an OS install of BoxLang if preferred).
 CI runs the TestBox suite and module-setting checks on BoxLang `1.18.0`, `latest`, and
 `snapshot`. For performance work, see the [benchmarks](benchmarks/README.md).
+
+The [WireBox and ColdBox recipes](docs/native-integrations.md#wirebox-and-coldbox)
+show explicit runtime mappings and framework shutdown ownership. Framework
+specs live under `tests/specs/frameworks/wirebox` and
+`tests/specs/frameworks/coldbox`. The normal CLI suite runs WireBox and explicitly
+skips the HTTP-only ColdBox cases. With BoxLang MiniServer on PATH, run those via
+the BoxLang test entry point:
+
+```bash
+box run-script test:frameworks
+```
+
+For a standalone BoxLang installation, the same entry point is:
+
+```bash
+boxlang --bx-home .boxlang/framework-runner --bx-config tests/boxlang.json tests/RunFrameworks.bx
+```
+
+The runner uses TestBox's server helper to start a loopback-only server, check
+handlers, reinitialization, and application-end cleanup, then stop its process
+tree. It writes JSON totals and server output under `.boxlang/framework-integration`;
+failed or empty test runs fail the command. Set `MINISERVER_JAR` to
+a MiniServer JAR when its launcher is not on PATH, or
+`BX_EFFECT_FRAMEWORK_PORT` to change the default port `8951`.
+Both test configurations keep CFML compatibility disabled.

@@ -1,0 +1,21 @@
+import models.effect.Effect@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+
+/** Builds a fresh program per request and runs it through the injected application runtime. */
+class {
+	property name="runtime" inject="BXEffectRuntime";
+
+	/**
+	 * Returns an Exit so handlers can distinguish expected input errors from defects.
+	 * @name Submitted name; an empty name is an expected application error.
+	 */
+	any function run( required string name ) {
+		var submitted = trim( arguments.name );
+		var program = Effect::suspend( () => submitted.len() == 0
+			? Effect::fail( { _tag: "InvalidName", message: "A name is required" } )
+			: Effect::service( ServiceTag::of( "example/GreetingService" ) ).flatMap( service =>
+				Effect::sync( () => service.greet( submitted ) )
+			) );
+		return variables.runtime.runSyncExit( program );
+	}
+}

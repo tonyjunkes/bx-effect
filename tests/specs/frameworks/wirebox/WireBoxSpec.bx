@@ -1,0 +1,62 @@
+import coldbox.system.ioc.Injector;
+import models.effect.Effect@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+class extends="testbox.system.BaseSpec" {
+	function run() {
+		describe( "Explicit standalone WireBox bindings", () => {
+			it( "shares one lazy runtime and the existing WireBox service across request programs", () => {
+				var container = new Injector( binder: "examples.wirebox.config.EffectBinder" );
+				try {
+					var managed = container.getInstance( "BXEffectRuntime" );
+					expect( container.getInstance( "BXEffectRuntime" ) ).toBe( managed );
+					expect( container.getScope( "singleton" ).exists( container.getBinder().getMapping( "GreetingService" ) ) ).toBeFalse();
+					var action = container.getInstance( "GreetingAction" );
+					expect( action.run( " " ).cause().error()._tag ).toBe( "InvalidName" );
+					expect( container.getScope( "singleton" ).exists( container.getBinder().getMapping( "GreetingService" ) ) ).toBeTrue();
+					expect( action.run( "Ada" ).value() ).toBe( "Hello, Ada!" );
+					expect( action.run( "Grace" ).value() ).toBe( "Hello, Grace!" );
+					expect( managed.runSync( Effect::service( ServiceTag::of( "example/GreetingService" ) ) ) ).toBe( container.getInstance( "GreetingService" ) );
+					for ( var valueName in [ "Effect", "Cause", "Exit", "Result", "Context", "Layer", "Schedule" ] ) {
+						expect( container.getBinder().mappingExists( valueName ) ).toBeFalse();
+					}
+				} finally {
+					container.shutdown();
+				}
+			} );
+
+			it( "retains service defects instead of converting them to validation errors", () => {
+				var container = new Injector( binder: "examples.wirebox.config.EffectBinder" );
+				try {
+					container.getBinder().map( "GreetingService" ).toValue( { greet: ( name ) => {
+						throw( type: "bxeffect.testing.GreetingException", message: "broken service" );
+					} } );
+					var outcome = container.getInstance( "GreetingAction" ).run( "Ada" );
+					expect( outcome.cause().kind() ).toBe( "Die" );
+				} finally {
+					container.shutdown();
+				}
+			} );
+
+			it( "awaits active Effect cleanup on injector shutdown and rejects later runs", () => {
+				var container = new Injector( binder: "examples.wirebox.config.EffectBinder" );
+				var managed = container.getInstance( "BXEffectRuntime" );
+				var entered = new CountDownLatch( 1 );
+				var released = new CountDownLatch( 1 );
+				var pending = futureNew();
+				var rootFiber = managed.runFork( Effect::fromBoxFuture( () => { entered.countDown(); return pending; } )
+					.ensuring( Effect::sync( () => { released.countDown(); return null; } ) ) );
+				try { expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue(); }
+				finally {
+					container.shutdown();
+				}
+				expect( released.getCount() ).toBe( 0 );
+				expect( rootFiber.terminationFuture().get( 5000 ).cause().isInterrupted() ).toBeTrue();
+				expect( managed.runSyncExit( Effect::succeed( 1 ) ).cause().error()._tag ).toBe( "ManagedRuntimeClosed" );
+				expect( managed.close().isSuccess() ).toBeTrue();
+			} );
+		} );
+	}
+}

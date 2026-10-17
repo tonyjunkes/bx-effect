@@ -186,6 +186,87 @@ the operation requires database abort semantics. BX Effect owns no connection
 pool or transaction manager. See the
 [native transaction guide](https://boxlang.ortusbooks.com/boxlang-framework/jdbc/transactions).
 
+## WireBox and ColdBox
+
+WireBox and ColdBox are optional application integrations. Import static APIs
+such as `Effect` and `Layer` directly; explicitly map a runtime instance:
+
+```boxlang
+map( "BXEffectRuntime" ).toValue( managedRuntime );
+```
+
+The runnable [binder](https://github.com/tonyjunkes/bx-effect/blob/main/examples/wirebox/config/EffectBinder.bx)
+creates one lazy `ManagedRuntime` per injector. Its complete application Layer
+resolves the WireBox singleton on the first runtime run, including a run whose
+program fails validation; creating or resolving the runtime itself builds no services:
+
+```boxlang
+var container = getInjector();
+var live = Layer::effect(
+	ServiceTag::of( "example/GreetingService" ),
+	Effect::sync( () => container.getInstance( "GreetingService" ) )
+);
+map( "BXEffectRuntime" ).toValue( ManagedRuntime::make( live ) );
+```
+
+WireBox owns the supplied service; this Layer does not acquire or close it.
+Use thread-safe services when concurrent runs share them. Keep request values
+and request-scoped services out of application-lived Layers: build a fresh
+program for each request, as the injected
+[GreetingAction](https://github.com/tonyjunkes/bx-effect/blob/main/examples/wirebox/models/GreetingAction.bx)
+does. It returns an `Exit`, preserving input failures separately from defects.
+The stateless action is an injector singleton: it stores only that injector's
+runtime, while request data stays in method locals. This also avoids WireBox's
+request-local transient injection cache retaining an older injector's runtime.
+For independent per-run Layers, an explicitly mapped `new EffectRuntime()` is
+also valid; use ManagedRuntime when service builds should be shared across runs.
+
+For standalone WireBox, the [job entry point](https://github.com/tonyjunkes/bx-effect/blob/main/examples/wirebox/Index.bxm)
+owns its injector and calls `shutdown()` in `finally`. For an application-lived
+injector, create it once at startup and shut it down at application end.
+The binder's native `onShutdown(injector)` convention closes its runtime before
+WireBox stops its infrastructure. Do not shut down the injector after each web
+request. See [WireBox mapping destinations](https://wirebox.ortusbooks.com/configuration/mapping-dsl/mapping-destinations).
+
+The [ColdBox application](https://github.com/tonyjunkes/bx-effect/tree/main/examples/coldbox)
+uses that binder through `variables.wirebox.binder` in its configuration and
+forwards native application events to ColdBox's bootstrap. An application
+interceptor closes the runtime at `onColdBoxShutdown`, before ColdBox tears down
+services, CacheBox, executors, and WireBox. This covers native reinitialization
+as well as application end. Binder shutdown remains an idempotent fallback for
+the runtime. BX Effect installs no framework interceptor itself.
+
+Close waits for active Effect finalization before framework services disappear.
+After reinit, new requests resolve a fresh runtime. References retained by older
+requests still point to their closed runtime and reject further runs.
+Non-cooperative work can delay shutdown; use native I/O deadlines where needed.
+The handler maps the specific expected `InvalidName` error to HTTP 400 and lets
+other failures reach ColdBox's error handling. Configure
+`BX_EFFECT_REINIT_PASSWORD` if using the example's reinit endpoint; otherwise
+the example generates a random password. See the framework's
+[interceptor documentation](https://coldbox.ortusbooks.com/the-basics/interceptors).
+
+From this checkout after `box install`, run the standalone example with:
+
+```bash
+box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json examples/wirebox/Index.bxm
+```
+
+With BoxLang MiniServer available, run the ColdBox web application:
+
+```bash
+boxlang-miniserver --webroot . --serverHome .boxlang/framework-example --configPath tests/frameworks/boxlang.json
+```
+
+Visit `/examples/coldbox/Index.bxm?name=Ada`. These are checkout commands; when
+copying the recipes into an application, install its own BX Effect and framework
+dependencies and adjust the example class paths and application mapping.
+The handler writes JSON through native BoxLang `header` and `content` components
+and calls `event.noRender()`. This avoids ColdBox 8.3's compiled `cfcontent()`
+renderer call, which is unresolved in the tested native MiniServer distribution.
+No CFML compatibility module is required. Keep native full null support if an
+application independently enables compatibility settings.
+
 ## Scheduled tasks
 
 Let BoxLang Scheduler own calendar recurrence. A task callback should execute

@@ -1,0 +1,13 @@
+/** HTTP-only fixture forwarding the actual example's startup and shutdown lifecycle. */
+class extends="examples.coldbox.Application" {
+	this.name = "BXEffectColdBoxTests";
+
+	/**
+	 * Allows the HTTP suite to run again after its explicit application-end case.
+	 * @targetPage Requested test endpoint.
+	 */
+	boolean function onRequestStart( required string targetPage ) {
+		if ( !structKeyExists( application, "cbBootstrap" ) ) { onApplicationStart(); }
+		return super.onRequestStart( arguments.targetPage );
+	}
+}

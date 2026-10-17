@@ -1,0 +1,12 @@
+<bx:script>
+import coldbox.system.ioc.Injector;
+
+// A standalone job owns the container until its work and cleanup have finished.
+container = new Injector( binder: "examples.wirebox.config.EffectBinder" );
+try {
+	request.effectExampleExit = container.getInstance( "GreetingAction" ).run( "Ada" );
+	writeOutput( request.effectExampleExit.value() );
+} finally {
+	container.shutdown();
+}
+</bx:script>

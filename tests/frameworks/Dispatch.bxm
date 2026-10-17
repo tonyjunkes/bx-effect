@@ -1,0 +1,5 @@
+<bx:script>
+event = application.cbController.getRequestService().getContext();
+event.setValue( "name", url.name ?: "" );
+application.cbController.runEvent( event: "Greetings.index" );
+</bx:script>

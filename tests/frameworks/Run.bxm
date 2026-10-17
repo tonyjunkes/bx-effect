@@ -1,0 +1,4 @@
+<bx:script>
+// The fixtures live here; their specs use the same hierarchy as the native suite.
+writeOutput( new testbox.system.TestBox( directory: "tests.specs.frameworks.coldbox" ).run( reporter: "json" ) );
+</bx:script>

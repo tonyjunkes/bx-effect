@@ -1,0 +1,86 @@
+import testbox.system.util.WebServer;
+import java.io.File;
+import java.net.URI;
+import java.net.ServerSocket;
+import java.net.InetSocketAddress;
+import java.lang.System;
+
+/** Runs the HTTP integration suite using TestBox's portable server lifecycle helper. */
+class {
+	/**
+	 * Starts an isolated loopback server, checks TestBox totals, and always stops the owned process tree.
+	 * @args CLI arguments supplied by BoxLang; configuration uses the documented environment settings.
+	 */
+	void function main( args = [] ) {
+		var root = new File( getDirectoryFromPath( getCurrentTemplatePath() ) & ".." ).getCanonicalPath();
+		var output = root & "/.boxlang/framework-integration";
+		var port = getSystemSetting( "BX_EFFECT_FRAMEWORK_PORT", "8951" );
+		if ( !isValid( "integer", port ) || port < 1 || port > 65535 ) {
+			throw( type: "bxeffect.testing.FrameworkIntegrationException", message: "BX_EFFECT_FRAMEWORK_PORT must be an integer from 1 to 65535" );
+		}
+		port = javaCast( "int", port );
+		var reservation = new ServerSocket();
+		try { reservation.bind( new InetSocketAddress( "127.0.0.1", javaCast( "int", port ) ) ); }
+		finally {
+			reservation.close();
+		}
+		if ( !directoryExists( output ) ) { directoryCreate( output, true ); }
+		var baseURL = "http://127.0.0.1:#port#";
+		var jarPath = getSystemSetting( "MINISERVER_JAR", "" );
+		var launcher = "boxlang-miniserver";
+		if ( jarPath.len() > 0 ) {
+			var javaPath = System::getProperty( "java.home" ) & "/bin/java";
+			launcher = quotePath( javaPath ) & " -jar " & quotePath( new File( jarPath ).getCanonicalPath() );
+		}
+		var host = new WebServer(
+			command: launcher & " --host 127.0.0.1 --port " & port & " --webroot " & quotePath( root )
+				& " --serverHome " & quotePath( output & "/home" )
+				& " --configPath " & quotePath( root & "/tests/frameworks/boxlang.json" ) & " --health-check",
+			url: baseURL & "/health/ready", timeout: 60, workingDirectory: root
+		);
+		try {
+			host.start();
+			var connection = URI::create( baseURL & "/tests/frameworks/Run.bxm" ).toURL().openConnection();
+			connection.setConnectTimeout( 5000 );
+			connection.setReadTimeout( 90000 );
+			try {
+				if ( connection.getResponseCode() != 200 ) {
+					throw( type: "bxeffect.testing.FrameworkIntegrationException", message: "The HTTP test runner returned status #connection.getResponseCode()#" );
+				}
+				var responseStream = connection.getInputStream();
+				try { var payload = new java.lang.String( responseStream.readAllBytes(), "UTF-8" ); }
+				finally {
+					responseStream.close();
+				}
+			} finally {
+				connection.disconnect();
+			}
+			fileWrite( output & "/report.json", payload );
+			var totals = JSONDeserialize( payload );
+			println( JSONSerialize( { totalPass: totals.totalPass, totalFail: totals.totalFail, totalError: totals.totalError } ) );
+			if ( totals.totalFail != 0 || totals.totalError != 0 || totals.totalPass <= 0 ) {
+				throw( type: "bxeffect.testing.FrameworkIntegrationException", message: "ColdBox HTTP specs failed; see #output#/report.json" );
+			}
+			println( "ColdBox HTTP integration checks passed." );
+		} finally {
+			try { fileWrite( output & "/server.log", host.getLogTail( 200 ) ); }
+			finally {
+				host.stop();
+			}
+		}
+	}
+
+	/**
+	 * Quotes a filesystem path for the native shell used by the TestBox helper.
+	 * @path Literal path to pass as one argument.
+	 */
+	private string function quotePath( required string path ) {
+		if ( System::getProperty( "os.name" ).findNoCase( "windows" ) > 0 ) {
+			if ( reFind( '["%\r\n]', arguments.path ) ) {
+				throw( type: "bxeffect.testing.FrameworkIntegrationException", message: "A server path contains characters unsupported by the Windows launcher" );
+			}
+			return '"' & arguments.path & '"';
+		}
+		return "'" & replace( arguments.path, "'", "'" & char( 34 ) & "'" & char( 34 ) & "'", "all" ) & "'";
+	}
+}

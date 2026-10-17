@@ -1,0 +1,29 @@
+import models.effect.Effect@bxeffect;
+import models.effect.ManagedRuntime@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+
+/** Application bindings; the injector owns one explicitly mapped ManagedRuntime. */
+class extends="coldbox.system.ioc.config.Binder" {
+	/** Maps application services and a lazy runtime without asking WireBox to construct value APIs. */
+	void function configure() {
+		if ( !isObject( getColdBox() ) ) { this.scopeRegistration( enabled: false ); }
+		map( "GreetingService" ).to( "examples.wirebox.models.GreetingService" ).asSingleton();
+		map( "GreetingAction" ).to( "examples.wirebox.models.GreetingAction" ).asSingleton();
+		var container = getInjector();
+		variables.managed = ManagedRuntime::make( Layer::effect(
+			ServiceTag::of( "example/GreetingService" ),
+			Effect::sync( () => container.getInstance( "GreetingService" ) )
+		) );
+		map( "BXEffectRuntime" ).toValue( variables.managed );
+	}
+
+	/**
+	 * Closes owned Effect work before standalone WireBox tears down its infrastructure.
+	 * @injector Injector invoking the native binder shutdown convention.
+	 */
+	void function onShutdown( required any injector ) {
+		var closeExit = variables.managed.close();
+		if ( closeExit.isFailure() ) { writeLog( text: closeExit.cause().pretty(), type: "Error", log: "application" ); }
+	}
+}

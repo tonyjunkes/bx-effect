@@ -1,0 +1,10 @@
+/** Application integration hook; BX Effect itself installs no ColdBox interceptors. */
+class {
+	property name="runtime" inject="BXEffectRuntime";
+
+	/** Drains active Effects before ColdBox tears down services during reinit or application end. */
+	void function onColdBoxShutdown() {
+		var closeExit = variables.runtime.close();
+		if ( closeExit.isFailure() ) { writeLog( text: closeExit.cause().pretty(), type: "Error", log: "application" ); }
+	}
+}

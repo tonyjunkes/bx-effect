@@ -3,6 +3,7 @@
 testbox/
 boxlang_modules/
 .boxlang/
+.frameworks/
 *.class
 *.jar
 *.log
