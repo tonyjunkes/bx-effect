@@ -4,6 +4,7 @@ All notable changes to BX Effect are documented here.
 
 ## 1.3.2 - 10-16-2026
 
+- Include a portable `SKILL.md` for application development with BX Effect.
 - Add runnable standalone WireBox and ColdBox recipes with explicit ManagedRuntime
   mappings and lazy Layers that reuse container-owned application services.
 - Close active Effect work before framework service teardown, including ColdBox

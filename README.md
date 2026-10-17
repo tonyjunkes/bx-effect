@@ -143,6 +143,10 @@ runs. For services shared across repeated runs, use
 
 ## Guides
 
+For AI-assisted application development, copy [SKILL.md](SKILL.md) into your
+agent's skills directory as `bx-effect/SKILL.md`. It covers public API usage,
+failure channels, and resource ownership without requiring this repository.
+
 Start with [Getting started](docs/getting-started.md), then choose a guide for
 the next concern in your application:
 

@@ -10,7 +10,7 @@ delay (with 1 ms rounding tolerance). Results from before the live Clock fix are
 not valid delay baselines. Use an isolated `BOXLANG_HOME` when an installed copy
 of bx-effect would otherwise shadow the checkout's module imports.
 
-Run them from the repository root with the commands listed in `AGENTS.md`, for
+Run them from the repository root with the isolated checkout configuration, for
 example:
 
 ```bash
