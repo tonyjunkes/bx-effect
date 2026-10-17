@@ -1,0 +1,8 @@
+/** Stateless application service owned by WireBox, supplied to Effects through a Layer. */
+class {
+	/**
+	 * Creates the application's greeting.
+	 * @name Name validated by the request program.
+	 */
+	string function greet( required string name ) { return "Hello, #arguments.name#!"; }
+}

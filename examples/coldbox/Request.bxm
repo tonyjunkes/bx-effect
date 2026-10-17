@@ -1,0 +1,8 @@
+<bx:script>
+// Diagnostic entry point: dispatch the handler and inspect its transport response.
+application.cbController.runEvent( event: "Greetings.index" );
+request.effectExampleResponse = application.cbController.getRequestService().getContext().getRenderData();
+request.effectExampleController = application.cbController;
+request.effectExampleBootstrap = application.cbBootstrap;
+writeOutput( JSONSerialize( request.effectExampleResponse.data ) );
+</bx:script>

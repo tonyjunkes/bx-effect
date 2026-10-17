@@ -1,0 +1,13 @@
+/** Minimal application configuration using explicit BX Effect bindings. */
+class {
+	/** Configures request dispatch, WireBox, and runtime cleanup before framework services stop. */
+	void function configure() {
+		variables.coldbox = {
+			appName: "BX Effect ColdBox Example", defaultEvent: "Greetings.index",
+			reinitPassword: getSystemSetting( "BX_EFFECT_REINIT_PASSWORD", createUUID() ),
+			handlersIndexAutoReload: false
+		};
+		variables.wirebox = { binder: "examples.wirebox.config.EffectBinder" };
+		variables.interceptors = [ { class: "examples.coldbox.interceptors.EffectLifecycle" } ];
+	}
+}

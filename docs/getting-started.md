@@ -28,9 +28,9 @@ value = Effect::runSync( program );
 ```
 
 `Effect`, `Cause`, `Exit`, `Result`, `Schedule`, `Context`, and `Layer` are
-static/value APIs, not services for WireBox to instantiate. A future WireBox
-adapter may explicitly provide `EffectRuntime` or application service Layers,
-but the BX Effect kernel does not depend on WireBox.
+static/value APIs, not services for WireBox to instantiate. Applications may
+explicitly map a runtime instance and provide container-owned services through
+Layers. See the [WireBox and ColdBox recipes](native-integrations.md#wirebox-and-coldbox).
 
 The repository test suite supplies `tests/boxlang.json`, which points the
 runtime at the workspace's parent module directory. Run tests with the command

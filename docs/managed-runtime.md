@@ -97,3 +97,7 @@ and [request example](https://github.com/tonyjunkes/bx-effect/blob/main/examples
 show native startup, repeated requests, logging observation, and application-end
 cleanup. The native cache provider is supplied as an externally owned service;
 closing the ManagedRuntime finalizes its work without shutting that provider down.
+
+For WireBox-owned services, the [framework recipes](native-integrations.md#wirebox-and-coldbox)
+map one runtime explicitly and close it before injector or ColdBox service teardown,
+including reinitialization. The framework owns the supplied service instances.

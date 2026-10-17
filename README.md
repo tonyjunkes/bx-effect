@@ -176,9 +176,9 @@ box install
 box run-script test
 ```
 
-Development installation includes the pinned Derby module for native JDBC
-integration tests. It is excluded from the published package and is not a
-production dependency. The [application example](examples/application/Index.bxm)
+Development installation includes pinned Derby, ColdBox, and CFML compatibility
+modules for JDBC and framework integration tests. These are excluded from the published
+package and are not production dependencies. The [application example](examples/application/Index.bxm)
 can be run from the checkout with:
 
 ```bash
@@ -188,3 +188,19 @@ box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json examples/
 The suite runs through the BoxLang CLI (via CommandBox or an OS install of BoxLang if preferred).
 CI runs the TestBox suite and module-setting checks on BoxLang `1.18.0`, `latest`, and
 `snapshot`. For performance work, see the [benchmarks](benchmarks/README.md).
+
+The [WireBox and ColdBox recipes](docs/native-integrations.md#wirebox-and-coldbox)
+show explicit runtime mappings and framework shutdown ownership. Standalone
+WireBox specs run in the CLI suite. ColdBox's additional HTTP specs require
+BoxLang MiniServer, Bash, `curl`, and `jq`:
+
+```bash
+bash tests/ci/framework-integration-test.sh
+```
+
+The script starts a loopback-only server, checks handlers, reinitialization,
+and application-end cleanup, then stops that server. Set `MINISERVER_JAR` to
+a MiniServer JAR when its launcher is not on PATH, or
+`BX_EFFECT_FRAMEWORK_PORT` to change the default port `8951`.
+The HTTP configuration enables CFML compatibility for ColdBox's web renderer;
+the native CLI suite keeps it disabled.

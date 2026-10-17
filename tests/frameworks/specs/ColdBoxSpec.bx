@@ -1,0 +1,66 @@
+import models.effect.Effect@bxeffect;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.net.URI;
+
+class extends="testbox.system.BaseSpec" {
+	function run() {
+		describe( "ColdBox application runtime ownership", () => {
+			it( "dispatches the real handler with injected services and expected HTTP outcomes", () => {
+				var controller = application.cbController;
+				var event = controller.getRequestService().getContext();
+				event.setValue( "name", "Ada" );
+				controller.runEvent( event: "Greetings.index" );
+				expect( event.getRenderData().statusCode ).toBe( 200 );
+				expect( event.getRenderData().data.greeting ).toBe( "Hello, Ada!" );
+				event.setValue( "name", " " );
+				controller.runEvent( event: "Greetings.index" );
+				expect( event.getRenderData().statusCode ).toBe( 400 );
+				expect( event.getRenderData().data._tag ).toBe( "InvalidName" );
+			} );
+
+			it( "closes old work before service teardown and replaces the runtime on native reinit", () => {
+				var oldController = application.cbController;
+				var managed = oldController.getWireBox().getInstance( "BXEffectRuntime" );
+				var provider = oldController.getCacheBox().getCache( "default" );
+				var entered = new CountDownLatch( 1 );
+				var released = new CountDownLatch( 1 );
+				var pending = futureNew();
+				var rootFiber = managed.runFork( Effect::fromBoxFuture( () => { entered.countDown(); return pending; } )
+					.ensuring( Effect::sync( () => {
+						provider.set( "bxeffect/cleanup", "before framework shutdown" );
+						released.countDown();
+						return null;
+					} ) ) );
+				try {
+					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					oldController.setSetting( "reinitPassword", hash( "test-reinit" ) );
+					var connection = URI::create( "http://127.0.0.1:#cgi.server_port#/tests/frameworks/Ping.bxm?fwreinit=test-reinit" ).toURL().openConnection();
+					connection.setConnectTimeout( 5000 );
+					connection.setReadTimeout( 20000 );
+					try {
+						expect( connection.getResponseCode() ).toBe( 200 );
+						var responseStream = connection.getInputStream();
+						try { var body = JSONDeserialize( new java.lang.String( responseStream.readAllBytes(), "UTF-8" ) ); }
+						finally { responseStream.close(); }
+						expect( body.greeting ).toBe( "Hello, Grace!" );
+					}
+					finally { connection.disconnect(); }
+					expect( managed.isClosed() ).toBeTrue();
+					expect( released.getCount() ).toBe( 0 );
+					expect( rootFiber.terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
+					var replacement = application.cbController.getWireBox().getInstance( "BXEffectRuntime" );
+					expect( replacement.isClosed() ).toBeFalse();
+				} finally { managed.close(); }
+			} );
+
+			it( "forwards application end through ColdBox and closes the mapped runtime", () => {
+				var managed = application.cbController.getWireBox().getInstance( "BXEffectRuntime" );
+				try { new examples.coldbox.Application().onApplicationEnd( application ); }
+				finally { structDelete( application, "cbBootstrap" ); }
+				expect( managed.isClosed() ).toBeTrue();
+				expect( managed.runSyncExit( Effect::succeed( 1 ) ).cause().error()._tag ).toBe( "ManagedRuntimeClosed" );
+			} );
+		} );
+	}
+}

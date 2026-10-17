@@ -1,0 +1,21 @@
+/** ColdBox handles transport; the injected action returns complete Effect outcomes. */
+class {
+	property name="greetingAction" inject="GreetingAction";
+
+	/**
+	 * Maps an expected input failure to 400 and a successful greeting to 200.
+	 * @event ColdBox request context.
+	 * @rc Public request collection.
+	 * @prc Private request collection.
+	 */
+	void function index( required any event, required struct rc, required struct prc ) {
+		var outcome = variables.greetingAction.run( arguments.event.getValue( "name", "Ada" ) );
+		if ( outcome.isSuccess() ) {
+			arguments.event.renderData( type: "json", data: { greeting: outcome.value() }, statusCode: 200 );
+		} else if ( outcome.cause().kind() == "Fail" && outcome.cause().error()._tag == "InvalidName" ) {
+			arguments.event.renderData( type: "json", data: outcome.cause().error(), statusCode: 400 );
+		} else {
+			throw( type: "bxeffect.examples.GreetingException", message: outcome.cause().pretty() );
+		}
+	}
+}

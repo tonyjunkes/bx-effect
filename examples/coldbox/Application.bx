@@ -1,0 +1,33 @@
+/** Native application lifecycle forwarding to the ColdBox bootstrap. */
+class {
+	this.name = "BXEffectColdBoxExample";
+
+	/** Starts ColdBox; its configured binder creates the application runtime description. */
+	boolean function onApplicationStart() {
+		application.cbBootstrap = new coldbox.system.Bootstrap(
+			COLDBOX_CONFIG_FILE: "examples.coldbox.config.ColdBox",
+			COLDBOX_APP_ROOT_PATH: getDirectoryFromPath( getCurrentTemplatePath() ),
+			COLDBOX_APP_MAPPING: "/examples/coldbox"
+		);
+		application.cbBootstrap.loadColdBox();
+		return true;
+	}
+
+	/**
+	 * Dispatches through ColdBox, including its native reinitialization checks.
+	 * @targetPage Requested template.
+	 */
+	boolean function onRequestStart( required string targetPage ) {
+		return application.cbBootstrap.onRequestStart( arguments.targetPage );
+	}
+
+	/**
+	 * Invokes ColdBox shutdown, which closes Effects before framework services stop.
+	 * @applicationScope Native scope containing this application's ColdBox bootstrap.
+	 */
+	void function onApplicationEnd( required struct applicationScope ) {
+		if ( structKeyExists( arguments.applicationScope, "cbBootstrap" ) ) {
+			arguments.applicationScope.cbBootstrap.onApplicationEnd( arguments.applicationScope );
+		}
+	}
+}

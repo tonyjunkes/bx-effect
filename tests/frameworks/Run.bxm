@@ -1,0 +1,4 @@
+<bx:script>
+// Kept outside tests/specs: ColdBox needs a real web request context.
+writeOutput( new testbox.system.TestBox( directory: "tests.frameworks.specs" ).run( reporter: "json" ) );
+</bx:script>
