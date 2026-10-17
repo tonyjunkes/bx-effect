@@ -176,8 +176,8 @@ box install
 box run-script test
 ```
 
-Development installation includes pinned Derby, ColdBox, and CFML compatibility
-modules for JDBC and framework integration tests. These are excluded from the published
+Development installation includes pinned Derby and ColdBox modules for JDBC and
+framework integration tests. These are excluded from the published
 package and are not production dependencies. The [application example](examples/application/Index.bxm)
 can be run from the checkout with:
 
@@ -202,5 +202,4 @@ The script starts a loopback-only server, checks handlers, reinitialization,
 and application-end cleanup, then stops that server. Set `MINISERVER_JAR` to
 a MiniServer JAR when its launcher is not on PATH, or
 `BX_EFFECT_FRAMEWORK_PORT` to change the default port `8951`.
-The HTTP configuration enables CFML compatibility for ColdBox's web renderer;
-the native CLI suite keeps it disabled.
+Both test configurations keep CFML compatibility disabled.

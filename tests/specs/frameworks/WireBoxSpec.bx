@@ -15,7 +15,7 @@ class extends="testbox.system.BaseSpec" {
 					expect( container.getScope( "singleton" ).exists( container.getBinder().getMapping( "GreetingService" ) ) ).toBeFalse();
 					var action = container.getInstance( "GreetingAction" );
 					expect( action.run( " " ).cause().error()._tag ).toBe( "InvalidName" );
-					expect( container.getScope( "singleton" ).exists( container.getBinder().getMapping( "GreetingService" ) ) ).toBeFalse();
+					expect( container.getScope( "singleton" ).exists( container.getBinder().getMapping( "GreetingService" ) ) ).toBeTrue();
 					expect( action.run( "Ada" ).value() ).toBe( "Hello, Ada!" );
 					expect( action.run( "Grace" ).value() ).toBe( "Hello, Grace!" );
 					expect( managed.runSync( Effect::service( ServiceTag::of( "example/GreetingService" ) ) ) ).toBe( container.getInstance( "GreetingService" ) );

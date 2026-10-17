@@ -6,6 +6,6 @@
   ],
   "modules": {
     "bxEffect": { "enabled": true },
-    "bx-compat-cfml": { "enabled": true }
+    "compat-cfml": { "enabled": false }
   }
 }

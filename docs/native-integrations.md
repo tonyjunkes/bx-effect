@@ -196,8 +196,9 @@ map( "BXEffectRuntime" ).toValue( managedRuntime );
 ```
 
 The runnable [binder](https://github.com/tonyjunkes/bx-effect/blob/main/examples/wirebox/config/EffectBinder.bx)
-creates one lazy `ManagedRuntime` per injector. Its Layer resolves the existing
-WireBox singleton only when Effect work requests the service:
+creates one lazy `ManagedRuntime` per injector. Its complete application Layer
+resolves the WireBox singleton on the first runtime run, including a run whose
+program fails validation; creating or resolving the runtime itself builds no services:
 
 ```boxlang
 var container = getInjector();
@@ -260,10 +261,11 @@ boxlang-miniserver --webroot . --serverHome .boxlang/framework-example --configP
 Visit `/examples/coldbox/Index.bxm?name=Ada`. These are checkout commands; when
 copying the recipes into an application, install its own BX Effect and framework
 dependencies and adjust the example class paths and application mapping.
-ColdBox 8.3's HTTP renderer uses CFML compatibility functions. The checkout pins
-`bx-compat-cfml` for that web recipe and enables it in
-`tests/frameworks/boxlang.json`; the native CLI configurations keep it disabled.
-This is a framework application requirement, not a BX Effect dependency.
+The handler writes JSON through native BoxLang `header` and `content` components
+and calls `event.noRender()`. This avoids ColdBox 8.3's compiled `cfcontent()`
+renderer call, which is unresolved in the tested native MiniServer distribution.
+No CFML compatibility module is required. Keep native full null support if an
+application independently enables compatibility settings.
 
 ## Scheduled tasks
 

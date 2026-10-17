@@ -5,7 +5,7 @@
     "${user-dir}/.frameworks"
   ],
   "modules": {
-    "bx-compat-cfml": { "enabled": false },
+    "compat-cfml": { "enabled": false },
     "bxEffect": {
       "enabled": true
     }

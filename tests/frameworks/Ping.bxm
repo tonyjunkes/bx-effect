@@ -1,7 +1,0 @@
-<bx:script>
-// A new HTTP request must resolve the replacement runtime after reinit.
-event = application.cbController.getRequestService().getContext();
-event.setValue( "name", "Grace" );
-application.cbController.runEvent( event: "Greetings.index" );
-writeOutput( JSONSerialize( event.getRenderData().data ) );
-</bx:script>

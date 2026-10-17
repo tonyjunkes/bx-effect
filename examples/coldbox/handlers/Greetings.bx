@@ -11,11 +11,17 @@ class {
 	void function index( required any event, required struct rc, required struct prc ) {
 		var outcome = variables.greetingAction.run( arguments.event.getValue( "name", "Ada" ) );
 		if ( outcome.isSuccess() ) {
-			arguments.event.renderData( type: "json", data: { greeting: outcome.value() }, statusCode: 200 );
+			var responseData = { greeting: outcome.value() };
+			var responseStatus = 200;
 		} else if ( outcome.cause().kind() == "Fail" && outcome.cause().error()._tag == "InvalidName" ) {
-			arguments.event.renderData( type: "json", data: outcome.cause().error(), statusCode: 400 );
+			var responseData = outcome.cause().error();
+			var responseStatus = 400;
 		} else {
-			throw( type: "bxeffect.examples.GreetingException", message: outcome.cause().pretty() );
+			throw( type: "bxeffect.GreetingException", message: outcome.cause().pretty() );
 		}
+		arguments.event.noRender();
+		bx:header statusCode=responseStatus;
+		bx:content type="application/json";
+		writeOutput( JSONSerialize( responseData ) );
 	}
 }
