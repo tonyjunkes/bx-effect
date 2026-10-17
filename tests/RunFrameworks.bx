@@ -21,7 +21,9 @@ class {
 		port = javaCast( "int", port );
 		var reservation = new ServerSocket();
 		try { reservation.bind( new InetSocketAddress( "127.0.0.1", javaCast( "int", port ) ) ); }
-		finally { reservation.close(); }
+		finally {
+			reservation.close();
+		}
 		if ( !directoryExists( output ) ) { directoryCreate( output, true ); }
 		var baseURL = "http://127.0.0.1:#port#";
 		var jarPath = getSystemSetting( "MINISERVER_JAR", "" );
@@ -47,8 +49,12 @@ class {
 				}
 				var responseStream = connection.getInputStream();
 				try { var payload = new java.lang.String( responseStream.readAllBytes(), "UTF-8" ); }
-				finally { responseStream.close(); }
-			} finally { connection.disconnect(); }
+				finally {
+					responseStream.close();
+				}
+			} finally {
+				connection.disconnect();
+			}
 			fileWrite( output & "/report.json", payload );
 			var totals = JSONDeserialize( payload );
 			println( JSONSerialize( { totalPass: totals.totalPass, totalFail: totals.totalFail, totalError: totals.totalError } ) );
@@ -58,7 +64,9 @@ class {
 			println( "ColdBox HTTP integration checks passed." );
 		} finally {
 			try { fileWrite( output & "/server.log", host.getLogTail( 200 ) ); }
-			finally { host.stop(); }
+			finally {
+				host.stop();
+			}
 		}
 	}
 

@@ -22,7 +22,9 @@ class extends="testbox.system.BaseSpec" {
 					for ( var valueName in [ "Effect", "Cause", "Exit", "Result", "Context", "Layer", "Schedule" ] ) {
 						expect( container.getBinder().mappingExists( valueName ) ).toBeFalse();
 					}
-				} finally { container.shutdown(); }
+				} finally {
+					container.shutdown();
+				}
 			} );
 
 			it( "retains service defects instead of converting them to validation errors", () => {
@@ -33,7 +35,9 @@ class extends="testbox.system.BaseSpec" {
 					} } );
 					var outcome = container.getInstance( "GreetingAction" ).run( "Ada" );
 					expect( outcome.cause().kind() ).toBe( "Die" );
-				} finally { container.shutdown(); }
+				} finally {
+					container.shutdown();
+				}
 			} );
 
 			it( "awaits active Effect cleanup on injector shutdown and rejects later runs", () => {
@@ -45,7 +49,9 @@ class extends="testbox.system.BaseSpec" {
 				var rootFiber = managed.runFork( Effect::fromBoxFuture( () => { entered.countDown(); return pending; } )
 					.ensuring( Effect::sync( () => { released.countDown(); return null; } ) ) );
 				try { expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue(); }
-				finally { container.shutdown(); }
+				finally {
+					container.shutdown();
+				}
 				expect( released.getCount() ).toBe( 0 );
 				expect( rootFiber.terminationFuture().get( 5000 ).cause().isInterrupted() ).toBeTrue();
 				expect( managed.runSyncExit( Effect::succeed( 1 ) ).cause().error()._tag ).toBe( "ManagedRuntimeClosed" );

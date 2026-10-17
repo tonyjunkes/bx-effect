@@ -48,13 +48,17 @@ class extends="testbox.system.BaseSpec" {
 					expect( rootFiber.terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
 					var replacement = application.cbController.getWireBox().getInstance( "BXEffectRuntime" );
 					expect( replacement.isClosed() ).toBeFalse();
-				} finally { managed.close(); }
+				} finally {
+					managed.close();
+				}
 			} );
 
 			it( "forwards application end through ColdBox and closes the mapped runtime", () => {
 				var managed = application.cbController.getWireBox().getInstance( "BXEffectRuntime" );
 				try { new examples.coldbox.Application().onApplicationEnd( application ); }
-				finally { structDelete( application, "cbBootstrap" ); }
+				finally {
+					structDelete( application, "cbBootstrap" );
+				}
 				expect( managed.isClosed() ).toBeTrue();
 				expect( managed.runSyncExit( Effect::succeed( 1 ) ).cause().error()._tag ).toBe( "ManagedRuntimeClosed" );
 			} );
@@ -74,7 +78,11 @@ class extends="testbox.system.BaseSpec" {
 			var status = connection.getResponseCode();
 			var responseStream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
 			try { return { status: status, body: JSONDeserialize( new java.lang.String( responseStream.readAllBytes(), "UTF-8" ) ) }; }
-			finally { responseStream.close(); }
-		} finally { connection.disconnect(); }
+			finally {
+				responseStream.close();
+			}
+		} finally {
+			connection.disconnect();
+		}
 	}
 }

@@ -6,5 +6,7 @@ container = new Injector( binder: "examples.wirebox.config.EffectBinder" );
 try {
 	request.effectExampleExit = container.getInstance( "GreetingAction" ).run( "Ada" );
 	writeOutput( request.effectExampleExit.value() );
-} finally { container.shutdown(); }
+} finally {
+	container.shutdown();
+}
 </bx:script>
