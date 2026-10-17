@@ -190,16 +190,26 @@ CI runs the TestBox suite and module-setting checks on BoxLang `1.18.0`, `latest
 `snapshot`. For performance work, see the [benchmarks](benchmarks/README.md).
 
 The [WireBox and ColdBox recipes](docs/native-integrations.md#wirebox-and-coldbox)
-show explicit runtime mappings and framework shutdown ownership. Standalone
-WireBox specs run in the CLI suite. ColdBox's additional HTTP specs require
-BoxLang MiniServer, Bash, `curl`, and `jq`:
+show explicit runtime mappings and framework shutdown ownership. Framework
+specs live under `tests/specs/frameworks/wirebox` and
+`tests/specs/frameworks/coldbox`. The normal CLI suite runs WireBox and explicitly
+skips the HTTP-only ColdBox cases. With BoxLang MiniServer on PATH, run those via
+the BoxLang test entry point:
 
 ```bash
-bash tests/ci/framework-integration-test.sh
+box run-script test:frameworks
 ```
 
-The script starts a loopback-only server, checks handlers, reinitialization,
-and application-end cleanup, then stops that server. Set `MINISERVER_JAR` to
+For a standalone BoxLang installation, the same entry point is:
+
+```bash
+boxlang --bx-home .boxlang/framework-runner --bx-config tests/boxlang.json tests/RunFrameworks.bx
+```
+
+The runner uses TestBox's server helper to start a loopback-only server, check
+handlers, reinitialization, and application-end cleanup, then stop its process
+tree. It writes JSON totals and server output under `.boxlang/framework-integration`;
+failed or empty test runs fail the command. Set `MINISERVER_JAR` to
 a MiniServer JAR when its launcher is not on PATH, or
 `BX_EFFECT_FRAMEWORK_PORT` to change the default port `8951`.
 Both test configurations keep CFML compatibility disabled.

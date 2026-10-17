@@ -10,6 +10,8 @@ All notable changes to BX Effect are documented here.
   reinitialization, and retain expected validation errors as HTTP 400 responses.
 - Add standalone injection/shutdown coverage and real HTTP handler, reinit, and
   application-end checks through BoxLang MiniServer in PR and release verification.
+- Group framework specs under one hierarchy and expose HTTP verification through
+  `box run-script test:frameworks`, using native BoxLang and TestBox server support.
 - Pin development-only ColdBox for BoxLang 8.3.0+36. The kernel and production
   dependencies remain independent of the frameworks.
 

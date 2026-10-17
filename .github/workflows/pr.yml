@@ -52,7 +52,7 @@ jobs:
 
       - name: Verify ColdBox HTTP integration
         if: matrix.boxlang-version == 'latest'
-        run: bash tests/ci/framework-integration-test.sh
+        run: boxlang --bx-home .boxlang/framework-runner --bx-config tests/boxlang.json tests/RunFrameworks.bx
 
       - name: Run TestBox
         run: |

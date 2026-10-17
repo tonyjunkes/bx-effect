@@ -5,7 +5,16 @@ import java.net.URI;
 
 class extends="testbox.system.BaseSpec" {
 	function run() {
-		describe( "ColdBox application runtime ownership", () => {
+		describe( title: "ColdBox application runtime ownership", body: () => {
+			it( "serves the example entry point through the full ColdBox response pipeline", () => {
+				var accepted = sendRequest( "name=Ada", "/examples/coldbox/Index.bxm" );
+				expect( accepted.status ).toBe( 200 );
+				expect( accepted.body.greeting ).toBe( "Hello, Ada!" );
+				var rejected = sendRequest( "name=", "/examples/coldbox/Index.bxm" );
+				expect( rejected.status ).toBe( 400 );
+				expect( rejected.body._tag ).toBe( "InvalidName" );
+			} );
+
 			it( "dispatches the real handler with injected services and expected HTTP outcomes", () => {
 				var accepted = sendRequest( "name=Ada" );
 				expect( accepted.status ).toBe( 200 );
@@ -49,15 +58,16 @@ class extends="testbox.system.BaseSpec" {
 				expect( managed.isClosed() ).toBeTrue();
 				expect( managed.runSyncExit( Effect::succeed( 1 ) ).cause().error()._tag ).toBe( "ManagedRuntimeClosed" );
 			} );
-		} );
+		}, skip: !isDefined( "cgi.server_port" ) );
 	}
 
 	/**
 	 * Sends a bounded real request to the loopback test host and decodes its JSON response.
 	 * @queryString Query parameters for the actual example handler and native reinit check.
+	 * @path Web entry point or the test dispatch fixture.
 	 */
-	private struct function sendRequest( required string queryString ) {
-		var connection = URI::create( "http://127.0.0.1:#cgi.server_port#/tests/frameworks/Dispatch.bxm?#arguments.queryString#" ).toURL().openConnection();
+	private struct function sendRequest( required string queryString, string path = "/tests/frameworks/Dispatch.bxm" ) {
+		var connection = URI::create( "http://127.0.0.1:#cgi.server_port##arguments.path#?#arguments.queryString#" ).toURL().openConnection();
 		connection.setConnectTimeout( 5000 );
 		connection.setReadTimeout( 20000 );
 		try {

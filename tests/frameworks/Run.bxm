@@ -1,4 +1,4 @@
 <bx:script>
-// Kept outside tests/specs: ColdBox needs a real web request context.
-writeOutput( new testbox.system.TestBox( directory: "tests.frameworks.specs" ).run( reporter: "json" ) );
+// The fixtures live here; their specs use the same hierarchy as the native suite.
+writeOutput( new testbox.system.TestBox( directory: "tests.specs.frameworks.coldbox" ).run( reporter: "json" ) );
 </bx:script>

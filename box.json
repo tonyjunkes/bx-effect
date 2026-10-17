@@ -33,7 +33,8 @@
         }
     ],
     "scripts":{
-        "test":"boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs --stream --write-report=false --properties-summary=false --stacktrace=short"
+        "test":"boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs --stream --write-report=false --properties-summary=false --stacktrace=short",
+        "test:frameworks":"boxlang cli --bx-home .boxlang/framework-runner --bx-config tests/boxlang.json tests/RunFrameworks.bx"
     },
     "devDependencies":{
         "testbox":"^7.2.0+21",
