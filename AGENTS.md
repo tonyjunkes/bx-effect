@@ -52,6 +52,17 @@ Paths in the implementation column are relative to `models/effect/`.
 - Keep named `Effect::try( try: ..., catch: ... )` covered on the minimum runtime. If an `Exit` type annotation hits a parser issue, remove only that annotation.
 - Function comments describe behavior and arguments; declared return types make `@return` unnecessary.
 
+## Code Review Rules
+
+- Trace changed behavior through callers and the relevant subsystem guide/spec.
+  Check whether tests miss a failing path; passing tests alone do not establish correctness.
+- For lifetime or concurrency changes, examine acquisition/cancellation handoffs,
+  concurrent close or reinit, and finalization ordering against the invariants above.
+  Findings should describe the triggering sequence and observable failure.
+- For integration, packaging, or workflow changes, follow the consumer path:
+  module activation/imports, minimum-runtime APIs, platform-specific launcher
+  branches, and automatic release behavior. Check examples as executable code.
+
 ## Verification
 
 Run from the repository root after `box install`:
