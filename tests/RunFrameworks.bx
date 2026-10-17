@@ -73,6 +73,6 @@ class {
 			}
 			return '"' & arguments.path & '"';
 		}
-		return "'" & replace( arguments.path, "'", "'" & chr( 34 ) & "'" & chr( 34 ) & "'", "all" ) & "'";
+		return "'" & replace( arguments.path, "'", "'" & char( 34 ) & "'" & char( 34 ) & "'", "all" ) & "'";
 	}
 }
