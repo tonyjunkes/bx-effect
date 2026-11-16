@@ -259,8 +259,8 @@ iterative continuation loop rather than another execution engine.
 
 `Stream.bx` and `internal/StreamCursor.bx` retain fresh per-consumer cursors,
 exact sequential demand, acquisition fallback, and close-before-recovery.
-The explicit concurrent path uses one private producer Scope, existing native
-Queue/Semaphore coordination and a local Scope per mapper. Admission remains
+The explicit concurrent path uses a private producer lifetime, a cursor-owned
+mapper Scope, existing native Queue/Semaphore coordination and a local Scope per mapper. Admission remains
 held through completed-but-undelivered values. Atomic producer admission and
 handle installation avoid an interruption gap; cleanup provenance transfers
 through the existing interpreter mechanism. `ConcurrentMapSpec` covers ordering,
@@ -369,3 +369,58 @@ Linux minimum/latest/snapshot and the reusable Windows lane are required PR CI
 checks; local Windows results do not claim those remote jobs have run. A merge
 into main triggers the existing automatic release workflow. This work opens a
 PR for review and does not merge or publish it.
+
+## Code review
+
+### Standards
+
+One hard finding: a queued mapper Exit could retain its cleanup failure after
+producer shutdown had already claimed that mapper's cleanup. When upstream
+failed while the consumer paused, close appended the same release failure again
+(`mapped, release, release`). This violated exactly-once cleanup retention.
+
+**Fixed:** A separate cursor-owned mapper Scope removes the competing producer
+claim. Close first stops/awaits the producer, then interrupts/awaits mappers,
+then releases upstream. The gated regression now returns `mapped, release`.
+No actionable smell-baseline judgement calls were reported.
+
+### Spec
+
+One finding: simulated delayed work and admission counts did not fulfill the
+agreed native-I/O and retained-memory measurement requirement.
+
+**Addressed:** `NativeStreamBench` measures real native 64 KiB file reads and
+stalls the first ordered mapping at windows 8, 32 and 128 before draining 2,048
+items without collecting their payloads. Three fresh JVMs check the exact count
+bound and complete draining. Indicative post-GC heap deltas are below; each
+column contains the three trials, in bytes.
+
+| Window | Stalled heap minus baseline | Drained heap minus baseline |
+| --- | --- | --- |
+| 8 | 926896 / 928848 / 904112 | 101200 / 97880 / 98752 |
+| 32 | 2715512 / 2706232 / 2694056 | 336 / 2272 / 5360 |
+| 128 | 10249064 / 10257864 / 10260008 | 336 / 1216 / 2088 |
+
+The stalled deltas grow with the window and return near baseline after draining,
+consistent with bounded payload retention for this source. Full-GC requests
+remain indicative and do not replace a native allocation profile.
+
+For 256 native cached-file reads, sequential medians were 158 / 159 / 182 ms,
+grouped batches 217 / 230 / 219, ordered concurrent 368 / 336 / 347, unordered
+361 / 340 / 341. This fast local workload favors sequential execution; the guide
+now explicitly explains that concurrency is useful for waiting-heavy work and
+must be measured. It remains opt-in. The earlier delayed benchmark represents
+latency overlap, not a claim that concurrency accelerates cached disk access.
+
+Review totals: **Standards 1, Spec 1**, both addressed. No additional correctness
+or scope findings were reported by the Spec reviewer. Changes were checked
+against the fixed main revision `7e2f7d4598d15df796a77a814a7e2f192b361549`.
+
+After the review fix, both full runtime suites passed **323 tests with zero
+failures/errors**; Windows HTTP passed all seven cases again and a fresh
+production consumer installation in a path with spaces passed. The post-fix
+delayed benchmark medians were sequential 2073 / 2077 / 2069 ms, grouped
+939 / 943 / 946, ordered 940 / 907 / 913, unordered 347 / 344 / 349.
+Ordered mode remains close to grouped throughput for this bounded skewed window;
+completion order overlaps more waiting work. The expanded collection benchmark
+also completed with all correctness assertions intact.

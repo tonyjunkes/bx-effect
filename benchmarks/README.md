@@ -66,6 +66,13 @@ also asserts that a 100,000-value `mapEffect(...).take(1)` calls its mapper once
 skewed delayed workload. It checks values and the applicable ordering contract.
 These timings describe that workload, not arbitrary HTTP latency or payload size.
 
+`NativeStreamBench.bxm` compares native file reads through sequential, grouped,
+ordered and unordered mapping. It also holds the first ordered item while the
+window fills with 64 KiB payloads, checks admission, resumes all 2,048 reads,
+and reports heap usage before the stall, during it and after draining. Run three
+fresh JVMs. Full-GC requests make these indicative retained-heap observations;
+they are not allocation profiles or byte-size guarantees for arbitrary sources.
+
 The repeated, seeded `tests.specs.stress` suite covers acquisition/cancellation,
 Layer contention, failed releases, shuffled completions and simultaneous bounded
 Queue/PubSub shutdown. It runs in the full suite; use the normal runner with

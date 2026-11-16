@@ -716,9 +716,9 @@ class {
 					try {
 						var childProgram = current.effect;
 						var childContext = runtimeContext;
-						var childScope = runtimeScope;
+						var childScope = structKeyExists( current, "ownerScope" ) ? current.ownerScope : runtimeScope;
 						var childLayerMemo = runtimeLayerMemo;
-						var childFiber = runtimeScope.forkChild( () => runForkWithContext(
+						var childFiber = childScope.forkChild( () => runForkWithContext(
 							childProgram,
 							childContext,
 							childScope,

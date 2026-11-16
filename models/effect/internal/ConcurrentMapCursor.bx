@@ -2,10 +2,11 @@ import bxModules.bxEffect.models.effect.Effect;
 import bxModules.bxEffect.models.effect.Exit;
 import bxModules.bxEffect.models.effect.Queue;
 import bxModules.bxEffect.models.effect.Semaphore;
+import bxModules.bxEffect.models.effect.Scope;
 import bxModules.bxEffect.models.effect.internal.ThrowablePolicy;
 
 /**
- * One consumer's bounded mapping pipeline. A scoped producer owns mapper Fibers;
+ * One consumer's bounded mapping pipeline. The cursor owns mapper Fibers;
  * permits remain held until delivery, including completed out-of-order results.
  */
 class {
@@ -15,6 +16,7 @@ class {
 	variables.permits = null;
 	variables.events = null;
 	variables.producer = null;
+	variables.mapperScope = new Scope();
 	variables.holdOpen = null;
 	variables.unordered = false;
 	variables.ready = {};
@@ -60,7 +62,7 @@ class {
 		} );
 	}
 
-	/** Builds the producer lifetime, keeping children alive after source completion. */
+	/** Keeps the source producer alive after exhaustion until the cursor closes. */
 	Effect function producerProgram() {
 		return Effect::scoped( produce().flatMap( () => Effect::fromBoxFuture( () => variables.holdOpen ) ) );
 	}
@@ -87,7 +89,9 @@ class {
 			}
 			var value = batch.get()[ 1 ];
 			var index = variables.nextInput++;
-			return Effect::scoped( Effect::suspend( () => variables.mapper( value ) ) ).fork().flatMap( fiber => {
+			return Effect::forkInScopeInstruction(
+				Effect::scoped( Effect::suspend( () => variables.mapper( value ) ) ), variables.mapperScope
+			).flatMap( fiber => {
 				publishOnCompletion( fiber, "mapped", index );
 				return Effect::suspend( () => produce() );
 			} );
@@ -148,7 +152,7 @@ class {
 			return Effect::succeed( null );
 		}
 		if ( !isNull( notification.error ) ) {
-			// Producer failure cancels its mapper children before publishing its own Cause.
+			// Canceled public completion has no Exit; close collects terminal cleanup.
 			if ( ThrowablePolicy::isCancellation( notification.error ) ) { return Effect::succeed( null ); }
 			return Effect::sync( () => throw( object: notification.error ) );
 		}
@@ -161,7 +165,7 @@ class {
 		} );
 	}
 
-	/** Stops and awaits the producer's entire Scope before closing the upstream cursor. */
+	/** Stops admission, awaits producer and mapper cleanup, then closes the upstream cursor. */
 	Effect function close() {
 		return Effect::suspend( () => {
 			if ( !variables.closed.compareAndSet( false, true ) ) { return Effect::succeed( null ); }
@@ -172,6 +176,8 @@ class {
 				var cleanup = variables.producer.takeCleanupFailure();
 				return isNull( cleanup ) ? Exit::success( null ) : Exit::failure( cleanup );
 			} ).flatMap( outcome => Effect::fromExit( outcome ) )
+				.ensuring( Effect::sync( () => variables.mapperScope.shutdownChildren() ).flatMap( failureCause =>
+					isNull( failureCause ) ? Effect::succeed( null ) : Effect::failCause( failureCause ) ) )
 				.ensuring( variables.source.close() ).ensuring( variables.events.shutdown() );
 		} );
 	}

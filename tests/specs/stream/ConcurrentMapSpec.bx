@@ -1,4 +1,5 @@
 import models.effect.Effect@bxeffect;
+import models.effect.EffectRuntime@bxeffect;
 import models.effect.Stream@bxeffect;
 import models.effect.Queue@bxeffect;
 import models.effect.context.Context@bxeffect;
@@ -199,6 +200,38 @@ class extends="testbox.system.BaseSpec" {
 				var outcome = runProgram( streamProgram.fork().flatMap( child =>
 					Effect::fromBoxFuture( () => child.terminationFuture() ).as( "parent" ) ) );
 				expect( outcome.cause().failures() ).toBe( [ "release" ] );
+			} );
+
+			it( "retains mapper cleanup once when upstream fails before queued delivery", () => {
+				var consumerEntered = new CountDownLatch( 1 );
+				var mapperDone = new CountDownLatch( 1 );
+				var producerDone = new CountDownLatch( 1 );
+				var runtime = new EffectRuntime( { observer: ( eventName, details ) => {
+					if ( eventName == "fiber:completed" && details.exit.isFailure() ) {
+						var failures = details.exit.cause().failures();
+						if ( arrayFind( failures, "source" ) > 0 ) { producerDone.countDown(); }
+						else if ( arrayFind( failures, "mapped" ) > 0 ) { mapperDone.countDown(); }
+					}
+				} } );
+				var source = Stream::fromArray( [ 1, 2 ] ).concat( Stream::fromEffect(
+					Effect::sync( () => awaitGate( mapperDone ) ).flatMap( () => Effect::fail( "source" ) ) ) );
+				var program = source.mapEffect( value => value == 1
+					? Effect::succeed( value )
+					: Effect::sync( () => awaitGate( consumerEntered ) ).flatMap( () => Effect::fail( "mapped" ) )
+						.ensuring( Effect::fail( "release" ) ), { concurrency: 3 }
+				).runForEach( value => Effect::sync( () => {
+					consumerEntered.countDown();
+					awaitGate( producerDone );
+				} ) );
+				var fiber = runtime.runFork( program );
+				try {
+					expect( fiber.terminationFuture().get( 10000 ).cause().failures() ).toBe( [ "mapped", "release" ] );
+				} finally {
+					consumerEntered.countDown();
+					mapperDone.countDown();
+					producerDone.countDown();
+					stopFiber( fiber );
+				}
 			} );
 
 			it( "inherits Context and closes each mapper's local resources", () => {

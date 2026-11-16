@@ -77,6 +77,10 @@ profiles = Stream::fromArray( userIds )
 Effect::runSync( profiles );
 ```
 
+Use concurrency for independent work that spends time waiting. Sequential
+mapping can be faster for immediate transformations or small cached file reads;
+measure with your native client, payload sizes and latency before choosing a limit.
+
 Results preserve input order. Set `unordered: true` to deliver in completion
 order when rows are independent. Ordered output can wait behind a slow earlier
 item. Both modes bound started-but-not-delivered mappings to `N`, including

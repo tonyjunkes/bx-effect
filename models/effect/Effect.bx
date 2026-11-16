@@ -217,6 +217,15 @@ class {
 	}
 
 	/**
+	 * Forks internal work into an explicitly owned Scope with the current Context.
+	 * @program Child program, including its own local resource lifetime.
+	 * @ownerScope Internal owner responsible for interruption and cleanup claims.
+	 */
+	static Effect function forkInScopeInstruction( required Effect program, required any ownerScope ) {
+		return new Effect( { kind: "Fork", effect: arguments.program, ownerScope: arguments.ownerScope } );
+	}
+
+	/**
 	 * Transfers child cleanup ownership before exposing its already-completed outcome.
 	 * @childFiber Child Fiber owning cleanup provenance.
 	 * @outcome Completed child Exit.
