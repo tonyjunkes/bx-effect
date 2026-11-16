@@ -92,21 +92,15 @@ returning `{ _tag: "InvalidUser", errors }` for invalid input. See
 
 ## HTTP
 
-Keep request creation lazy by putting `sendAsync()` inside the future factory.
-An inherited future `handle` can turn transport completion into `Result`, while
-runtime cancellation still remains an interruption request:
+Keep request creation lazy by putting `sendAsync()` inside `tryBoxFuture`.
+Map transport failures into an application error and classify HTTP statuses
+separately:
 
 ```boxlang
-request = Effect::fromBoxFuture( () ->
-	http( url ).get().sendAsync().handle( ( response, transportError ) ->
-		isNull( transportError )
-			? Result::success( response )
-			: Result::failure( {
-				_tag : "HttpTransportError",
-				message : transportError.getMessage()
-			} )
-	)
-).flatMap( result -> Effect::fromResult( result ) )
+requestProgram = Effect::tryBoxFuture(
+	try: () -> http( requestUrl ).get().timeout( 10 ).throwOnError( false ).sendAsync(),
+	catch: error -> { _tag: "HttpTransportError", message: error.message }
+)
 	.flatMap( response -> response.statusCode >= 200 && response.statusCode < 300
 		? Effect::succeed( response )
 		: Effect::fail( {
@@ -116,10 +110,24 @@ request = Effect::fromBoxFuture( () ->
 	);
 ```
 
-Cancellation is best effort through the active dependent future; the native
+Cancellation is best effort through the active native future; the native
 client decides whether an in-flight network request can be stopped. BX Effect
 adds no request, response, header, or middleware hierarchy. See BoxLang's
 [HTTP client guide](https://boxlang.ortusbooks.com/boxlang-framework/http-calls).
+
+The [FetchJson recipe](../examples/native/FetchJson.bx) adds lazy JSON decoding
+with separate transport, status, and invalid-JSON tags. For example:
+
+```boxlang
+import examples.native.FetchJson;
+import models.effect.Schedule@bxeffect;
+
+// Copy FetchJson into your application and adjust its import path.
+document = FetchJson::get( requestUrl ).retry( Schedule::recurs( 2 ).whileInput(
+	error => error._tag == "HttpTransportError"
+		|| ( error._tag == "HttpStatusError" && error.status >= 500 )
+) );
+```
 
 ## JDBC and transactions
 
@@ -303,4 +311,18 @@ contents = Effect::acquireRelease(
 
 For many values, build a `Stream::acquireRelease` source around the handle so
 early termination closes it. BX Effect adds no filesystem or path service.
+
+The [ReadLines recipe](../examples/native/ReadLines.bx) opens one native reader
+per consumption and releases it on early termination. Given an existing path:
+
+```boxlang
+import examples.native.ReadLines;
+
+firstHundred = ReadLines::from( path ).take( 100 ).runCollect();
+println( Effect::runSync( firstHundred ) );
+```
+
+Use `runForEach` to process a large file incrementally. Add explicit concurrent
+`mapEffect` for independent I/O per line; the source handle remains owned until
+admitted work and cleanup finish.
 

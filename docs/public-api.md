@@ -15,7 +15,7 @@ are implementation details even when BoxLang permits calling them directly.
 
 | Class and import | Supported surface | Evaluation and failure behavior |
 | --- | --- | --- |
-| `models.effect.Effect@bxeffect` | Constructors: `succeed`, `fail`, `failCause`, `die`, `sync`, `try`, `suspend`, `fromAttempt`, `fromResult`, `fromExit`, `service`, `acquireRelease`, `acquireUseRelease`, `scoped`, `fromBoxFuture`, `all`, `forEach`, `race`, `firstSuccessOf`, `sleep`. Operators: `map`, `flatMap`, `tap`, `tapError`, `tapCause`, `exit`, `zip`, `zipWith`, `as`, `asVoid`, `foldCause`, `catchCause`, `catchAll`, `mapError`, `catchIf`, `catchTag`, `catchTags`, `orElse`, `filterOrFail`, `ensuring`, `onExit`, `fork`, `retry`, `repeat`, `timeout`, `provide`, `provideService`. Boundaries: `runSync`, `runSyncExit`, `runFuture`, `runFutureExit`, `runFork`. | Constructors and operators are lazy except validation of invalid options. `fail` is expected failure; thrown user code is a defect; Fiber cancellation is interruption. `catchAll`/`tapError` handle only a pure expected failure. `catchCause`/`tapCause` see the complete Cause. |
+| `models.effect.Effect@bxeffect` | Constructors: `succeed`, `fail`, `failCause`, `die`, `sync`, `try`, `suspend`, `fromAttempt`, `fromResult`, `fromExit`, `service`, `acquireRelease`, `acquireUseRelease`, `scoped`, `fromBoxFuture`, `tryBoxFuture`, `all`, `forEach`, `race`, `firstSuccessOf`, `sleep`. Operators: `map`, `flatMap`, `tap`, `tapError`, `tapCause`, `exit`, `zip`, `zipWith`, `as`, `asVoid`, `foldCause`, `catchCause`, `catchAll`, `mapError`, `catchIf`, `catchTag`, `catchTags`, `orElse`, `filterOrFail`, `ensuring`, `onExit`, `fork`, `retry`, `repeat`, `timeout`, `provide`, `provideService`. Boundaries: `runSync`, `runSyncExit`, `runFuture`, `runFutureExit`, `runFork`. | Constructors and operators are lazy except validation of invalid options. `fail` is expected failure; thrown user code is a defect; Fiber cancellation is interruption. `catchAll`/`tapError` handle only a pure expected failure. `catchCause`/`tapCause` see the complete Cause. |
 | `models.effect.Cause@bxeffect` | `fail`, `die`, `interrupt`, `sequential`, `parallel`; `kind`, `error`, `defect`, `fiberId`, `left`, `right`, `isFailure`, `isDefect`, `isInterrupted`, `failures`, `defects`, `mapFailures`, `pretty`. | Immutable complete failure tree. Cause construction is eager value construction and runs no Effects. |
 | `models.effect.Exit@bxeffect` | `success`, `failure`; `isSuccess`, `isFailure`, `value`, `cause`, `match`. | Immutable complete Effect outcome. |
 | `models.effect.Result@bxeffect` | `success`, `failure`, `fromAttempt`; `isSuccess`, `isFailure`, `value`, `error`, `map`, `flatMap`, `mapError`, `match`, `toAttempt`. | Immutable pure value with success or expected failure only. It does not represent defects or interruption. |
@@ -45,6 +45,12 @@ Bindings inherited from an outer Scope keep their original lifetime. See
 | `models.effect.PubSub@bxeffect` | `bounded`, `unbounded`; `publish`, `subscribe`, `withSubscription`, `shutdown`, `isShutdown`, `capacity`, `subscriberCount`. | Mutable application-owned broadcast hub. Bounded publish waits for the slowest active subscriber. |
 | `models.effect.PubSubSubscription@bxeffect` | `take`, `poll`, `unsubscribe`, `isShutdown`. | Returned by PubSub. Ownership is explicit; prefer `withSubscription` unless handing ownership to Stream. |
 
+`Effect::tryBoxFuture(try, catch)` lazily maps ordinary factory exceptions and
+native future rejections into expected errors. The mapper defaults to retaining
+the operation exception, without native completion wrappers. Mapper exceptions
+and invalid factory returns are defects; cancellation remains interruption.
+`fromBoxFuture` retains its ordinary-rejection-as-defect behavior.
+
 All async boundaries return native BoxLang `BoxFuture` values. BX Effect never
 creates or owns an executor pool.
 
@@ -65,6 +71,13 @@ creates or owns an executor pool.
 | --- | --- | --- |
 | `models.effect.Stream@bxeffect` | Constructors: `empty`, `succeed`, `fail`, `fromArray`, `fromEffect`, `suspend`, `unfoldEffect`, `acquireRelease`, `fromQueue`, `fromPubSub`. Operators: `map`, `mapEffect`, `filter`, `tap`, `take`, `takeWhile`, `scan`, `grouped`, `drop`, `concat`, `flatMap`, `catchAll`, `catchCause`, `ensuring`, `provide`. Consumers: `runCollect`, `runForEach`, `runFold`, `runDrain`. | Immutable reusable description. Every consumer opens a fresh demand-driven cursor and closes it on every exit. End-of-stream is empty native `Attempt`, never failure. |
 | `models.effect.observability.LoggingObserver@bxeffect` | `make(loggerOrName, levels)`; `onEvent`. | Optional diagnostic adapter for an existing logger object or named `writeLog` target. It configures and owns nothing; all adapter failures are contained. |
+
+`Stream.mapEffect(mapper, options)` accepts positive whole `concurrency` (default
+`1`) and boolean `unordered` (default `false`). Concurrent output is ordered by
+default and bounds running plus completed-undelivered mappings to `concurrency`.
+Each concurrent mapper has a local Scope; the consumer awaits admitted work and
+source cleanup on every exit. Concurrency one keeps the sequential path. See
+[Streams](streams.md#bounded-concurrent-mapping) for demand and failure details.
 
 ## Compatibility policy for 1.x
 

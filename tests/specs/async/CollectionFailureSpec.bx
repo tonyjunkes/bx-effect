@@ -6,8 +6,8 @@ class extends="testbox.system.BaseSpec" {
 
 	function run() {
 		describe( "Exceptional collection completions", () => {
-			it( "propagates fatal native rejection through both completion strategies without hanging", () => {
-				for ( var width in [ 4, 12 ] ) {
+			it( "propagates fatal native rejection across collection widths without hanging", () => {
+				for ( var width in [ 1, 8, 9, 12 ] ) {
 					for ( var failureMode in [ "failFast", "accumulate" ] ) {
 						var branches = [ Effect::sync( () => throw( object: new LinkageError( "fatal child" ) ) ) ];
 						for ( var index = 2; index <= width; index++ ) { branches.append( Effect::succeed( index ) ); }

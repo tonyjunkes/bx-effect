@@ -1,0 +1,90 @@
+import java.io.File;
+import java.net.URI;
+import ortus.boxlang.compiler.BXCompiler;
+
+/** Rebuilds pinned framework test dependencies with the selected native runtime. */
+class {
+
+	/**
+	 * Prepares source artifacts, verifies them, and replaces only the checkout dependency.
+	 * @args CLI arguments; runtime home/config must select the empty compiler environment.
+	 */
+	void function main( args = [] ) {
+		var root = new File( getDirectoryFromPath( getCurrentTemplatePath() ) & ".." ).getCanonicalPath();
+		var manifest = JSONDeserialize( fileRead( root & "/box.json" ) );
+		if ( manifest.devDependencies[ "bx-coldbox" ] != "8.3.0+36" ) {
+			throw( type: "bxeffect.testing.FrameworkPreparationException", message: "Update framework source pins with the development dependency" );
+		}
+		var work = root & "/.boxlang/framework-build/" & createUUID();
+		directoryCreate( work, true );
+		var commit = "fc2b6c7c706128a816abdd76d1c1ae6411cff399";
+		download( "https://codeload.github.com/coldbox/coldbox-platform/zip/" & commit, work & "/coldbox.zip",
+			"0F7936FF7E6E88211B2CBF569CE8E89A9CDF344E119D232D631BBA98307BB87D" );
+		download( "https://downloads.ortussolutions.com/ortussolutions/coldbox-modules/cbproxies/1.8.0/cbproxies-1.8.0.zip",
+			work & "/cbproxies.zip", "E4734151FC10DD1C08DD569C1CCDC3D159B5D63279D6B473646485D9F716D7BB" );
+		extract( "zip", work & "/coldbox.zip", work & "/source" );
+		var source = work & "/source/coldbox-platform-" & commit;
+		var input = work & "/input";
+		var output = work & "/output";
+		directoryCreate( input );
+		directoryCopy( source & "/system", input & "/system", true );
+		for ( var name in [ "ModuleConfig.bx", "license.txt", "readme.md" ] ) {
+			fileCopy( source & "/" & name, input & "/" & name );
+		}
+		fileCopy( source & "/build/resources/box-boxlang.json", input & "/box.json" );
+		extract( "zip", work & "/cbproxies.zip", input & "/system/async/cbproxies" );
+		for ( var path in directoryList( input, true, "path" ) ) {
+			if ( !fileExists( path ) || !listFindNoCase( "cfc,cfm,cfs,bx,bxs,bxm,json,md,txt", listLast( path, "." ) ) ) { continue; }
+			var original = fileRead( path );
+			var prepared = replace( replace( original, "@build.version@", "8.3.0", "all" ), "@build.number@", "36", "all" );
+			if ( original != prepared ) { fileWrite( path, prepared ); }
+		}
+		// The CLI main exits the JVM; the public per-file API returns a checked result.
+		directoryCopy( input, output, true );
+		var inputPath = new File( input ).toPath();
+		var outputPath = new File( output ).toPath();
+		var compiled = 0;
+		for ( var path in directoryList( input, true, "path" ) ) {
+			if ( !fileExists( path ) || !listFindNoCase( "cfc,cfm,cfs,bx,bxs,bxm", listLast( path, "." ) ) ) { continue; }
+			var sourcePath = new File( path ).toPath();
+			if ( !BXCompiler::compileFile( sourcePath, outputPath.resolve( inputPath.relativize( sourcePath ) ), true, getBoxRuntime() ) ) {
+				throw( type: "bxeffect.testing.FrameworkPreparationException", message: "Framework compilation failed: #path#" );
+			}
+			compiled++;
+		}
+		if ( compiled != 209 ) {
+			throw( type: "bxeffect.testing.FrameworkPreparationException", message: "Expected 209 compiled framework files; found #compiled#" );
+		}
+		var installed = new File( root & "/.frameworks/coldbox" ).getCanonicalPath();
+		var backup = new File( work & "/original-coldbox" ).getCanonicalPath();
+		for ( var target in [ installed, backup ] ) {
+			if ( !target.startsWith( root & File::separator ) ) {
+				throw( type: "bxeffect.testing.FrameworkPreparationException", message: "Framework target is outside the checkout: #target#" );
+			}
+		}
+		if ( directoryExists( installed ) ) { directoryRename( installed, backup ); }
+		directoryCopy( output, installed, true );
+		println( "Prepared ColdBox 8.3.0+36 and cbproxies 1.8.0+9: #compiled# native files" );
+	}
+
+	/**
+	 * Fetches one immutable source artifact with bounded network waits and a pinned hash.
+	 * @url Official artifact URL.
+	 * @path Workspace-local destination file.
+	 * @checksum Expected SHA-256 digest.
+	 */
+	private void function download( required string url, required string path, required string checksum ) {
+		var connection = URI::create( arguments.url ).toURL().openConnection();
+		connection.setConnectTimeout( 10000 );
+		connection.setReadTimeout( 60000 );
+		var content = connection.getInputStream();
+		try {
+			fileWrite( arguments.path, content.readAllBytes() );
+		} finally {
+			content.close();
+		}
+		if ( hash( fileReadBinary( arguments.path ), "SHA-256" ) != arguments.checksum ) {
+			throw( type: "bxeffect.testing.FrameworkPreparationException", message: "Framework artifact checksum mismatch: #arguments.url#" );
+		}
+	}
+}

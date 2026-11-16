@@ -1,0 +1,78 @@
+import models.effect.Effect@bxeffect;
+import models.effect.ManagedRuntime@bxeffect;
+import models.effect.context.Layer@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Managed shutdown handoffs", () => {
+			it( "retains partial-build release failures when closing interrupts acquisition", () => {
+				var entered = new CountDownLatch( 1 );
+				var proceed = new CountDownLatch( 1 );
+				var releases = new AtomicInteger();
+				var managed = ManagedRuntime::make( Layer::merge( [
+					Layer::scoped( ServiceTag::of( "shutdown/First" ), Effect::acquireRelease(
+						Effect::succeed( "first" ), resource => Effect::fail( "first-release" ) ) ),
+					Layer::scoped( ServiceTag::of( "shutdown/Second" ), Effect::acquireRelease(
+						Effect::sync( () => { entered.countDown(); awaitGate( proceed ); return "second"; } ),
+						resource => Effect::sync( () => releases.incrementAndGet() )
+							.flatMap( () => Effect::fail( "second-release" ) ) ) )
+				] ) );
+				var active = managed.runFork( Effect::succeed( "unused" ) );
+				try {
+					awaitGate( entered );
+					var closing = managed.closeFuture();
+					proceed.countDown();
+					var outcome = closing.get( 5000 );
+					expect( outcome.isFailure() ).toBeTrue();
+					expect( outcome.cause().failures() ).toBe( [ "second-release", "first-release" ] );
+					expect( outcome.cause().isInterrupted() ).toBeFalse();
+					expect( releases.get() ).toBe( 1 );
+					expect( managed.close().cause().failures() ).toBe( [ "second-release", "first-release" ] );
+				} finally {
+					proceed.countDown();
+					active.interrupt();
+					active.terminationFuture().get( 5000 );
+					managed.close();
+				}
+			} );
+
+			it( "isolates cancelled close waiters while other callers await actual release", () => {
+				var entered = new CountDownLatch( 1 );
+				var finished = new CountDownLatch( 1 );
+				var pending = futureNew();
+				var managed = ManagedRuntime::make( Layer::scoped( ServiceTag::of( "shutdown/Waiter" ),
+					Effect::acquireRelease( Effect::succeed( "service" ), resource =>
+						Effect::fromBoxFuture( () => { entered.countDown(); return pending; } )
+							.ensuring( Effect::sync( () => finished.countDown() ) ) ) ) );
+				managed.runSync( Effect::succeed( true ) );
+				try {
+					var cancelled = managed.closeFuture();
+					awaitGate( entered );
+					expect( cancelled.cancel( true ) ).toBeTrue();
+					var other = managed.closeFuture();
+					expect( other.isDone() ).toBeFalse();
+					expect( managed.isClosed() ).toBeFalse();
+					pending.complete( null );
+					expect( other.get( 5000 ).isSuccess() ).toBeTrue();
+					expect( managed.close().isSuccess() ).toBeTrue();
+					expect( managed.isClosed() ).toBeTrue();
+				} finally {
+					pending.complete( null );
+					awaitGate( finished );
+					managed.close();
+				}
+			} );
+		} );
+	}
+
+	private void function awaitGate( required any gate ) {
+		if ( !arguments.gate.await( 5, TimeUnit::SECONDS ) ) {
+			throw( type: "bxeffect.testing.TestTimeoutException", message: "Managed shutdown gate timed out" );
+		}
+	}
+}

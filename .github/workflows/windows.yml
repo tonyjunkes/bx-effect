@@ -1,0 +1,59 @@
+name: Verify Windows consumer paths
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  consumer:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ortus-boxlang/setup-boxlang@main
+        with:
+          version: '1.19.0'
+          with-commandbox: true
+      - name: Install development dependencies
+        run: |
+          box install
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+      - name: Prepare native framework dependencies
+        run: |
+          boxlang --bx-home .boxlang/compiler --bx-config tests/boxlang.compiler.json tests/PrepareFrameworks.bx
+          if ($LASTEXITCODE -ne 0) { throw 'Framework preparation failed' }
+      - name: Verify module activation and configuration
+        run: |
+          $reportDirectory = Join-Path $env:RUNNER_TEMP 'module-tests'
+          boxlang --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs.module --stream --write-report=true --write-json-report=true --reportpath="$reportDirectory" --properties-summary=false --stacktrace=short
+          if ($LASTEXITCODE -ne 0) { throw 'Module tests exited unsuccessfully' }
+          $totals = Get-Content (Join-Path $reportDirectory 'report.json') -Raw | ConvertFrom-Json
+          if ($totals.totalPass -le 0 -or $totals.totalFail -gt 0 -or $totals.totalError -gt 0) { throw 'Module tests failed or were empty' }
+      - name: Verify framework launcher and shutdown
+        run: |
+          boxlang --bx-home .boxlang/framework-runner --bx-config tests/boxlang.json tests/RunFrameworks.bx
+          if ($LASTEXITCODE -ne 0) { throw 'HTTP integration failed' }
+      - name: Verify installed consumer in a path containing spaces
+        run: |
+          $packageDirectory = Join-Path $env:RUNNER_TEMP 'bx effect package'
+          $consumerDirectory = Join-Path $env:RUNNER_TEMP 'bx effect consumer'
+          New-Item -ItemType Directory -Path $packageDirectory, $consumerDirectory | Out-Null
+          Copy-Item -LiteralPath models -Destination $packageDirectory -Recurse
+          Copy-Item -LiteralPath box.json, ModuleConfig.bx -Destination $packageDirectory
+          Copy-Item -LiteralPath tests/consumer/Smoke.bxm, tests/consumer/boxlang.json -Destination $consumerDirectory
+          Push-Location $consumerDirectory
+          try {
+            box install "ID=$packageDirectory" directory=boxlang_modules production=true save=false
+            if ($LASTEXITCODE -ne 0) { throw 'Consumer installation failed' }
+            boxlang --bx-home .boxlang --bx-config boxlang.json Smoke.bxm
+            if ($LASTEXITCODE -ne 0) { throw 'Installed consumer failed' }
+          } finally {
+            Pop-Location
+          }

@@ -62,6 +62,12 @@ Interruption is still best effort for arbitrary code. If user code ignores
 interruption, close waits rather than releasing a service that code may still
 use.
 
+`closeFuture()` returns a cancellation-isolated view of the shared shutdown.
+Cancelling one caller's view does not cancel shutdown or another caller's wait.
+Use `close()` or another `closeFuture()` view to await the final cleanup outcome.
+Release failures from a partially built application Layer are retained when
+closing overlaps its interrupted acquisition.
+
 ## Application lifecycle recipe
 
 Keep ownership explicit in `Application.bx`; BX Effect does not install a

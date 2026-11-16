@@ -1,0 +1,242 @@
+import models.effect.Effect@bxeffect;
+import models.effect.Stream@bxeffect;
+import models.effect.Queue@bxeffect;
+import models.effect.context.Context@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import tests.resources.AsyncTestSupport;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Bounded concurrent stream mapping", () => {
+			it( "is lazy, reusable, nullable, and leaves concurrency-one demand sequential", () => {
+				var calls = new AtomicInteger();
+				var source = Stream::fromArray( [ 1, 2, 3 ] ).mapEffect(
+					value => Effect::sync( () => { calls.incrementAndGet(); return value == 2 ? null : value; } ),
+					{ concurrency: 2 } );
+				expect( calls.get() ).toBe( 0 );
+				expect( runProgram( source.runCollect() ).value() ).toBe( [ 1, null, 3 ] );
+				expect( runProgram( source.runCollect() ).value() ).toBe( [ 1, null, 3 ] );
+				expect( calls.get() ).toBe( 6 );
+				expect( runProgram( source.take( 0 ).runCollect() ).value() ).toBeEmpty();
+				expect( calls.get() ).toBe( 6 );
+				var sequential = Stream::fromArray( [ 1, 2, 3 ] ).mapEffect(
+					value => Effect::sync( () => calls.incrementAndGet() ), { concurrency: 1 } ).take( 1 );
+				expect( runProgram( sequential.runCollect() ).value() ).toBe( [ 7 ] );
+				expect( calls.get() ).toBe( 7 );
+			} );
+
+			it( "preserves input order despite reversed native completions", () => {
+				var entered = new CountDownLatch( 3 );
+				var pending = [ futureNew(), futureNew(), futureNew() ];
+				var fiber = Effect::runFork( Stream::fromArray( [ 1, 2, 3 ] ).mapEffect(
+					value => Effect::fromBoxFuture( () => { entered.countDown(); return pending[ value ]; } ),
+					{ concurrency: 3 } ).runCollect() );
+				try {
+					awaitGate( entered );
+					pending[ 3 ].complete( 3 );
+					pending[ 2 ].complete( 2 );
+					pending[ 1 ].complete( 1 );
+					expect( fiber.terminationFuture().get( 5000 ).value() ).toBe( [ 1, 2, 3 ] );
+				} finally {
+					stopFiber( fiber );
+				}
+			} );
+
+			it( "can emit a later completed item while an earlier input remains blocked", () => {
+				var entered = new CountDownLatch( 3 );
+				var emitted = new CountDownLatch( 1 );
+				var outputs = new java.util.concurrent.CopyOnWriteArrayList();
+				var pending = [ futureNew(), futureNew(), futureNew() ];
+				var fiber = Effect::runFork( Stream::fromArray( [ 1, 2, 3 ] ).mapEffect(
+					value => Effect::fromBoxFuture( () => { entered.countDown(); return pending[ value ]; } ),
+					{ concurrency: 3, unordered: true } ).runForEach( value =>
+						Effect::sync( () => { outputs.add( value ); emitted.countDown(); } ) ) );
+				try {
+					awaitGate( entered );
+					pending[ 3 ].complete( 3 );
+					awaitGate( emitted );
+					expect( outputs.toArray() ).toBe( [ 3 ] );
+					expect( pending[ 1 ].isDone() ).toBeFalse();
+					pending[ 1 ].complete( 1 );
+					pending[ 2 ].complete( 2 );
+					expect( fiber.terminationFuture().get( 5000 ).isSuccess() ).toBeTrue();
+					expect( outputs.size() ).toBe( 3 );
+				} finally {
+					stopFiber( fiber );
+				}
+			} );
+
+			it( "counts completed waiting results in the admission window and closes before following work", () => {
+				var entered = new CountDownLatch( 3 );
+				var completed = new CountDownLatch( 2 );
+				var reads = new AtomicInteger();
+				var releases = new AtomicInteger();
+				var sourceReleases = new AtomicInteger();
+				var producerThread = new AtomicReference();
+				var pending = [ futureNew(), futureNew(), futureNew() ];
+				var source = Stream::acquireRelease( Effect::succeed( "source" ),
+					resource => Effect::sync( () => sourceReleases.incrementAndGet() ),
+					resource => Stream::unfoldEffect( 1, index => Effect::sync( () => {
+						reads.incrementAndGet();
+						producerThread.set( java.lang.Thread::currentThread() );
+						return attempt( { value: index, state: index + 1 } );
+					} ) ) );
+				var program = source.mapEffect( value => Effect::acquireUseRelease(
+					Effect::succeed( value ),
+					resource => Effect::fromBoxFuture( () => { entered.countDown(); return pending[ resource ]; } ),
+					resource => Effect::sync( () => { releases.incrementAndGet(); if ( resource != 1 ) { completed.countDown(); } } )
+				), { concurrency: 3 } ).take( 1 ).runCollect().tap( values => Effect::sync( () => {
+					expect( releases.get() ).toBe( 3 );
+					expect( sourceReleases.get() ).toBe( 1 );
+				} ) );
+				var fiber = Effect::runFork( program );
+				try {
+					awaitGate( entered );
+					pending[ 2 ].complete( 2 );
+					pending[ 3 ].complete( 3 );
+					awaitGate( completed );
+					// After the three admissions, the only producer wait is its permit.
+					AsyncTestSupport::awaitCondition( () => producerThread.get().getState().toString() == "WAITING" );
+					expect( reads.get() ).toBe( 3 );
+					pending[ 1 ].complete( 1 );
+					expect( fiber.terminationFuture().get( 5000 ).value() ).toBe( [ 1 ] );
+					expect( reads.get() ).toBe( 3 );
+				} finally {
+					stopFiber( fiber );
+				}
+			} );
+
+			it( "fails fast past a blocked ordered item and a blocked source pull, retaining cleanup once", () => {
+				var input = Queue::unbounded();
+				Effect::runSync( input.offer( 1 ).zip( input.offer( 2 ) ) );
+				var entered = new CountDownLatch( 1 );
+				var pending = futureNew();
+				var outcome = runProgram( Stream::fromQueue( input ).mapEffect( value => value == 1
+					? Effect::fromBoxFuture( () => { entered.countDown(); return pending; } ).ensuring( Effect::fail( "release" ) )
+					: Effect::sync( () => awaitGate( entered ) ).flatMap( () => Effect::fail( "mapped" ) ),
+					{ concurrency: 3 } ).runCollect() );
+				expect( outcome.cause().failures() ).toBe( [ "mapped", "release" ] );
+				expect( pending.isCancelled() ).toBeTrue();
+				expect( input.isShutdown() ).toBeFalse();
+			} );
+
+			it( "retains an upstream failure while interrupting pending mappers", () => {
+				var pending = futureNew();
+				var entered = new CountDownLatch( 1 );
+				var source = Stream::fromArray( [ 1 ] ).concat( Stream::fromEffect(
+					Effect::sync( () => awaitGate( entered ) ).flatMap( () => Effect::fail( "source" ) ) ) );
+				var outcome = runProgram( source.mapEffect( value =>
+					Effect::fromBoxFuture( () => { entered.countDown(); return pending; } )
+						.ensuring( Effect::fail( "release" ) ), { concurrency: 2 } ).runCollect() );
+				expect( outcome.cause().failures() ).toBe( [ "source", "release" ] );
+				expect( outcome.cause().isDefect() ).toBeFalse();
+				expect( pending.isCancelled() ).toBeTrue();
+			} );
+
+			it( "awaits failed mapper cleanup before source close and outer consumer recovery", () => {
+				var entered = new CountDownLatch( 3 );
+				var cleanupEntered = new CountDownLatch( 2 );
+				var cleanup = futureNew();
+				var released = new AtomicInteger();
+				var sourceReleased = new AtomicInteger();
+				var pending = [ futureNew(), futureNew(), futureNew() ];
+				var source = Stream::acquireRelease( Effect::succeed( true ),
+					resource => Effect::sync( () => sourceReleased.incrementAndGet() ),
+					resource => Stream::fromArray( [ 1, 2, 3 ] ) );
+				var program = source.mapEffect( value => Effect::acquireRelease(
+					Effect::succeed( value ), resource => ( resource == 1
+						? Effect::succeed( null )
+						: Effect::fromBoxFuture( () => { cleanupEntered.countDown(); return cleanup.then( ignored => ignored ); } )
+							.flatMap( () => Effect::fail( "release-#resource#" ) ) )
+						.ensuring( Effect::sync( () => released.incrementAndGet() ) )
+				).flatMap( resource => Effect::fromBoxFuture( () => { entered.countDown(); return pending[ resource ]; } ) ),
+				{ concurrency: 3 } ).runForEach( value => Effect::fail( "consumer" ) ).catchCause( failureCause => Effect::sync( () => {
+					expect( released.get() ).toBe( 3 );
+					expect( sourceReleased.get() ).toBe( 1 );
+					return failureCause.failures();
+				} ) );
+				var fiber = Effect::runFork( program );
+				try {
+					awaitGate( entered );
+					pending[ 1 ].complete( 1 );
+					awaitGate( cleanupEntered );
+					expect( fiber.terminationFuture().isDone() ).toBeFalse();
+					expect( sourceReleased.get() ).toBe( 0 );
+					cleanup.complete( null );
+					expect( fiber.terminationFuture().get( 5000 ).value() ).toBe( [ "consumer", "release-2", "release-3" ] );
+				} finally {
+					cleanup.complete( null );
+					stopFiber( fiber );
+				}
+			} );
+
+			it( "interrupts pending mappings and retains their cleanup once at root termination", () => {
+				var entered = new CountDownLatch( 2 );
+				var pending = [ futureNew(), futureNew() ];
+				var fiber = Effect::runFork( Stream::fromArray( [ 1, 2 ] ).mapEffect( value =>
+					Effect::fromBoxFuture( () => { entered.countDown(); return pending[ value ]; } )
+						.ensuring( Effect::fail( "release-#value#" ) ), { concurrency: 2 } ).runDrain() );
+				try {
+					awaitGate( entered );
+				} finally {
+					fiber.interrupt();
+				}
+				var outcome = fiber.terminationFuture().get( 5000 );
+				expect( outcome.cause().isInterrupted() ).toBeTrue();
+				expect( outcome.cause().isDefect() ).toBeFalse();
+				expect( outcome.cause().failures() ).toBe( [ "release-1", "release-2" ] );
+				expect( pending[ 1 ].isCancelled() && pending[ 2 ].isCancelled() ).toBeTrue();
+			} );
+
+			it( "retains unhandled stream-child cleanup without replaying its business failure", () => {
+				var streamProgram = Stream::fromArray( [ 1 ] ).mapEffect( value =>
+					Effect::fail( "business" ).ensuring( Effect::fail( "release" ) ), { concurrency: 2 } ).runDrain();
+				var outcome = runProgram( streamProgram.fork().flatMap( child =>
+					Effect::fromBoxFuture( () => child.terminationFuture() ).as( "parent" ) ) );
+				expect( outcome.cause().failures() ).toBe( [ "release" ] );
+			} );
+
+			it( "inherits Context and closes each mapper's local resources", () => {
+				var tag = ServiceTag::of( "stream/ConcurrentLabel" );
+				var released = new AtomicInteger();
+				var outcome = runProgram( Stream::fromArray( [ 1, 2, 3 ] ).mapEffect( value =>
+					Effect::acquireRelease( Effect::service( tag ), resource => Effect::sync( () => released.incrementAndGet() ) )
+						.map( resource => resource & value ), { concurrency: 2 } )
+					.provide( Context::empty().add( tag, "inherited" ) ).runCollect() );
+				expect( outcome.value() ).toBe( [ "inherited1", "inherited2", "inherited3" ] );
+				expect( released.get() ).toBe( 3 );
+			} );
+
+			it( "rejects unsupported and unbounded options eagerly", () => {
+				for ( var settings in [ { concurrency: 0 }, { concurrency: 1.5 }, { concurrency: "unbounded" }, { mode: "accumulate" }, { unordered: "invalid" } ] ) {
+					expect( () => Stream::empty().mapEffect( value => Effect::succeed( value ), settings ) ).toThrow();
+				}
+			} );
+		} );
+	}
+
+	private any function runProgram( required any program ) {
+		var fiber = Effect::runFork( arguments.program );
+		try {
+			return fiber.terminationFuture().get( 5000 );
+		} finally {
+			stopFiber( fiber );
+		}
+	}
+
+	private void function stopFiber( required any fiber ) {
+		arguments.fiber.interrupt();
+		arguments.fiber.terminationFuture().get( 5000 );
+	}
+
+	private void function awaitGate( required any gate ) {
+		if ( !arguments.gate.await( 5, TimeUnit::SECONDS ) ) {
+			throw( type: "bxeffect.testing.TestTimeoutException", message: "Concurrent mapping gate timed out" );
+		}
+	}
+}

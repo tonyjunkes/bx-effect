@@ -1,0 +1,32 @@
+import examples.native.ReadLines;
+import models.effect.Effect@bxeffect;
+
+class extends="testbox.system.BaseSpec" {
+	function run() {
+		describe( "Native file stream recipe", () => {
+			it( "releases an early-stopped handle and opens a fresh cursor on rerun", () => {
+				var path = getTempDirectory() & "bx-effect-" & createUUID() & ".txt";
+				var renamed = path & ".moved";
+				fileWrite( path, "first" & char( 10 ) & "second" & char( 10 ) & "third" );
+				var source = ReadLines::from( path );
+				try {
+					expect( Effect::runSync( source.take( 1 ).runCollect() ) ).toBe( [ "first" ] );
+					// Windows rejects this move if the native reader still owns the file.
+					fileMove( path, renamed );
+					fileMove( renamed, path );
+					expect( Effect::runSync( source.runCollect() ) ).toBe( [ "first", "second", "third" ] );
+				} finally {
+					if ( fileExists( path ) ) { fileDelete( path ); }
+					if ( fileExists( renamed ) ) { fileDelete( renamed ); }
+				}
+			} );
+
+			it( "maps a missing file to an expected error only when consumed", () => {
+				var source = ReadLines::from( getTempDirectory() & createUUID() & ".missing" );
+				var outcome = Effect::runSyncExit( source.runCollect() );
+				expect( outcome.cause().kind() ).toBe( "Fail" );
+				expect( outcome.cause().error()._tag ).toBe( "FileOpenError" );
+			} );
+		} );
+	}
+}

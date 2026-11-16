@@ -27,7 +27,7 @@ writeOutput( "items=10000 nativeMedianMs=#nativeMeasurement.medianMs# sequential
 // Immediate work exposes completion-selection cost without client I/O variance.
 programs = [];
 for ( index = 1; index <= 1000; index++ ) { programs.append( Effect::succeed( index ) ); }
-for ( limit in [ 1, 8, 32, 128, "unbounded" ] ) {
+for ( limit in [ 1, 8, 9, 16, 32, 128, "unbounded" ] ) {
 	measurement = BenchmarkSupport::measure( () => Effect::runSync(
 		Effect::all( programs, { concurrency: limit } )
 	) );
@@ -35,5 +35,16 @@ for ( limit in [ 1, 8, 32, 128, "unbounded" ] ) {
 		throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Concurrent collection benchmark changed output" );
 	}
 	writeOutput( "items=1000 concurrency=#limit# medianMs=#measurement.medianMs# samples=5 " );
+}
+
+// Delayed work checks threshold-adjacent widths without immediate-work bias.
+programs = [];
+for ( index = 1; index <= 96; index++ ) { programs.append( Effect::sleep( 3 ).as( index ) ); }
+for ( limit in [ 1, 8, 9, 16, "unbounded" ] ) {
+	measurement = BenchmarkSupport::measure( () => Effect::runSync( Effect::all( programs, { concurrency: limit } ) ) );
+	if ( measurement.value.len() != 96 || measurement.value[ 1 ] != 1 || measurement.value[ 96 ] != 96 ) {
+		throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Delayed collection benchmark changed output" );
+	}
+	writeOutput( "items=96 delayMs=3 concurrency=#limit# medianMs=#measurement.medianMs# samples=5 " );
 }
 </bx:script>

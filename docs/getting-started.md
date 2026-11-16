@@ -7,16 +7,10 @@ from the module mapping:
 import models.effect.Effect@bxeffect;
 ```
 
-Application code should prefer the explicit `@bxeffect` suffix; it avoids
-ambiguity when several modules expose similarly named classes. Library code
-within BX Effect uses the module's internal mapping instead:
-
-```boxlang
-import bxModules.bxEffect.models.effect.Effect;
-```
-
-This keeps internal imports distinct from the consumer-facing module-qualified
-API.
+The explicit `@bxeffect` suffix avoids ambiguity when several modules expose
+similarly named classes. Install with `box install bx-effect` or
+`install-bx-module bx-effect`; the selected runtime must register and activate
+the module.
 
 The module mapping does not create a global `Effect` alias. Import the class in
 each source file that uses it; after import, ordinary static calls work as
@@ -32,23 +26,29 @@ static/value APIs, not services for WireBox to instantiate. Applications may
 explicitly map a runtime instance and provide container-owned services through
 Layers. See the [WireBox and ColdBox recipes](native-integrations.md#wirebox-and-coldbox).
 
-The repository test suite supplies `tests/boxlang.json`, which points the
-runtime at the workspace's parent module directory. Run tests with the command
-shown in the README so `@bxeffect` resolution exercises the installed-module
-topology rather than a test-only source mapping.
-
 Effects are lazy descriptions. Nothing runs until a runtime boundary:
 
 ```boxlang
 program = Effect::try(
-    try: () => httpClient.get( "/users/42" ),
-    catch: error => { _tag: "RequestFailed", message: error.message }
+    try: () => JSONDeserialize( '{"name":"Ada"}' ),
+    catch: error => { _tag: "InvalidUserData", message: error.message }
 );
 
-exit = Effect::runSyncExit( program );
+outcome = Effect::runSyncExit( program );
+if ( outcome.isSuccess() ) {
+	println( outcome.value().name ); // Ada
+} else {
+	println( outcome.cause().pretty() );
+}
 ```
 
 Use `runSync` when a failed program should throw `bxeffect.EffectFailureException`. Use
 `runSyncExit` when both success and failure should remain values. For an async
 boundary, use `runFuture` or `runFutureExit`, both of which return a native
 BoxFuture.
+
+For expected errors from native async work, use `tryBoxFuture`; for bounded
+collections, use `forEach(values, mapper, { concurrency: N })`. Streams also
+offer explicit concurrent `mapEffect`. Continue with the [error model](error-model.md),
+[concurrency](concurrency.md), or [stream guide](streams.md) for complete examples
+and ownership details.

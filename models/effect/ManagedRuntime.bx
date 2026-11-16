@@ -23,12 +23,12 @@ class {
 	variables.runtime = null;
 	variables.state = "Open";
 	variables.lock = new java.util.concurrent.locks.ReentrantLock();
-	variables.managedContext = null;
 	variables.managedScope = null;
 	variables.buildFiber = null;
 	variables.buildOutcomeFuture = null;
 	variables.activeRuns = new java.util.concurrent.ConcurrentHashMap();
 	variables.closeOutcomeFuture = null;
+	variables.failedBuildCleanup = null;
 
 	/**
 	 * Validates and stores an application Layer without building its services.
@@ -149,7 +149,7 @@ class {
 		variables.lock.lock();
 		try {
 			if ( !isNull( variables.closeOutcomeFuture ) ) {
-				return variables.closeOutcomeFuture;
+				return variables.closeOutcomeFuture.then( ( outcome ) => outcome );
 			}
 
 			variables.state = "Closing";
@@ -171,7 +171,7 @@ class {
 				() => completeClose( runsToStop, buildToStop, buildToAwait ),
 				variables.runtime.executor()
 			);
-			return variables.closeOutcomeFuture;
+			return variables.closeOutcomeFuture.then( ( outcome ) => outcome );
 		} finally {
 			variables.lock.unlock();
 		}
@@ -222,11 +222,6 @@ class {
 			if ( variables.state != "Open" ) {
 				return { closed: true };
 			}
-			if ( !isNull( variables.managedContext ) ) {
-				var completedContext = futureNew();
-				completedContext.complete( Exit::success( variables.managedContext ) );
-				return { closed: false, outcomeFuture: completedContext };
-			}
 			if ( !isNull( variables.buildOutcomeFuture ) ) {
 				return { closed: false, outcomeFuture: variables.buildOutcomeFuture };
 			}
@@ -240,12 +235,21 @@ class {
 				buildScope,
 				buildMemo
 			);
-			var buildOutcome = buildFiber.terminationFuture().then(
-				( buildExit ) => finishBuildAttempt( buildExit, buildScope )
-			);
+			var buildOutcome = futureNew();
 			variables.managedScope = buildScope;
 			variables.buildFiber = buildFiber;
 			variables.buildOutcomeFuture = buildOutcome;
+			// Publish the attempt before attaching a callback that may run inline.
+			// A successful future also serves later runs without per-run Context futures.
+			buildFiber.terminationFuture().handle( ( buildExit, error ) => {
+				try {
+					if ( !isNull( error ) ) { buildOutcome.completeExceptionally( error ); }
+					else { buildOutcome.complete( finishBuildAttempt( buildExit, buildScope ) ); }
+				} catch ( any completionError ) {
+					buildOutcome.completeExceptionally( completionError );
+				}
+				return null;
+			} );
 			return { closed: false, outcomeFuture: buildOutcome };
 		} finally {
 			variables.lock.unlock();
@@ -264,17 +268,23 @@ class {
 		required Scope buildScope
 	) {
 		var buildExit = arguments.completedExit;
+		var buildCleanup = null;
 		if ( buildExit.isFailure() ) {
 			// Cleanup precedes clearing buildOutcomeFuture so retry cannot overlap
 			// release of resources from the failed attempt.
-			buildExit = variables.runtime.closeScopeWithExit( buildExit, arguments.buildScope );
+			var cleanupExit = variables.runtime.closeScopeWithExit( Exit::success( null ), arguments.buildScope );
+			if ( cleanupExit.isFailure() ) {
+				buildCleanup = cleanupExit.cause();
+				buildExit = Exit::failure( Cause::sequential( buildExit.cause(), buildCleanup ) );
+			}
 		}
 
 		variables.lock.lock();
 		try {
-			if ( buildExit.isSuccess() && variables.state == "Open" ) {
-				variables.managedContext = buildExit.value();
-			} else if ( buildExit.isFailure() ) {
+			if ( variables.state == "Closing" ) {
+				variables.failedBuildCleanup = buildCleanup;
+			}
+			if ( buildExit.isFailure() ) {
 				variables.managedScope = null;
 				variables.buildFiber = null;
 				variables.buildOutcomeFuture = null;
@@ -308,6 +318,10 @@ class {
 			}
 			if ( !isNull( arguments.buildToStop ) ) {
 				arguments.buildToStop.awaitTermination();
+				var buildCleanup = arguments.buildToStop.takeCleanupFailure();
+				if ( !isNull( buildCleanup ) ) {
+					runCleanup = isNull( runCleanup ) ? buildCleanup : Cause::sequential( runCleanup, buildCleanup );
+				}
 			}
 			if ( !isNull( arguments.buildToAwait ) ) {
 				// Build termination alone does not include finishBuildAttempt cleanup.
@@ -317,6 +331,9 @@ class {
 			variables.lock.lock();
 			try {
 				var scopeToClose = variables.managedScope;
+				if ( !isNull( variables.failedBuildCleanup ) ) {
+					runCleanup = isNull( runCleanup ) ? variables.failedBuildCleanup : Cause::sequential( runCleanup, variables.failedBuildCleanup );
+				}
 			} finally {
 				variables.lock.unlock();
 			}
@@ -332,10 +349,10 @@ class {
 		variables.lock.lock();
 		try {
 			variables.state = "Closed";
-			variables.managedContext = null;
 			variables.managedScope = null;
 			variables.buildFiber = null;
 			variables.buildOutcomeFuture = null;
+			variables.failedBuildCleanup = null;
 			variables.activeRuns.clear();
 		} finally {
 			variables.lock.unlock();

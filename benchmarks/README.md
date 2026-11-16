@@ -53,12 +53,18 @@ with the same isolated-home/config flags above. The release audit records the
 initial before/after samples; these are local evidence, not performance promises.
 
 `CollectionRuntimeBench.bxm` compares a 10,000-value native loop with sequential
-`forEach`, and measures 1,000 immediate Effects at concurrency 1, 8, 32, 128,
+`forEach`, and measures 1,000 immediate Effects at concurrency 1, 8, 9, 16, 32, 128,
 and unbounded. It first warms 10,000 native children independently of `forEach`
 so the inline and Fiber-based variants prepare the child runtime equally.
 Immediate Effects isolate runtime/completion bookkeeping from
-I/O latency; `ConcurrencyBench.bxm` separately checks delayed work. StreamBench
+I/O latency; a second workload runs 96 delayed Effects at 1, 8, 9, 16 and
+unbounded concurrency. `ConcurrencyBench.bxm` checks additional delayed work. StreamBench
 also asserts that a 100,000-value `mapEffect(...).take(1)` calls its mapper once.
+
+`ConcurrentStreamBench.bxm` compares sequential mapping, a grouped/bounded
+`forEach` workaround, and ordered/unordered concurrent mapping over the same
+skewed delayed workload. It checks values and the applicable ordering contract.
+These timings describe that workload, not arbitrary HTTP latency or payload size.
 
 The repeated, seeded `tests.specs.stress` suite covers acquisition/cancellation,
 Layer contention, failed releases, shuffled completions and simultaneous bounded

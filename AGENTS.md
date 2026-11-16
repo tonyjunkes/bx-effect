@@ -6,7 +6,7 @@ Explicit user instructions take precedence; nested AGENTS.md files govern their 
 ## Sources and boundaries
 
 - For public behavior, use [docs/public-api.md](docs/public-api.md) and the focused guides below. Implementation and focused specs are the executable contract.
-- [README.md](README.md), [box.json](box.json), and [.github/workflows](.github/workflows) define setup, package scripts, runtime support, and CI. Verify commands against them.
+- [README.md](README.md) covers consumers; [CONTRIBUTING.md](CONTRIBUTING.md), [box.json](box.json), and [.github/workflows](.github/workflows) define setup, package scripts, runtime support, and CI. Verify commands against them.
 - [SKILL.md](SKILL.md) is portable guidance for applications using BX Effect; this file governs development of the module itself.
 - The module must be installed, registered, and activated. Public code imports `models.effect.Effect@bxeffect`; library peers resolve through `bxModules.bxEffect...`.
 - Keep the kernel independent of application lifecycle, WireBox, interceptors, and annotation scanning. Framework integration is explicit application code under `examples/`.
@@ -24,7 +24,7 @@ Paths in the implementation column are relative to `models/effect/`.
 | Application-lived services | `ManagedRuntime.bx` | [managed-runtime](docs/managed-runtime.md); `tests/specs/runtime/` |
 | Futures, Fibers, coordination | `Fiber.bx`, `Deferred.bx`, `Semaphore.bx`, `Queue.bx`, `PubSub.bx`, `internal/FiberControl.bx` | [concurrency](docs/concurrency.md); `tests/specs/async/`, `tests/specs/stress/` |
 | Retry, repeat, timeout, deterministic time | `Schedule.bx`, `Clock.bx`, `testing/TestClock.bx` | [schedules](docs/schedules.md); `tests/specs/schedule/` |
-| Stream sources, operators, consumers | `Stream.bx`, `internal/StreamCursor.bx` | [streams](docs/streams.md); `tests/specs/stream/` |
+| Stream sources, operators, consumers | `Stream.bx`, `internal/StreamCursor.bx`, `internal/ConcurrentMapCursor.bx` | [streams](docs/streams.md); `tests/specs/stream/` |
 | Runtime diagnostics | runtime, `observability/` | [observability](docs/observability.md); `tests/specs/observability/` |
 | Native and framework integration | `examples/` at repository root | [native-integrations](docs/native-integrations.md); `tests/specs/native/`, `tests/specs/frameworks/` |
 
@@ -39,7 +39,7 @@ Paths in the implementation column are relative to `models/effect/`.
 - Async execution uses native BoxFuture on BoxLang's `io-tasks` virtual-thread executor; `runFuture` stays non-blocking to its caller. Replacing internal waits requires a documented native API and benchmark evidence. Cancellation requests reach both the outer task and active nested future, and native cancellation wrappers remain interruption.
 - Worker-thread interruption is registered only around known interruptible Semaphore, Queue, and PubSub instructions and cleared in `finally`. Deferred awaiters use dependent futures so one cancellation cannot cancel the shared result.
 - Collections default to fail-fast; explicit accumulation awaits all work and retains Causes in input order. Queue/PubSub ownership and shutdown stay explicit; bounded waits remain interruptible. PubSub subscription lifetime is separate from hub lifetime.
-- Each Stream consumer gets a fresh demand-driven cursor, closes it before following work or recovery, and retains an idempotent release fallback during opening. Empty Attempt is completion. Queue sources own no Queue; PubSub sources own only their subscription. Keep operators sequential without implicit read-ahead.
+- Each Stream consumer gets a fresh demand-driven cursor, closes it before following work or recovery, and retains an idempotent release fallback during opening. Empty Attempt is completion. Queue sources own no Queue; PubSub sources own only their subscription. Sequential paths retain exact demand; explicit concurrent mapping bounds running and completed-undelivered items and awaits its producer/mapper lifetime before source release.
 - Timeouts and interruption are cooperative. `spaced` waits after completion; `fixed` targets start times and skips missed intervals. Published `testing/TestClock.bx` stays independent of TestBox; repository fixtures belong under `tests/`.
 - Observers are diagnostic-only: failures cannot change outcomes or prevent cleanup. Terminal events report completed/interrupted Fibers; unhandled-defect events describe only defects reaching a runtime boundary.
 
@@ -68,6 +68,7 @@ Paths in the implementation column are relative to `models/effect/`.
 Run from the repository root after `box install`:
 
 ```bash
+box run-script test:prepare
 box run-script test
 ```
 
@@ -78,14 +79,16 @@ box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json testbox/s
 ```
 
 - Keep `--bx-home .boxlang/test` for checkout specs/benchmarks so an installed module cannot shadow the checkout. Standalone CLI/CI uses `boxlang` in place of `box boxlang cli`.
+- Prepare pinned framework sources after dependency installation or runtime switches; [CONTRIBUTING.md](CONTRIBUTING.md#prepare-and-test) explains bytecode compatibility. Native compiler `main` exits the JVM; the preparation runner uses its public per-file API.
 - Inspect TestBox totals: require positive passes, zero failures, and zero errors; process exit status alone is insufficient. Both workflows enforce this with JSON reports.
+- Use absolute TestBox report paths. For focused discovery, `--directory` selects one package; use `--bundles` for a specific bundle.
 - Before handoff, run the full suite when feasible. For module/runtime settings, also run the executor override:
 
 ```bash
 box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.executor-override.json testbox/system/runners/BoxLangRunner.bx --directory=tests.specs.module --stream --write-report=false --properties-summary=false --stacktrace=short
 ```
 
-- For ColdBox HTTP changes, run `box run-script test:frameworks`; the normal CLI suite skips these HTTP-only cases. MiniServer setup and reports are documented in [README.md](README.md#contributing--testing).
+- For ColdBox HTTP changes, run `box run-script test:frameworks`; the normal CLI suite skips these HTTP-only cases. MiniServer setup and reports are documented in [CONTRIBUTING.md](CONTRIBUTING.md#framework-and-consumer-checks).
 - For metadata/packaging changes, run `box package show`. Keep version changes aligned in `box.json`, `ModuleConfig.bx`, `CHANGELOG.md`, and the release workflow; runtime support changes also touch README, test configs, and both CI matrices.
 - For interpreter/composition changes, run the relevant [benchmarks](benchmarks/README.md). Recorded elapsed time uses imported `java.lang.System.nanoTime()` converted to milliseconds; `getTickCount()` has produced anomalous CLI readings.
 - Behavior changes require focused coverage for applicable laziness, failure channels, Context isolation, cancellation, and cleanup contracts. Public API changes also update the inventory, guides, and examples.

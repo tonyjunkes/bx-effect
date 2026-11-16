@@ -146,6 +146,8 @@ class {
 				variables.notFull.await();
 			}
 			if ( wasInterrupted( arguments.controlState ) ) {
+				// A signalled producer can cancel before claiming its available slot.
+				variables.notFull.signal();
 				return { isShutdown: false, isInterrupted: true };
 			}
 			if ( variables.shutdown ) {
@@ -175,6 +177,8 @@ class {
 				variables.notEmpty.await();
 			}
 			if ( wasInterrupted( arguments.controlState ) ) {
+				// Preserve the value's wakeup if this signalled taker abandons it.
+				variables.notEmpty.signal();
 				return { isShutdown: false, isInterrupted: true };
 			}
 			if ( variables.items.isEmpty() ) {

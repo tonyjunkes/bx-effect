@@ -1,0 +1,32 @@
+import models.effect.Effect@bxeffect;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import ortus.boxlang.runtime.async.tasks.BaseScheduler;
+
+class extends="testbox.system.BaseSpec" {
+	function run() {
+		describe( "Native Scheduler callback", () => {
+			it( "records an expected Effect failure after cleanup inside the native task lifecycle", () => {
+				var host = new BaseScheduler( "bx-effect-" & createUUID(), getBoxContext() );
+				var releases = new AtomicInteger();
+				var recorded = new AtomicReference();
+				var afterSawRelease = new AtomicReference();
+				try {
+					var task = host.task( "once" ).call( () => {
+						var outcome = Effect::runSyncExit( Effect::acquireRelease(
+							Effect::succeed( "handle" ), resource => Effect::sync( () => releases.incrementAndGet() )
+						).flatMap( resource => Effect::fail( { _tag: "RefreshFailed" } ) ) );
+						recorded.set( outcome );
+						return outcome;
+					} ).after( ( completedTask, nativeResult ) => afterSawRelease.set( releases.get() ) );
+					// Execute once through the native lifecycle without testing calendar timing.
+					task.run();
+					expect( recorded.get().cause().error()._tag ).toBe( "RefreshFailed" );
+					expect( afterSawRelease.get() ).toBe( 1 );
+				} finally {
+					host.shutdown();
+				}
+			} );
+		} );
+	}
+}

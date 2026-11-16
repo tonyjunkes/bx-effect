@@ -26,10 +26,24 @@ class {
 		if ( arguments.duration < 0 ) {
 			throw( type: "bxeffect.InvalidDurationException", message: "Clock sleep requires a non-negative duration" );
 		}
+		var nativeUnit = arguments.unit;
+		switch ( lCase( nativeUnit ) ) {
+			case "ms": case "millisecond": nativeUnit = "milliseconds"; break;
+			case "s": case "second": nativeUnit = "seconds"; break;
+			case "m": case "minute": nativeUnit = "minutes"; break;
+			case "h": case "hour": nativeUnit = "hours"; break;
+			case "d": case "day": nativeUnit = "days"; break;
+		}
+		var nativeDuration = arguments.duration;
+		// delayedExecutor accepts a long: preserve fractional durations in a finer unit.
+		if ( nativeDuration != fix( nativeDuration ) ) {
+			nativeDuration *= java.util.concurrent.TimeUnit::valueOf( uCase( nativeUnit ) ).toNanos( 1 );
+			nativeUnit = "nanoseconds";
+		}
 		return BoxFuture::ofFunction(
 			getBoxContext(),
 			() => null,
-			BoxFuture::delayedExecutor( arguments.duration, arguments.unit )
+			BoxFuture::delayedExecutor( nativeDuration, nativeUnit )
 		);
 	}
 

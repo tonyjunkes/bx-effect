@@ -189,7 +189,6 @@ class extends="testbox.system.BaseSpec" {
 				awaitClockPending( clock, 2 );
 				clock.advance( 10 );
 				var exit = fiber.await();
-				AsyncTestSupport::awaitCondition( () => events.len() == 2 );
 
 				expect( exit.isFailure() ).toBeTrue();
 				expect( exit.cause().error()._tag ).toBe( "TimeoutError" );
@@ -230,7 +229,6 @@ class extends="testbox.system.BaseSpec" {
 				awaitClockPending( clock, 2 );
 				clock.advance( 10 );
 				expect( fiber.join() ).toBe( "winner" );
-				AsyncTestSupport::awaitCondition( () => releases.get() == 1 );
 
 				expect( releases.get() ).toBe( 1 );
 				expect( clock.pendingCount() ).toBe( 0 );

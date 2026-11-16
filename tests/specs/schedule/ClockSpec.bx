@@ -11,6 +11,28 @@ class extends="testbox.system.BaseSpec" {
 
 	function run() {
 		describe( "Runtime Clock and TestClock", () => {
+			it( "accepts Schedule singular and short units at the native Clock boundary", () => {
+				var clock = new LiveClock();
+				for ( var unit in [ "millisecond", "ms", "second", "s", "minute", "m", "hour", "h", "day", "d" ] ) {
+					clock.sleep( 0, unit ).get( 3000 );
+				}
+			} );
+
+			it( "preserves fractional uncomposed recurrence delays on live and deterministic clocks", () => {
+				var clock = new TestClock();
+				var pending = clock.sleep( 0.02, "s" );
+				clock.advance( 19 );
+				expect( pending.isDone() ).toBeFalse();
+				clock.advance( 1 );
+				expect( pending.isDone() ).toBeTrue();
+				for ( var policy in [ Schedule::spaced( 0.02, "s" ), Schedule::exponential( 0.02, "second" ) ] ) {
+					var calls = 0;
+					var startedAt = System::nanoTime();
+					expect( Effect::runSync( Effect::sync( () => ++calls )
+						.repeat( policy.whileInput( count => count < 2 ) ) ) ).toBe( 2 );
+					expect( ( System::nanoTime() - startedAt ) / 1000000 ).toBeGTE( 19 );
+				}
+			} );
 
 			it( "uses positive, nondecreasing milliseconds with elapsed time from the monotonic clock", () => {
 				var clockToUse = new LiveClock();

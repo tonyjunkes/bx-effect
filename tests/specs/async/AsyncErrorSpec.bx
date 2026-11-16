@@ -1,0 +1,124 @@
+import models.effect.Effect@bxeffect;
+import models.effect.Schedule@bxeffect;
+import models.effect.context.ServiceTag@bxeffect;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
+import java.lang.IllegalArgumentException;
+import java.lang.LinkageError;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Expected asynchronous errors", () => {
+			it( "constructs fresh futures lazily on reruns and retries", () => {
+				var calls = 0;
+				var mapped = 0;
+				var program = Effect::tryBoxFuture(
+					try: () => {
+						calls++;
+						var pending = futureNew();
+						if ( calls == 1 ) { pending.completeExceptionally( new IllegalArgumentException( "transport" ) ); }
+						else { pending.complete( calls ); }
+						return pending;
+					},
+					catch: error => { mapped++; return { _tag: "Transport", message: error.message }; }
+				).retry( Schedule::recurs( 1 ) );
+				expect( calls ).toBe( 0 );
+				expect( Effect::runSync( program ) ).toBe( 2 );
+				expect( Effect::runSync( program ) ).toBe( 3 );
+				expect( mapped ).toBe( 1 );
+			} );
+
+			it( "maps ordinary factory throws and unwraps only native completion wrappers", () => {
+				var original = new IllegalArgumentException( "domain", new IllegalArgumentException( "detail" ) );
+				var rejected = futureNew();
+				rejected.completeExceptionally( new CompletionException( original ) );
+				var outcome = Effect::runSyncExit( Effect::tryBoxFuture( () => rejected ) );
+				expect( outcome.cause().kind() ).toBe( "Fail" );
+				expect( outcome.cause().error() ).toBeSameInstanceAs( original );
+				var thrown = Effect::runSyncExit( Effect::tryBoxFuture(
+					try: () => throw( type: "bxeffect.testing.FactoryException", message: "factory" ),
+					catch: error => error.message
+				) );
+				expect( thrown.cause().error() ).toBe( "factory" );
+			} );
+
+			it( "keeps invalid futures and throwing error mappers in the defect channel", () => {
+				var mapped = 0;
+				var invalid = Effect::runSyncExit( Effect::tryBoxFuture( () => "not a future", error => { mapped++; return "wrong"; } ) );
+				expect( invalid.cause().kind() ).toBe( "Die" );
+				expect( invalid.cause().defect().type ).toBe( "bxeffect.InvalidBoxFutureException" );
+				expect( mapped ).toBe( 0 );
+				var broken = Effect::runSyncExit( Effect::tryBoxFuture(
+					() => throw( type: "bxeffect.testing.FactoryException", message: "factory" ),
+					error => throw( type: "bxeffect.testing.MapperException", message: "mapper" ) ) );
+				expect( broken.cause().kind() ).toBe( "Die" );
+				expect( broken.cause().defect().message ).toBe( "mapper" );
+				var absent = Effect::runSyncExit( Effect::tryBoxFuture( () => null, error => "wrong" ) );
+				expect( absent.cause().defect().type ).toBe( "bxeffect.InvalidBoxFutureException" );
+				var mapperCancellation = Effect::runSyncExit( Effect::tryBoxFuture(
+					() => throw( message: "factory" ), error => throw( object: new CancellationException( "mapper" ) ) ) );
+				expect( mapperCancellation.cause().kind() ).toBe( "Die" );
+			} );
+
+			it( "preserves direct and wrapped native cancellation without mapping or retrying", () => {
+				for ( var wrapped in [ false, true ] ) {
+					for ( var expectedErrors in [ false, true ] ) {
+						var pending = futureNew();
+						if ( wrapped ) { pending.completeExceptionally( new CompletionException( new CancellationException( "cancelled" ) ) ); }
+						else { pending.cancel( true ); }
+						var maps = 0;
+						var program = expectedErrors
+							? Effect::tryBoxFuture( () => pending, error => { maps++; return "wrong"; } )
+							: Effect::fromBoxFuture( () => pending );
+						var outcome = Effect::runSyncExit( program.retry( Schedule::recurs( 1 ) ) );
+						expect( outcome.cause().kind() ).toBe( "Interrupt" );
+						expect( maps ).toBe( 0 );
+					}
+				}
+			} );
+
+			it( "keeps inherited Context and releases before recovery", () => {
+				var tag = ServiceTag::of( "async/Label" );
+				var released = [];
+				var program = Effect::acquireUseRelease(
+					Effect::succeed( "handle" ),
+					resource => Effect::service( tag ).flatMap( label => Effect::tryBoxFuture(
+						() => futureNew( label ), error => "transport" ) ),
+					resource => Effect::service( tag ).map( label => released.append( label ) )
+				).provideService( tag, "inherited" );
+				expect( Effect::runSync( program ) ).toBe( "inherited" );
+				expect( released ).toBe( [ "inherited" ] );
+			} );
+
+			it( "cancels the active native future and awaits failed cleanup on requested interruption", () => {
+				var entered = new CountDownLatch( 1 );
+				var pending = futureNew();
+				var maps = 0;
+				var fiber = Effect::runFork( Effect::tryBoxFuture(
+					() => { entered.countDown(); return pending; }, error => { maps++; return "wrong"; }
+				).ensuring( Effect::fail( "release" ) ) );
+				try {
+					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+				} finally {
+					fiber.interrupt();
+				}
+				var outcome = fiber.terminationFuture().get( 5000 );
+				expect( outcome.cause().isInterrupted() ).toBeTrue();
+				expect( outcome.cause().failures() ).toBe( [ "release" ] );
+				expect( pending.isCancelled() ).toBeTrue();
+				expect( maps ).toBe( 0 );
+			} );
+
+			it( "lets fatal native rejection escape without invoking the error mapper", () => {
+				var maps = 0;
+				var rejected = futureNew();
+				rejected.completeExceptionally( new LinkageError( "fatal" ) );
+				expect( () => Effect::runSyncExit( Effect::tryBoxFuture( () => rejected, error => { maps++; return "wrong"; } ) ) ).toThrow();
+				expect( maps ).toBe( 0 );
+			} );
+		} );
+	}
+}

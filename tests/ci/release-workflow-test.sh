@@ -81,7 +81,7 @@ expect_failure() { if "$@"; then echo 'Expected failure, but command succeeded.'
 main_trigger() {
   awk '/^on:$/ { found=1; next } found && /^[^ ]/ { exit } found { print }' "$workflow" |
     grep -A2 '^  push:$' | grep -Fxq '      - main'
-  grep -Fxq '    needs: tests' "$workflow"
+  grep -Fxq '    needs: [tests, windows]' "$workflow"
   grep -Fxq '  cancel-in-progress: false' "$workflow"
   step 'Read and validate release version' | grep -Fxq '        id: release'
   [[ -n "$(step 'Verify installed consumer')" ]]

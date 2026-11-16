@@ -1,0 +1,24 @@
+<bx:script>
+import models.effect.Effect@bxeffect;
+import models.effect.Stream@bxeffect;
+import benchmarks.BenchmarkSupport;
+
+values = [];
+for ( index = 1; index <= 96; index++ ) { values.append( index ); }
+mapRow = value => Effect::sleep( value % 8 == 0 ? 60 : 3 ).as( value );
+sequential = Stream::fromArray( values ).mapEffect( mapRow ).runCollect();
+batched = Stream::fromArray( values ).grouped( 8 )
+	.mapEffect( batch => Effect::forEach( batch, value => mapRow( value ), { concurrency: 8 } ) )
+	.flatMap( batch => Stream::fromArray( batch ) ).runCollect();
+ordered = Stream::fromArray( values ).mapEffect( mapRow, { concurrency: 8 } ).runCollect();
+unordered = Stream::fromArray( values ).mapEffect( mapRow, { concurrency: 8, unordered: true } ).runCollect();
+for ( scenario in [ { name: "sequential", program: sequential }, { name: "batched", program: batched },
+	{ name: "ordered", program: ordered }, { name: "unordered", program: unordered } ] ) {
+	measurement = BenchmarkSupport::measure( () => Effect::runSync( scenario.program ) );
+	if ( scenario.name == "unordered" ) { measurement.value.sort( "numeric" ); }
+	if ( measurement.value != values ) {
+		throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Concurrent Stream changed values or ordering" );
+	}
+	writeOutput( "scenario=#scenario.name# items=96 concurrency=8 medianMs=#measurement.medianMs# samples=5 " );
+}
+</bx:script>
