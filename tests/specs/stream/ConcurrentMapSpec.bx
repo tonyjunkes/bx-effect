@@ -234,6 +234,53 @@ class extends="testbox.system.BaseSpec" {
 				}
 			} );
 
+			it( "keeps pull-acquired resources alive until mapper cleanup on every exit", () => {
+				for ( var mode in [ "sourceFailure", "earlyStop", "interrupt" ] ) {
+					var mapperEntered = new CountDownLatch( 2 );
+					var mapperReleased = new CountDownLatch( 2 );
+					var mapperIndex = new AtomicInteger();
+					var sourceReleased = new AtomicInteger();
+					var events = new java.util.concurrent.CopyOnWriteArrayList();
+					var pending = [ futureNew(), futureNew() ];
+					var source = Stream::fromEffect( Effect::acquireRelease( Effect::succeed( "resource" ), resource =>
+						Effect::sync( () => {
+							if ( !mapperReleased.await( 1, TimeUnit::SECONDS ) ) {
+								throw( type: "bxeffect.testing.ReleaseOrderException", message: "Source released before mapper cleanup" );
+							}
+							sourceReleased.incrementAndGet();
+							events.add( "source" );
+						} ) ) ).flatMap( resource => Stream::fromArray( [ resource, resource ] ) );
+					if ( mode == "sourceFailure" ) {
+						source = source.concat( Stream::fromEffect( Effect::sync( () => awaitGate( mapperEntered ) )
+							.flatMap( () => Effect::fail( "source" ) ) ) );
+					}
+					var mapped = source.mapEffect( resource => {
+						var index = mapperIndex.incrementAndGet();
+						return Effect::fromBoxFuture( () => {
+							mapperEntered.countDown();
+							return pending[ index ];
+						} ).ensuring( Effect::sync( () => { events.add( "mapper" ); mapperReleased.countDown(); } ) );
+					}, { concurrency: 3 } );
+					var fiber = Effect::runFork( ( mode == "earlyStop" ? mapped.take( 1 ) : mapped ).runDrain() );
+					try {
+						awaitGate( mapperEntered );
+						if ( mode == "interrupt" ) { fiber.interrupt(); }
+						if ( mode == "earlyStop" ) { pending[ 1 ].complete( "value" ); }
+						var outcome = fiber.terminationFuture().get( 5000 );
+						expect( sourceReleased.get() ).toBe( 1 );
+						expect( events.toArray() ).toBe( [ "mapper", "mapper", "source" ] );
+						if ( mode == "sourceFailure" ) { expect( outcome.cause().failures() ).toBe( [ "source" ] ); }
+						else if ( mode == "interrupt" ) { expect( outcome.cause().kind() ).toBe( "Interrupt" ); }
+						else { expect( outcome.isSuccess() ).toBeTrue(); }
+					} finally {
+						mapperReleased.countDown();
+						mapperReleased.countDown();
+						for ( var future in pending ) { future.complete( null ); }
+						stopFiber( fiber );
+					}
+				}
+			} );
+
 			it( "inherits Context and closes each mapper's local resources", () => {
 				var tag = ServiceTag::of( "stream/ConcurrentLabel" );
 				var released = new AtomicInteger();

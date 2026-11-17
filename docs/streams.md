@@ -111,7 +111,9 @@ outcomes = Stream::fromArray( userIds ).mapEffect(
 ```
 
 Defects and interruption still terminate this pipeline. Early termination and
-cancellation await mapper cleanup before source release. As with other Effect
+cancellation await mapper cleanup before source release. Resources acquired during
+upstream pulls also remain available until admitted mappers and their cleanup
+finish. As with other Effect
 concurrency, non-cooperative work can delay that boundary. Use the native
 operation's own deadlines where appropriate. Concurrency one uses the existing
 sequential path and its resource lifetime.

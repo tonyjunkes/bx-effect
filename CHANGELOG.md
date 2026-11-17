@@ -14,7 +14,8 @@ All notable changes to BX Effect are documented here.
   signaled waiter is interrupted, live Clock aliases/fractional delays, and
   managed shutdown cleanup retention and cancellation isolation.
 - Give concurrent mapper cleanup one owner when upstream failure races queued
-  delivery, retaining each release failure once.
+  delivery, retaining each release failure once. Keep resources acquired by
+  upstream pulls alive until mapper shutdown and cleanup finish.
 - Reuse the completed managed Layer build and one measured collection completion
   strategy. Preserve sequential Stream and collection fast paths.
 - Add native HTTP, file, and Scheduler acceptance examples; replace assumed race

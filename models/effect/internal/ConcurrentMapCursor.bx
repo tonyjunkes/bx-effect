@@ -64,7 +64,10 @@ class {
 
 	/** Keeps the source producer alive after exhaustion until the cursor closes. */
 	Effect function producerProgram() {
-		return Effect::scoped( produce().flatMap( () => Effect::fromBoxFuture( () => variables.holdOpen ) ) );
+		return Effect::scoped( produce().flatMap( () => Effect::fromBoxFuture( () => variables.holdOpen ) )
+			// Pulls may acquire resources in this Scope. Finish their users before release,
+			// leaving mapper cleanup claims with the consumer to avoid duplicate Causes.
+			.ensuring( Effect::sync( () => variables.mapperScope.stopChildren() ).asVoid() ) );
 	}
 
 	/** Reports whether the interpreter has installed the producer handle. */
