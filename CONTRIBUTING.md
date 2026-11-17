@@ -1,9 +1,8 @@
 # Contributing
 
-Use BoxLang 1.19.0 and Java 21+ for development. The module also supports
-BoxLang 1.18.0; verify that minimum separately before relying on an older runtime.
-Development uses stable TestBox 7.2.2+23 and pinned Derby/ColdBox dependencies.
-They are excluded from the production package.
+Use BoxLang 1.18.0+ and Java 21+ for development. Development uses stable TestBox
+and pinned Derby/ColdBox dependencies; see [box.json](box.json) for their versions.
+These development dependencies are excluded from the production package.
 
 ## Prepare and test
 
