@@ -22,8 +22,8 @@ All notable changes to BX Effect are documented here.
 - Develop and verify against stable BoxLang 1.19.0 and TestBox 7.2.2+23 while
   retaining BoxLang 1.18.0 support. Prepare pinned framework sources with the
   selected runtime and check Windows consumer/launcher paths alongside Linux CI.
-- Refresh application guides and portable skill guidance. Record the module audit
-  and initial research for larger additions separately from the supported API.
+- Refresh application guides and portable skill guidance with examples of the
+  supported features and their ownership contracts.
 
 ## 1.3.2 - 10-16-2026
 

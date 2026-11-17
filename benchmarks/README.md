@@ -49,8 +49,8 @@ The scripts cover:
 
 `CollectionBench.bxm` measures balanced and skewed Cause traversal, repeated
 Stream concatenation construction, and bounded `forEach(discard:true)`. Run it
-with the same isolated-home/config flags above. The release audit records the
-initial before/after samples; these are local evidence, not performance promises.
+with the same isolated-home/config flags above. Capture before/after samples
+for local comparison; these are evidence for that workload, not performance promises.
 
 `CollectionRuntimeBench.bxm` compares a 10,000-value native loop with sequential
 `forEach`, and measures 1,000 immediate Effects at concurrency 1, 8, 9, 16, 32, 128,
