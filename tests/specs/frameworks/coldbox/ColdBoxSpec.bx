@@ -1,4 +1,8 @@
 import models.effect.Effect@bxeffect;
+import models.effect.Stream@bxeffect;
+import models.effect.Result@bxeffect;
+import models.effect.Schedule@bxeffect;
+import examples.native.FetchJson;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.net.URI;
@@ -6,6 +10,55 @@ import java.net.URI;
 class extends="testbox.system.BaseSpec" {
 	function run() {
 		describe( title: "ColdBox application runtime ownership", body: () => {
+			it( "cancels a live native HTTP future and awaits local cleanup", () => {
+				var key = createUUID();
+				var entered = new CountDownLatch( 1 );
+				var release = new CountDownLatch( 1 );
+				var nativeRequest = new java.util.concurrent.atomic.AtomicReference();
+				var releases = new java.util.concurrent.atomic.AtomicInteger();
+				cache().set( "bxeffect/http-delayed/" & key, { entered: entered, release: release }, 60 );
+				var address = "http://127.0.0.1:#cgi.server_port#/tests/frameworks/Delayed.bxm?key=#key#";
+				var fiber = Effect::runFork( Effect::tryBoxFuture( try: () => {
+					var pending = http( address ).get().timeout( 5 ).sendAsync();
+					nativeRequest.set( pending );
+					return pending;
+				}, catch: error => { _tag: "HttpTransportError", message: error.message } )
+					.ensuring( Effect::sync( () => releases.incrementAndGet() ) ) );
+				try {
+					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					fiber.interrupt();
+					expect( fiber.terminationFuture().get( 5000 ).cause().kind() ).toBe( "Interrupt" );
+					expect( nativeRequest.get().isCancelled() ).toBeTrue();
+					expect( releases.get() ).toBe( 1 );
+				} finally {
+					release.countDown();
+					fiber.interrupt();
+					fiber.awaitTermination();
+					cache().clear( "bxeffect/http-delayed/" & key );
+				}
+			} );
+
+			it( "processes native async HTTP responses concurrently with explicit per-request outcomes", () => {
+				var base = "http://127.0.0.1:#cgi.server_port#/examples/coldbox/Index.bxm?name=";
+				var outcomes = Effect::runSync( Stream::fromArray( [ base & "Ada", base ] ).mapEffect(
+					address => FetchJson::get( address ).map( data => Result::success( data ) )
+						.catchAll( error => Effect::succeed( Result::failure( error ) ) ), { concurrency: 2 }
+				).runCollect() );
+				expect( outcomes[ 1 ].value().greeting ).toBe( "Hello, Ada!" );
+				expect( outcomes[ 2 ].error()._tag ).toBe( "HttpStatusError" );
+				expect( outcomes[ 2 ].error().status ).toBe( 400 );
+			} );
+
+			it( "retries a native HTTP status failure by constructing a fresh request", () => {
+				var key = createUUID();
+				try {
+					var data = Effect::runSync( FetchJson::get( "http://127.0.0.1:#cgi.server_port#/tests/frameworks/Retry.bxm?key=#key#" )
+						.retry( Schedule::recurs( 1 ) ) );
+					expect( data.attempt ).toBe( 2 );
+				} finally {
+					cache().clear( "bxeffect/http-retry/" & key );
+				}
+			} );
 			it( "serves the example entry point through the full ColdBox response pipeline", () => {
 				var accepted = sendRequest( "name=Ada", "/examples/coldbox/Index.bxm" );
 				expect( accepted.status ).toBe( 200 );

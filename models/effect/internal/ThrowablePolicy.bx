@@ -42,4 +42,39 @@ class {
 		}
 	}
 
+	/**
+	 * Removes native completion/wait wrappers while retaining meaningful operation causes.
+	 *
+	 * @throwableValue Caught native rejection or factory exception.
+	 */
+	static any function unwrapCompletion( required any throwableValue ) {
+		var candidate = arguments.throwableValue;
+		while ( isInstanceOf( candidate, "java.lang.Throwable" ) ) {
+			var nested = candidate.getCause();
+			if ( isNull( nested ) ) {
+				break;
+			}
+			if ( isInstanceOf( candidate, "java.util.concurrent.ExecutionException" )
+				|| isInstanceOf( candidate, "java.util.concurrent.CompletionException" )
+				|| ( candidate.getClass().getName() == "ortus.boxlang.runtime.types.exceptions.BoxRuntimeException"
+					&& ( isInstanceOf( nested, "java.util.concurrent.ExecutionException" )
+						|| isInstanceOf( nested, "java.util.concurrent.CompletionException" )
+						|| isInstanceOf( nested, "java.util.concurrent.CancellationException" ) ) ) ) {
+				candidate = nested;
+			} else {
+				break;
+			}
+		}
+		return candidate;
+	}
+
+	/**
+	 * Recognizes direct native cancellation and its completion/invocation wrappers.
+	 *
+	 * @throwableValue Thrown value caught at a native wait boundary.
+	 */
+	static boolean function isCancellation( required any throwableValue ) {
+		return isInstanceOf( unwrapCompletion( arguments.throwableValue ), "java.util.concurrent.CancellationException" );
+	}
+
 }

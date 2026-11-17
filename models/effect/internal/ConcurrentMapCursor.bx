@@ -1,0 +1,187 @@
+import bxModules.bxEffect.models.effect.Effect;
+import bxModules.bxEffect.models.effect.Exit;
+import bxModules.bxEffect.models.effect.Queue;
+import bxModules.bxEffect.models.effect.Semaphore;
+import bxModules.bxEffect.models.effect.Scope;
+import bxModules.bxEffect.models.effect.internal.ThrowablePolicy;
+
+/**
+ * One consumer's bounded mapping pipeline. The cursor owns mapper Fibers;
+ * permits remain held until delivery, including completed out-of-order results.
+ */
+class {
+
+	variables.source = null;
+	variables.mapper = null;
+	variables.permits = null;
+	variables.events = null;
+	variables.producer = null;
+	variables.mapperScope = new Scope();
+	variables.holdOpen = null;
+	variables.unordered = false;
+	variables.ready = {};
+	variables.deliveryOrder = new java.util.ArrayDeque();
+	variables.nextInput = 1;
+	variables.nextOutput = 1;
+	variables.sourceDone = false;
+	variables.total = 0;
+	variables.delivered = 0;
+	variables.owePermit = false;
+	variables.closed = new java.util.concurrent.atomic.AtomicBoolean( false );
+
+	/**
+	 * Allocates private coordination without starting the source or any mapper.
+	 * @source Fresh upstream cursor owned by this consumption.
+	 * @mapper Effect-producing transformation.
+	 * @concurrency Maximum started-but-not-delivered mappings.
+	 * @unordered Whether to emit in completion order instead of input order.
+	 */
+	ConcurrentMapCursor function init( required any source, required function mapper, required numeric concurrency, required boolean unordered ) {
+		variables.source = arguments.source;
+		variables.mapper = arguments.mapper;
+		variables.permits = Semaphore::make( arguments.concurrency );
+		// Admission bounds these messages to the window plus producer termination.
+		variables.events = Queue::unbounded();
+		variables.holdOpen = futureNew();
+		variables.unordered = arguments.unordered;
+		return this;
+	}
+
+	/**
+	 * Starts the scoped producer atomically in the interpreter on first demand.
+	 * @demand Maximum downstream demand; each pull emits one ready value.
+	 */
+	Effect function pull( numeric demand = 2147483647 ) {
+		var requested = arguments.demand;
+		return Effect::suspend( () => {
+			if ( variables.closed.get() || requested <= 0 ) { return Effect::succeed( attempt() ); }
+			// Refill only on the next demand: take(1) must not start a replacement.
+			var refill = variables.owePermit ? variables.permits.release() : Effect::succeed( null );
+			variables.owePermit = false;
+			return Effect::startStreamMapInstruction( this ).flatMap( () => refill ).flatMap( () => nextValue() );
+		} );
+	}
+
+	/** Keeps the source producer alive after exhaustion until the cursor closes. */
+	Effect function producerProgram() {
+		return Effect::scoped( produce().flatMap( () => Effect::fromBoxFuture( () => variables.holdOpen ) )
+			// Pulls may acquire resources in this Scope. Finish their users before release,
+			// leaving mapper cleanup claims with the consumer to avoid duplicate Causes.
+			.ensuring( Effect::sync( () => variables.mapperScope.stopChildren() ).asVoid() ) );
+	}
+
+	/** Reports whether the interpreter has installed the producer handle. */
+	boolean function isStarted() {
+		return !isNull( variables.producer );
+	}
+
+	/**
+	 * Installs producer ownership before the interpreter can observe interruption.
+	 * @fiber Producer admitted by the current runtime Scope.
+	 */
+	void function attachProducer( required any fiber ) {
+		variables.producer = arguments.fiber;
+		publishOnCompletion( arguments.fiber, "producer", 0 );
+	}
+
+	/** Acquires admission before each sequential source pull and forks one scoped mapper. */
+	private Effect function produce() {
+		return variables.permits.acquire().flatMap( () => variables.source.pull( 1 ) ).flatMap( batch => {
+			if ( !batch.isPresent() ) {
+				return variables.events.offer( { kind: "end", total: variables.nextInput - 1 } );
+			}
+			var value = batch.get()[ 1 ];
+			var index = variables.nextInput++;
+			return Effect::forkInScopeInstruction(
+				Effect::scoped( Effect::suspend( () => variables.mapper( value ) ) ), variables.mapperScope
+			).flatMap( fiber => {
+				publishOnCompletion( fiber, "mapped", index );
+				return Effect::suspend( () => produce() );
+			} );
+		} );
+	}
+
+	/**
+	 * Publishes native outcomes without creating another task or replacing throwable identity.
+	 * @fiber Child whose public completion includes its local Scope cleanup.
+	 * @kind Producer or mapped-value event discriminator.
+	 * @index Mapping input position; unused for producer completion.
+	 */
+	private void function publishOnCompletion( required any fiber, required string kind, required numeric index ) {
+		var owner = arguments.fiber;
+		var eventKind = arguments.kind;
+		var inputIndex = arguments.index;
+		var notifications = variables.events;
+		owner.completionFuture().handle( ( outcome, error ) => {
+			notifications.offerNative( { kind: eventKind, index: inputIndex, fiber: owner, outcome: outcome, error: error } );
+			return null;
+		} );
+	}
+
+	/** Drains observed failures before delivering a ready value or awaiting another event. */
+	private Effect function nextValue() {
+		return Effect::suspend( () => {
+			var notification = variables.events.poll();
+			if ( notification.isPresent() ) {
+				return acceptEvent( notification.get() ).flatMap( () => nextValue() );
+			}
+			var index = variables.unordered
+				? ( variables.deliveryOrder.isEmpty() ? 0 : variables.deliveryOrder.peekFirst() )
+				: variables.nextOutput;
+			if ( structKeyExists( variables.ready, index ) ) {
+				var value = variables.ready[ index ];
+				structDelete( variables.ready, index );
+				if ( variables.unordered ) { variables.deliveryOrder.removeFirst(); }
+				else { variables.nextOutput++; }
+				variables.delivered++;
+				variables.owePermit = true;
+				return Effect::succeed( attempt( [ value ] ) );
+			}
+			return variables.sourceDone && variables.delivered == variables.total
+				? Effect::succeed( attempt() )
+				: variables.events.take().flatMap( event => acceptEvent( event ) ).flatMap( () => nextValue() );
+		} );
+	}
+
+	/**
+	 * Transfers child cleanup provenance to the consumer before propagating its outcome.
+	 * @event Native outcome notification or source-completion marker.
+	 */
+	private Effect function acceptEvent( required struct event ) {
+		var notification = arguments.event;
+		if ( notification.kind == "end" ) {
+			variables.sourceDone = true;
+			variables.total = notification.total;
+			return Effect::succeed( null );
+		}
+		if ( !isNull( notification.error ) ) {
+			// Canceled public completion has no Exit; close collects terminal cleanup.
+			if ( ThrowablePolicy::isCancellation( notification.error ) ) { return Effect::succeed( null ); }
+			return Effect::sync( () => throw( object: notification.error ) );
+		}
+		return Effect::adoptFiberExitInstruction( notification.fiber, notification.outcome ).map( value => {
+			if ( notification.kind == "mapped" ) {
+				variables.ready[ notification.index ] = value;
+				if ( variables.unordered ) { variables.deliveryOrder.addLast( notification.index ); }
+			}
+			return null;
+		} );
+	}
+
+	/** Stops admission, awaits producer and mapper cleanup, then closes the upstream cursor. */
+	Effect function close() {
+		return Effect::suspend( () => {
+			if ( !variables.closed.compareAndSet( false, true ) ) { return Effect::succeed( null ); }
+			return Effect::sync( () => {
+				if ( isNull( variables.producer ) ) { return Exit::success( null ); }
+				variables.producer.interrupt();
+				variables.producer.awaitTermination();
+				var cleanup = variables.producer.takeCleanupFailure();
+				return isNull( cleanup ) ? Exit::success( null ) : Exit::failure( cleanup );
+			} ).flatMap( outcome => Effect::fromExit( outcome ) )
+				.ensuring( Effect::sync( () => variables.mapperScope.shutdownChildren() ).flatMap( failureCause =>
+					isNull( failureCause ) ? Effect::succeed( null ) : Effect::failCause( failureCause ) ) )
+				.ensuring( variables.source.close() ).ensuring( variables.events.shutdown() );
+		} );
+	}
+}

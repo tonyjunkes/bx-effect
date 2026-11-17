@@ -194,6 +194,47 @@ class {
 	}
 
 	/**
+	 * Lazily maps ordinary factory exceptions and native rejections to expected errors.
+	 * Cancellation stays interruption; invalid futures and throwing error mappers are defects.
+	 *
+	 * @try Zero-argument factory returning a native BoxFuture for each execution.
+	 * @catch Callback receiving the operation failure without native completion wrappers.
+	 */
+	static Effect function tryBoxFuture( required function try, function catch = ( error ) => error ) {
+		return new Effect( {
+			kind : "TryFuture",
+			futureFactory : arguments.try,
+			errorMapper : arguments.catch
+		} );
+	}
+
+	/**
+	 * Builds runtime-private atomic producer admission for a concurrent Stream cursor.
+	 * @cursor Per-consumption concurrent mapping state.
+	 */
+	static Effect function startStreamMapInstruction( required any cursor ) {
+		return new Effect( { kind: "StartStreamMap", cursor: arguments.cursor } );
+	}
+
+	/**
+	 * Forks internal work into an explicitly owned Scope with the current Context.
+	 * @program Child program, including its own local resource lifetime.
+	 * @ownerScope Internal owner responsible for interruption and cleanup claims.
+	 */
+	static Effect function forkInScopeInstruction( required Effect program, required any ownerScope ) {
+		return new Effect( { kind: "Fork", effect: arguments.program, ownerScope: arguments.ownerScope } );
+	}
+
+	/**
+	 * Transfers child cleanup ownership before exposing its already-completed outcome.
+	 * @childFiber Child Fiber owning cleanup provenance.
+	 * @outcome Completed child Exit.
+	 */
+	static Effect function adoptFiberExitInstruction( required any childFiber, required any outcome ) {
+		return new Effect( { kind: "AdoptFiberExit", fiber: arguments.childFiber, outcome: arguments.outcome } );
+	}
+
+	/**
 	 * Acquires lazily and releases at the use boundary before any following work or recovery.
 	 *
 	 * @acquire Effect producing the resource; failed acquisition does not register release.

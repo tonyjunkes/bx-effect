@@ -11,6 +11,26 @@ if ( arrayToList( Effect::runSync( Stream::fromArray( [ 1, 2 ] ).runCollect() ) 
 	throw( type: "bxeffect.testing.ConsumerSmokeFailedException", message: "Stream import or execution failed" );
 }
 
+asyncAttempts = 0;
+asyncProgram = Effect::tryBoxFuture(
+	try: () => {
+		asyncAttempts++;
+		return futureNew( () => 42 );
+	},
+	catch: failure => ( { _tag: "ConsumerAsyncError", message: failure.message } )
+);
+if ( asyncAttempts != 0 || Effect::runSync( asyncProgram ) != 42 || Effect::runSync( asyncProgram ) != 42 || asyncAttempts != 2 ) {
+	throw( type: "bxeffect.testing.ConsumerSmokeFailedException", message: "Lazy native async constructor failed" );
+}
+
+mappedReleases = new java.util.concurrent.atomic.AtomicInteger();
+mapped = Stream::fromArray( [ 1, 2, 3 ] ).mapEffect( value =>
+	Effect::acquireRelease( Effect::succeed( value ), ignored => Effect::sync( () => mappedReleases.incrementAndGet() ) )
+		.map( item => item * 2 ), { concurrency: 2 } );
+if ( arrayToList( Effect::runSync( mapped.runCollect() ) ) != "2,4,6" || mappedReleases.get() != 3 ) {
+	throw( type: "bxeffect.testing.ConsumerSmokeFailedException", message: "Bounded Stream execution or local cleanup failed" );
+}
+
 releases = 0;
 localProgram = Effect::scoped( Effect::acquireRelease( Effect::succeed( 41 ),
 	value => Effect::sync( () => releases++ ) ) ).map( value => value + 1 );

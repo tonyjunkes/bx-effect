@@ -1,0 +1,45 @@
+import models.effect.Effect@bxeffect;
+import models.effect.Queue@bxeffect;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class extends="testbox.system.BaseSpec" {
+
+	function run() {
+		describe( "Queue cancellation handoffs", () => {
+			it( "passes an available value or slot to another waiter when the signalled waiter cancels", () => {
+				for ( var taking in [ true, false ] ) {
+					var source = Queue::bounded( 1 );
+					if ( !taking ) { source.offerNative( "buffered" ); }
+					var firstWaiting = new CountDownLatch( 1 );
+					var secondWaiting = new CountDownLatch( 1 );
+					var checks = new AtomicInteger();
+					// Reject only after the first waiter has received the condition signal.
+					var cancelledControl = { isInterrupted: () => {
+						firstWaiting.countDown();
+						return checks.incrementAndGet() > 1;
+					} };
+					var liveControl = { isInterrupted: () => { secondWaiting.countDown(); return false; } };
+					var first = futureNew( () => taking ? source.takeNative( cancelledControl ) : source.offerNative( "first", cancelledControl ), "io-tasks" );
+					expect( firstWaiting.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					var second = futureNew( () => taking ? source.takeNative( liveControl ) : source.offerNative( "second", liveControl ), "io-tasks" );
+					try {
+						expect( secondWaiting.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+						if ( taking ) { source.offerNative( "available" ); }
+						else { expect( source.poll().get() ).toBe( "buffered" ); }
+						expect( first.get( 5000 ).isInterrupted ).toBeTrue();
+						var accepted = second.get( 1000 );
+						expect( accepted.isInterrupted || accepted.isShutdown ).toBeFalse();
+						if ( taking ) { expect( accepted.value ).toBe( "available" ); }
+						else { expect( source.poll().get() ).toBe( "second" ); }
+					} finally {
+						Effect::runSync( source.shutdown() );
+						first.get( 5000 );
+						second.get( 5000 );
+					}
+				}
+			} );
+		} );
+	}
+}

@@ -42,6 +42,7 @@ Use `Effect::suspend( () => ... )` when the callback itself returns an Effect.
 | `flatMap(mapper)` | Return the next Effect. |
 | `tap(callback)` | Return an Effect while retaining the original success value. |
 | `fromBoxFuture(factory)` | Lazily obtain a native BoxFuture; exceptional completion is a defect. |
+| `tryBoxFuture(try: factory, catch: mapper)` | Lazily map ordinary factory/future errors to expected failures; cancellation remains interruption. |
 
 Choose one outer execution boundary. Compose nested operations with `flatMap`
 rather than repeatedly running them, so they share Context and Scope.
@@ -83,6 +84,18 @@ interruption. Use `catchCause` only when deliberately handling the full Cause,
 and `Effect::failCause(failureCause)` to re-emit it without losing information.
 Use native Attempt for presence/absence, Result for success/expected failure,
 and Exit for complete outcomes including defects and interruption.
+
+For native async APIs, choose `tryBoxFuture` when errors should reach `catchTag`
+or `retry`. Its mapper receives the operation error without native completion
+wrappers. Throwing mappers and invalid factory returns are defects; fatal
+platform conditions bypass mapping. For example, with an existing `requestUrl`:
+
+```boxlang
+requestProgram = Effect::tryBoxFuture(
+	try: () => http( requestUrl ).get().timeout( 10 ).sendAsync(),
+	catch: error => { _tag: "HttpTransportError", message: error.message }
+);
+```
 
 ## Services and application ownership
 
@@ -130,6 +143,8 @@ active run cleanup, then releases managed services once. At application scope,
 create the runtime at startup and close it at application end. Each request
 builds a fresh program with its own input. Shared services must be thread-safe;
 use a datasource name or pool instead of sharing one JDBC connection.
+Each `closeFuture()` call returns an isolated wait on shared shutdown; canceling
+one wait does not cancel cleanup or poison other callers.
 
 WireBox/ColdBox integrations map a runtime instance explicitly; static Effect
 and Layer APIs stay imports. Close it before container services disappear,
@@ -211,7 +226,14 @@ println( arrayToList( Effect::runSync( firstTwo ) ) ); // 2,4
 
 Streams are reusable descriptions; consumers return Effects. Each consumption
 pulls on demand and closes its cursor on every exit. `mapEffect`, `flatMap`, and
-consumers run sequentially, without implicit read-ahead or parallelism.
+consumers run sequentially by default. Opt into bounded concurrent mapping with
+`.mapEffect(load, { concurrency: 8 })`; add `unordered: true` for completion-order
+output. The window counts running and completed-undelivered mappings. A subsequent
+pull refills it; `take(1)` may start up to eight mappings and awaits their cleanup.
+Concurrent mappers have local Scopes, so return computed values rather than
+locally acquired handles. Fail-fast cleanup precedes outer recovery; return
+`Result` values for recoverable per-item failures. `runCollect` retains all
+outputs; prefer `runForEach` or `runFold` for incremental processing.
 Use Deferred for one-shot signaling, Semaphore `withPermit` for scoped permits,
 Queue for FIFO buffering, and PubSub for broadcast. Queues and hubs are explicitly
 application-owned; shut them down at their lifetime boundary. `fromQueue` owns

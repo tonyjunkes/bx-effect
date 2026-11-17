@@ -5,6 +5,8 @@ import models.effect.context.ServiceTag@bxeffect;
 import tests.resources.AsyncTestSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 class extends="testbox.system.BaseSpec" {
 
@@ -271,17 +273,23 @@ class extends="testbox.system.BaseSpec" {
 				expect( Effect::runSync( program ) ).toBe( "preserved" );
 			} );
 
-			it( "returns the first completed branch through BoxLang asyncAny", () => {
-				var fast = Effect::fromBoxFuture( () => futureNew( () => {
-					sleep( 20 );
-					return "fast";
-				} ) );
-				var slow = Effect::fromBoxFuture( () => futureNew( () => {
-					sleep( 150 );
-					return "slow";
-				} ) );
-
-				expect( Effect::runSync( Effect::race( [ slow, fast ] ) ) ).toBe( "fast" );
+			it( "returns the first completed branch and cancels the admitted loser", () => {
+				var entered = new CountDownLatch( 2 );
+				var fast = futureNew();
+				var slow = futureNew();
+				var fiber = Effect::runFork( Effect::race( [
+					Effect::fromBoxFuture( () => { entered.countDown(); return slow; } ),
+					Effect::fromBoxFuture( () => { entered.countDown(); return fast; } )
+				] ) );
+				try {
+					expect( entered.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					fast.complete( "fast" );
+					expect( fiber.terminationFuture().get( 5000 ).value() ).toBe( "fast" );
+					expect( slow.isCancelled() ).toBeTrue();
+				} finally {
+					fiber.interrupt();
+					fiber.terminationFuture().get( 5000 );
+				}
 			} );
 
 			it( "lets the first completed failed race branch win", () => {
@@ -303,17 +311,19 @@ class extends="testbox.system.BaseSpec" {
 			} );
 
 			it( "waits past failures until firstSuccessOf receives a success", () => {
-				var earlyFailure = Effect::fromBoxFuture( () => futureNew( () => {
-					sleep( 20 );
-					return "ignored";
-				} ) ).flatMap( ( ignored ) => Effect::fail( "bad" ) );
-				var laterSuccess = Effect::fromBoxFuture( () => futureNew( () => {
-					sleep( 80 );
-					return "winner";
-				} ) );
-
-				expect( Effect::runSync( Effect::firstSuccessOf( [ earlyFailure, laterSuccess ] ) ) )
-					.toBe( "winner" );
+				var failed = new CountDownLatch( 1 );
+				var pending = futureNew();
+				var earlyFailure = Effect::fail( "bad" ).onExit( outcome => Effect::sync( () => failed.countDown() ) );
+				var laterSuccess = Effect::fromBoxFuture( () => pending );
+				var fiber = Effect::runFork( Effect::firstSuccessOf( [ earlyFailure, laterSuccess ] ) );
+				try {
+					expect( failed.await( 5, TimeUnit::SECONDS ) ).toBeTrue();
+					pending.complete( "winner" );
+					expect( fiber.terminationFuture().get( 5000 ).value() ).toBe( "winner" );
+				} finally {
+					fiber.interrupt();
+					fiber.terminationFuture().get( 5000 );
+				}
 			} );
 
 			it( "returns a failure when firstSuccessOf has no successful branch", () => {

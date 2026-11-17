@@ -112,9 +112,24 @@ class {
 	}
 
 	/**
-	 * Stops child admission, interrupts admitted children, and waits for interpreter finalization.
+	 * Stops and awaits children, then claims their terminal cleanup failures.
 	 */
 	any function shutdownChildren() {
+		var cleanupCause = null;
+		for ( var childFiber in stopChildren() ) {
+			var childCleanup = childFiber.takeCleanupFailure();
+			if ( !isNull( childCleanup ) ) {
+				cleanupCause = isNull( cleanupCause ) ? childCleanup : Cause::sequential( cleanupCause, childCleanup );
+			}
+		}
+		return cleanupCause;
+	}
+
+	/**
+	 * Stops admission and awaits admitted children without claiming cleanup from their owner.
+	 * Used internally when one lifetime must finish before another releases its resources.
+	 */
+	array function stopChildren() {
 		variables.lock.lock();
 		try {
 			variables.acceptingChildren.set( false );
@@ -131,16 +146,11 @@ class {
 				childFiber.interrupt();
 			}
 		}
-		var cleanupCause = null;
 		for ( var childFiber in childrenToStop ) {
 			// Never wait while holding the admission lock: child cleanup may need it.
 			childFiber.awaitTermination();
-			var childCleanup = childFiber.takeCleanupFailure();
-			if ( !isNull( childCleanup ) ) {
-				cleanupCause = isNull( cleanupCause ) ? childCleanup : Cause::sequential( cleanupCause, childCleanup );
-			}
 		}
-		return cleanupCause;
+		return childrenToStop;
 	}
 
 	/**

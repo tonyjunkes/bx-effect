@@ -1,0 +1,3 @@
+# Select features for demonstrated BoxLang value
+
+BX Effect takes inspiration from current stable Effect, with feature selection grounded in concrete BoxLang workflows and an explicit comparison with native BoxLang capabilities. Each addition must justify the semantic value it contributes and its ongoing maintenance cost; upstream availability alone is insufficient. This deliberately limits the supported surface and favors native facilities where they meet the need, while retaining Effect semantics that make composition, failures, concurrency, and resource ownership useful to BoxLang applications.

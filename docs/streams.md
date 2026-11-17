@@ -60,8 +60,65 @@ Early `take`, consumer failure, and Fiber interruption release exactly once.
 
 `map`, `filter`, `take`, `drop`, and `runFold` use synchronous callbacks;
 exceptions are defects. `mapEffect`, `tap`, and `runForEach` take callbacks that
-return Effects and run sequentially. `concat` and `flatMap` are also sequential;
-the MVP has no implicit parallelism or buffering.
+return Effects and run sequentially by default. `concat` and `flatMap` are also
+sequential. Explicit concurrent mapping is described below.
+
+## Bounded concurrent mapping
+
+Use `mapEffect(mapper, { concurrency: N })` for independent asynchronous work.
+The default remains sequential; `N` must be a positive whole number. For example,
+given an application `loadProfile(id)` that returns an Effect:
+
+```boxlang
+profiles = Stream::fromArray( userIds )
+	.mapEffect( id => loadProfile( id ), { concurrency: 8 } )
+	.runForEach( profile => saveProfile( profile ) );
+
+Effect::runSync( profiles );
+```
+
+Use concurrency for independent work that spends time waiting. Sequential
+mapping can be faster for immediate transformations or small cached file reads;
+measure with your native client, payload sizes and latency before choosing a limit.
+
+Results preserve input order. Set `unordered: true` to deliver in completion
+order when rows are independent. Ordered output can wait behind a slow earlier
+item. Both modes bound started-but-not-delivered mappings to `N`, including
+completed results waiting for delivery; the bound counts values, not their byte
+sizes or memory already owned by the source. Use `runForEach`, `runFold`, or
+`runDrain` for incremental consumption; `runCollect` retains the output array.
+
+Work starts on demand. The next pull refills the window, so `take(1)` can start
+up to `N` mappings but starts no replacement after receiving its final value.
+Concurrent mapper work has a local Scope per item: resources acquired inside a
+mapper are released before that mapped value is delivered. Return computed
+values; share longer-lived services through an outer Context or ManagedRuntime.
+
+Mapping fails fast. A failure interrupts and awaits the admitted work, then
+closes the source before following work or outer recovery. Cleanup failures
+remain in the Cause. External side effects already completed are not rolled
+back. To continue past expected per-row failures, return `Result` values:
+
+```boxlang
+import models.effect.Result@bxeffect;
+
+outcomes = Stream::fromArray( userIds ).mapEffect(
+	id => loadProfile( id )
+		.map( profile => Result::success( profile ) )
+		.catchAll( error => Effect::succeed( Result::failure( error ) ) ),
+	{ concurrency: 8, unordered: true }
+);
+```
+
+Defects and interruption still terminate this pipeline. Early termination and
+cancellation await mapper cleanup before source release. Resources acquired during
+upstream pulls also remain available until admitted mappers and their cleanup
+finish. As with other Effect
+concurrency, non-cooperative work can delay that boundary. Use the native
+operation's own deadlines where appropriate. Concurrency one uses the existing
+sequential path and its resource lifetime.
+
+## Sequential operators
 
 `takeWhile(predicate)` excludes the first rejected value and stops further
 pulls; its cursor still closes on early completion. `scan(initial, reducer)`
@@ -108,5 +165,5 @@ completion. The Stream never shuts down the PubSub itself. Because pulls are
 demand-driven, a bounded PubSub naturally backpressures publishers at the
 slowest active Stream consumer.
 
-The MVP deliberately has no Channel, Sink, Chunk, replay, merge, concurrent
-flatMap, dropping/sliding buffer, or Java Stream wrapper.
+The module provides no Channel, Sink, Chunk, replay, merge, concurrent flatMap,
+dropping/sliding buffer, or Java Stream wrapper.

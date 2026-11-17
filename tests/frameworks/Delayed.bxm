@@ -1,0 +1,9 @@
+<bx:script>
+gate = cache().get( "bxeffect/http-delayed/" & url.key ).get();
+gate.entered.countDown();
+if ( !gate.release.await( 10, java.util.concurrent.TimeUnit::SECONDS ) ) {
+	throw( type: "bxeffect.testing.HttpGateTimeoutException", message: "The HTTP cancellation fixture was not released" );
+}
+bx:content type="application/json";
+writeOutput( JSONSerialize( { complete: true } ) );
+</bx:script>

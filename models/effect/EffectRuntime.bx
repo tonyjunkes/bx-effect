@@ -565,6 +565,7 @@ class {
 					break;
 
 				case "AsyncFuture":
+				case "TryFuture":
 				case "Sleep":
 					current = awaitFutureInstruction( current, arguments.controlState );
 					break;
@@ -715,9 +716,9 @@ class {
 					try {
 						var childProgram = current.effect;
 						var childContext = runtimeContext;
-						var childScope = runtimeScope;
+						var childScope = structKeyExists( current, "ownerScope" ) ? current.ownerScope : runtimeScope;
 						var childLayerMemo = runtimeLayerMemo;
-						var childFiber = runtimeScope.forkChild( () => runForkWithContext(
+						var childFiber = childScope.forkChild( () => runForkWithContext(
 							childProgram,
 							childContext,
 							childScope,
@@ -730,6 +731,31 @@ class {
 					} catch ( any error ) {
 						current = interruptionOrDefectInstruction( error, arguments.controlState );
 					}
+					break;
+
+				case "StartStreamMap":
+					try {
+						var mappingCursor = current.cursor;
+						if ( !mappingCursor.isStarted() ) {
+							var producerProgram = mappingCursor.producerProgram();
+							var producerContext = runtimeContext;
+							var producerScope = runtimeScope;
+							var producerMemo = runtimeLayerMemo;
+							mappingCursor.attachProducer( runtimeScope.forkChild( () => runForkWithContext(
+								producerProgram, producerContext, producerScope, producerMemo
+							) ) );
+						}
+						current = { kind: "Succeed", value: null };
+					} catch ( any error ) {
+						current = interruptionOrDefectInstruction( error, arguments.controlState );
+					}
+					break;
+
+				case "AdoptFiberExit":
+					observeChildCleanup( current.fiber, arguments.controlState );
+					current = current.outcome.isSuccess()
+						? { kind: "Succeed", value: current.outcome.value() }
+						: haltInstruction( current.outcome.cause() );
 					break;
 
 				case "ForEach":
@@ -966,17 +992,32 @@ class {
 	private struct function awaitFutureInstruction( required struct instruction, any controlState = null ) {
 		var instructionKind = arguments.instruction.kind;
 		var nativeFuture = null;
+		var invalidFuture = false;
 		try {
 			nativeFuture = instructionKind == "Sleep"
 				? variables.clock.sleep( arguments.instruction.duration, arguments.instruction.unit )
 				: arguments.instruction.futureFactory();
+			if ( instructionKind == "TryFuture" && ( isNull( nativeFuture ) || !isInstanceOf( nativeFuture, "ortus.boxlang.runtime.async.BoxFuture" ) ) ) {
+				invalidFuture = true;
+				throw( type: "bxeffect.InvalidBoxFutureException", message: "Effect.tryBoxFuture() factory must return a native BoxFuture" );
+			}
 			if ( !isNull( arguments.controlState ) ) {
 				arguments.controlState.setActiveFuture( nativeFuture );
 			}
 			notifyObserver( "effect:suspended", { instruction: instructionKind } );
 			return { kind: "Succeed", value: nativeFuture.get() };
 		} catch ( any error ) {
-			return interruptionOrDefectInstruction( error, arguments.controlState );
+			if ( instructionKind == "TryFuture" && !invalidFuture
+				&& ( isNull( arguments.controlState ) || !arguments.controlState.isInterrupted() )
+				&& !ThrowablePolicy::isCancellation( error ) ) {
+				ThrowablePolicy::rethrowIfFatal( error );
+				try {
+					return { kind: "Fail", error: arguments.instruction.errorMapper( ThrowablePolicy::unwrapCompletion( error ) ) };
+				} catch ( any mapperError ) {
+					return interruptionOrDefectInstruction( mapperError, arguments.controlState );
+				}
+			}
+			return interruptionOrDefectInstruction( error, arguments.controlState, true );
 		} finally {
 			notifyObserver( "effect:resumed", { instruction: instructionKind } );
 			if ( !isNull( nativeFuture ) && !isNull( arguments.controlState ) ) {
@@ -1012,13 +1053,18 @@ class {
 	 *
 	 * @throwableValue Thrown value or native throwable wrapper to inspect.
 	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
+	 * @nativeCancellation Whether this catch surrounds a native future factory or wait.
 	 */
 	private struct function interruptionOrDefectInstruction(
 		required any throwableValue,
-		any controlState = null
+		any controlState = null,
+		boolean nativeCancellation = false
 	) {
 		if ( !isNull( arguments.controlState ) && arguments.controlState.isInterrupted() ) {
 			return haltInstruction( Cause::interrupt( arguments.controlState.fiberId() ) );
+		}
+		if ( arguments.nativeCancellation && ThrowablePolicy::isCancellation( arguments.throwableValue ) ) {
+			return haltInstruction( Cause::interrupt( isNull( arguments.controlState ) ? "external" : arguments.controlState.fiberId() ) );
 		}
 		return defectInstruction( arguments.throwableValue );
 	}
@@ -1391,13 +1437,8 @@ class {
 		var concurrencyLimit = arguments.options.concurrency == "unbounded"
 			? arguments.programs.len()
 			: arguments.options.concurrency;
-		if ( concurrencyLimit <= 8 ) {
-			return awaitSmallAll( arguments.programs, arguments.inheritedContext,
-				arguments.parentScope, arguments.sharedLayerMemo, arguments.options, arguments.controlState );
-		}
 		var nextIndex = 1;
-		// Small active sets are cheaper with the existing native asyncAny path.
-		// Callback notifications remove the measured scanning cost at larger limits.
+		// Native notifications avoid rebuilding and scanning the active future set.
 		var completions = {
 			lock: new java.util.concurrent.locks.ReentrantLock(),
 			queue: new ArrayDeque(),
@@ -1448,76 +1489,6 @@ class {
 					completions
 				);
 				running[ nextIndex ] = admitted;
-				nextIndex++;
-			}
-		}
-
-		return collectAllOutcomes( arguments.programs.len(), exitsByIndex, discardResults );
-	}
-
-	/**
-	 * Uses native asyncAny for a small bounded active set, collecting outcomes by input index.
-	 *
-	 * @programs Child Effects in input order.
-	 * @inheritedContext Service bindings inherited by each child Fiber.
-	 * @parentScope Root Scope that atomically admits and owns the children.
-	 * @sharedLayerMemo Runtime-private build memo shared with child Fibers; null creates one when optional.
-	 * @options Validated concurrency and mode settings controlling child admission and failure collection.
-	 * @controlState Optional FiberControl; null means no Fiber cancellation tracking.
-	 */
-	private struct function awaitSmallAll(
-		required array programs,
-		required Context inheritedContext,
-		required Scope parentScope,
-		required LayerMemo sharedLayerMemo,
-		required struct options,
-		any controlState = null
-	) {
-		var discardResults = structKeyExists( arguments.options, "discard" ) && arguments.options.discard;
-		if ( arguments.programs.len() == 0 ) {
-			return { isSuccess: true, values: discardResults ? null : [] };
-		}
-
-		var concurrencyLimit = arguments.options.concurrency == "unbounded"
-			? arguments.programs.len()
-			: arguments.options.concurrency;
-		var nextIndex = 1;
-		var running = [];
-		var exitsByIndex = {};
-
-		while ( nextIndex <= arguments.programs.len() && running.len() < concurrencyLimit ) {
-			running.append( startIndexedChild(
-				arguments.programs[ nextIndex ],
-				nextIndex,
-				arguments.inheritedContext,
-				arguments.parentScope,
-				arguments.sharedLayerMemo
-			) );
-			nextIndex++;
-		}
-
-		while ( running.len() > 0 ) {
-			var completedResult = awaitOne( awaitIndexedFactories( running ), arguments.controlState );
-			var completedExit = completedResult.exit;
-			observeChildCleanup( completedResult.fiber, arguments.controlState );
-			running = removeIndexedFiber( running, completedResult.fiberId );
-
-			if ( completedExit.isFailure() && arguments.options.mode == "failFast" ) {
-				var failedExit = appendCleanup( completedExit, interruptIndexedFibers( running ), arguments.controlState );
-				return { isSuccess: false, cause: failedExit.cause() };
-			}
-
-			if ( !discardResults || completedExit.isFailure() ) {
-				exitsByIndex[ completedResult.index ] = completedExit;
-			}
-			if ( nextIndex <= arguments.programs.len() ) {
-				running.append( startIndexedChild(
-					arguments.programs[ nextIndex ],
-					nextIndex,
-					arguments.inheritedContext,
-					arguments.parentScope,
-					arguments.sharedLayerMemo
-				) );
 				nextIndex++;
 			}
 		}

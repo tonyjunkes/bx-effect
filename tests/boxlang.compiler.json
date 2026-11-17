@@ -1,0 +1,6 @@
+{
+  "modulesDirectory": [],
+  "modules": {
+    "compat-cfml": { "enabled": false }
+  }
+}

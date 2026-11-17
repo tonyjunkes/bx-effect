@@ -4,6 +4,25 @@
 `Effect::try()` maps an ordinary exception into that same channel. Exceptions
 from `sync`, mappers, handlers, or async futures become defects instead.
 
+For native asynchronous operations, use `tryBoxFuture` when rejection should
+be recoverable or retryable:
+
+```boxlang
+requestProgram = Effect::tryBoxFuture(
+	try: () => http( requestUrl ).get().timeout( 10 ).sendAsync(),
+	catch: error => { _tag: "TransportError", message: error.message }
+);
+```
+
+The factory runs on each execution, including retries. Ordinary factory throws
+and rejected futures pass through the error mapper. Native completion/wait
+wrappers are removed; meaningful application exceptions and their causes remain
+available. A throwing mapper or a factory returning something other than a
+native BoxFuture is a defect. Direct and wrapped native cancellation remain
+interruption, including cancellation initiated outside the Fiber; fatal platform
+errors bypass the mapper. `fromBoxFuture` continues to treat ordinary rejection
+as a defect.
+
 ```boxlang
 program = Effect::fail( { _tag: "UserNotFound", id: userId } )
     .catchTag( "UserNotFound", error => Effect::succeed( anonymousUser ) );

@@ -9,6 +9,11 @@ request = Effect::fromBoxFuture(
 );
 ```
 
+Ordinary future rejection is a defect. Use `Effect::tryBoxFuture(try: factory,
+catch: mapper)` when an asynchronous operation's errors belong in the expected
+failure channel, so `catchTag` and `retry` can handle them. Both constructors
+preserve native cancellation as interruption; see the [error model](error-model.md).
+
 `runFuture` yields a native BoxFuture of the success value; `runFutureExit`
 yields a BoxFuture of `Exit`. `runFork` or `program.fork()` creates a logical
 `Fiber` with `await`, `join`, `poll`, `interrupt`, `isDone`, and `id`.
@@ -53,10 +58,8 @@ preserves Context restoration and finalizers, and checks Fiber cancellation
 before starting another item. It does not create a child Fiber per item;
 synchronous user callbacks execute on the thread interpreting the collection.
 Use concurrent options when separate child Fibers are needed. `all` retains
-its child-Fiber execution model even at concurrency 1. Concurrent `all` and
-`forEach` use operation-local native completion notifications for larger active
-sets, retaining native `asyncAny` for small limits. Input order still determines
-results and accumulated Causes; this private strategy does not change the API.
+its child-Fiber execution model even at concurrency 1. Input order determines
+results and accumulated Causes regardless of concurrency.
 
 Use `Effect::all`, `race`, or `firstSuccessOf` for concurrent programs. Branches
 inherit the caller's Context and are owned by its Scope. Cancellation is

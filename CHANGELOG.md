@@ -2,6 +2,30 @@
 
 All notable changes to BX Effect are documented here.
 
+## 1.4.0 - 11-16-2026
+
+- Add lazy `Effect::tryBoxFuture(try:, catch:)` for native asynchronous operations
+  with expected errors. Native cancellation stays interruption; mapper failures
+  and invalid future returns remain defects.
+- Add bounded `Stream.mapEffect(mapper, { concurrency: N })`, with input-order
+  delivery by default and optional `unordered: true`. Admission includes completed
+  waiting values; early termination awaits mapper cleanup before source release.
+- Correct external future cancellation, Queue notification handoff after a
+  signaled waiter is interrupted, live Clock aliases/fractional delays, and
+  managed shutdown cleanup retention and cancellation isolation.
+- Give concurrent mapper cleanup one owner when upstream failure races queued
+  delivery, retaining each release failure once. Keep resources acquired by
+  upstream pulls alive until mapper shutdown and cleanup finish.
+- Reuse the completed managed Layer build and one measured collection completion
+  strategy. Preserve sequential Stream and collection fast paths.
+- Add native HTTP, file, and Scheduler acceptance examples; replace assumed race
+  ordering with explicit synchronization and strengthen cleanup assertions.
+- Develop and verify against stable BoxLang 1.19.0 and TestBox 7.2.2+23 while
+  retaining BoxLang 1.18.0 support. Prepare pinned framework sources with the
+  selected runtime and check Windows consumer/launcher paths alongside Linux CI.
+- Refresh application guides and portable skill guidance with examples of the
+  supported features and their ownership contracts.
+
 ## 1.3.2 - 10-16-2026
 
 - Include a portable `SKILL.md` for application development with BX Effect.

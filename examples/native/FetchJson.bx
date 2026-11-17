@@ -1,0 +1,24 @@
+import models.effect.Effect@bxeffect;
+
+/** Native HTTP with application error tags and lazy JSON decoding. */
+class {
+
+	/**
+	 * Fetches one JSON document, classifying transport, status, and decoding failures.
+	 * @requestUrl Absolute native HTTP client URL.
+	 * @timeoutSeconds Native request timeout; Effect timeouts remain cooperative.
+	 */
+	static Effect function get( required string requestUrl, numeric timeoutSeconds = 10 ) {
+		var address = arguments.requestUrl;
+		var deadline = arguments.timeoutSeconds;
+		return Effect::tryBoxFuture(
+			try: () => http( address ).get().timeout( deadline ).throwOnError( false ).sendAsync(),
+			catch: error => { _tag: "HttpTransportError", message: error.message }
+		).flatMap( response => response.statusCode >= 200 && response.statusCode < 300
+			? Effect::try(
+				try: () => JSONDeserialize( response.fileContent ),
+				catch: error => { _tag: "InvalidJsonResponse", message: error.message }
+			)
+			: Effect::fail( { _tag: "HttpStatusError", status: response.statusCode } ) );
+	}
+}

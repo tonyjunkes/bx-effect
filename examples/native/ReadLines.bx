@@ -1,0 +1,23 @@
+import models.effect.Effect@bxeffect;
+import models.effect.Stream@bxeffect;
+
+/** Demand-driven native file reading with one owned handle per consumption. */
+class {
+
+	/**
+	 * Opens a fresh file lazily and closes it on completion, failure, or early stop.
+	 * @path Existing readable text file.
+	 */
+	static Stream function from( required string path ) {
+		var filePath = arguments.path;
+		return Stream::acquireRelease(
+			Effect::try(
+				try: () => fileOpen( filePath, "read" ),
+				catch: error => { _tag: "FileOpenError", message: error.message }
+			),
+			handle => Effect::sync( () => fileClose( handle ) ),
+			handle => Stream::unfoldEffect( 0, index => Effect::sync( () => fileIsEOF( handle )
+				? attempt() : attempt( { value: fileReadLine( handle ), state: index + 1 } ) ) )
+		);
+	}
+}

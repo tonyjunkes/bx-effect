@@ -1,6 +1,7 @@
 import bxModules.bxEffect.models.effect.Cause;
 import bxModules.bxEffect.models.effect.Effect;
 import bxModules.bxEffect.models.effect.internal.StreamCursor;
+import bxModules.bxEffect.models.effect.internal.ConcurrentMapCursor;
 
 /**
  * A lazy, reusable description of effectful values consumed through
@@ -243,12 +244,31 @@ class {
 	}
 
 	/**
-	 * Transforms values with Effects sequentially, without implicit read-ahead.
+	 * Transforms values sequentially by default, or within an explicit bounded concurrent window.
 	 *
 	 * @mapper Callback receiving a value and returning an Effect producing its replacement.
+	 * @options Optional positive whole concurrency (default 1) and unordered (default false).
 	 */
-	Stream function mapEffect( required function mapper ) {
+	Stream function mapEffect( required function mapper, struct options = {} ) {
 		var mapValue = arguments.mapper;
+		if ( !arguments.options.isEmpty() ) {
+			for ( var optionName in arguments.options ) {
+				if ( !listFindNoCase( "concurrency,unordered", optionName ) ) {
+					throw( type: "bxeffect.InvalidStreamOptionException", message: "Stream.mapEffect() does not support option [#optionName#]" );
+				}
+			}
+			var limit = structKeyExists( arguments.options, "concurrency" ) ? arguments.options.concurrency : 1;
+			if ( !isNumeric( limit ) || limit < 1 || limit != fix( limit ) ) {
+				throw( type: "bxeffect.InvalidConcurrencyException", message: "Stream.mapEffect() concurrency must be a positive whole number" );
+			}
+			var unordered = structKeyExists( arguments.options, "unordered" ) ? arguments.options.unordered : false;
+			if ( !isBoolean( unordered ) ) {
+				throw( type: "bxeffect.InvalidStreamOptionException", message: "Stream.mapEffect() unordered must be boolean" );
+			}
+			if ( limit > 1 ) {
+				return transformCursor( sourceCursor => new ConcurrentMapCursor( sourceCursor, mapValue, limit, unordered ) );
+			}
+		}
 		return transformCursor( ( sourceCursor ) => new StreamCursor(
 			( demand ) => sourceCursor.pull( demand ).flatMap( ( batchAttempt ) =>
 				!batchAttempt.isPresent()

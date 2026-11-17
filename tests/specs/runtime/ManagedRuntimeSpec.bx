@@ -57,22 +57,30 @@ class extends="testbox.system.BaseSpec" {
 
 			it( "shares a concurrent first build", () => {
 				var builds = new java.util.concurrent.atomic.AtomicInteger( 0 );
+				var entered = new java.util.concurrent.CountDownLatch( 1 );
+				var pending = futureNew();
 				var tagToUse = ServiceTag::of( "managed/Concurrent" );
 				var applicationLayer = new Layer( ( baseContext ) =>
-					Effect::fromBoxFuture( () => futureNew( () => {
+					Effect::fromBoxFuture( () => {
 						builds.incrementAndGet();
-						sleep( 50 );
-						return baseContext.add( tagToUse, "shared" );
-					} ) )
+						entered.countDown();
+						return pending.then( ignored => baseContext.add( tagToUse, "shared" ) );
+					} )
 				);
 				var runtime = ManagedRuntime::make( applicationLayer );
 				var first = runtime.runFuture( Effect::service( tagToUse ) );
 				var second = runtime.runFuture( Effect::service( tagToUse ) );
 
-				expect( first.get() ).toBe( "shared" );
-				expect( second.get() ).toBe( "shared" );
-				expect( builds.get() ).toBe( 1 );
-				runtime.close();
+				try {
+					expect( entered.await( 5, java.util.concurrent.TimeUnit::SECONDS ) ).toBeTrue();
+					pending.complete( true );
+					expect( first.get( 5000 ) ).toBe( "shared" );
+					expect( second.get( 5000 ) ).toBe( "shared" );
+					expect( builds.get() ).toBe( 1 );
+				} finally {
+					pending.complete( true );
+					runtime.close();
+				}
 			} );
 
 			it( "retries a failed build after cleaning partial resources", () => {
@@ -194,8 +202,8 @@ class extends="testbox.system.BaseSpec" {
 
 				var firstCloseFuture = runtime.closeFuture();
 				var secondCloseFuture = runtime.closeFuture();
-				expect( firstCloseFuture ).toBe( secondCloseFuture );
-				expect( firstCloseFuture.get().isSuccess() ).toBeTrue();
+				expect( firstCloseFuture.get() ).toBe( secondCloseFuture.get() );
+				expect( secondCloseFuture.get().isSuccess() ).toBeTrue();
 				expect( runtime.close().isSuccess() ).toBeTrue();
 				var rejected = runtime.runSyncExit( Effect::sync( () => userRuns++ ) );
 

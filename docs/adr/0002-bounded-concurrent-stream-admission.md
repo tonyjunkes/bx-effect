@@ -1,0 +1,3 @@
+# Bound concurrent stream work by delivery
+
+Explicit concurrent stream mapping preserves input order by default and offers completion-order output for independent work; existing sequential demand semantics remain unchanged. Its initial admission window counts both running mappings and completed results awaiting delivery, with a total window of `N` for concurrency `N`, so a slow earlier item cannot create an unbounded result backlog. This can limit utilization in ordered mode, so the window must be benchmarked and a larger configurable window justified by evidence; early termination still stops admission, interrupts and awaits admitted work, and retains cleanup failures before following work or recovery.

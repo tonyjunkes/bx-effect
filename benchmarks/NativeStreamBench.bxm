@@ -1,0 +1,82 @@
+<bx:script>
+import models.effect.Effect@bxeffect;
+import models.effect.Stream@bxeffect;
+import benchmarks.BenchmarkSupport;
+import java.lang.System;
+import java.lang.Thread;
+import java.lang.management.ManagementFactory;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+// Repeated native reads isolate file-client work from synthetic timer delays.
+workDirectory = new java.io.File( getDirectoryFromPath( getCurrentTemplatePath() ) & "../.boxlang/native-stream-bench" ).getCanonicalPath();
+if ( !directoryExists( workDirectory ) ) { directoryCreate( workDirectory, true ); }
+payloadPath = workDirectory & "/#createUUID()#.txt";
+payloadBytes = 65536;
+fileWrite( payloadPath, repeatString( "x", payloadBytes ) );
+rows = [];
+for ( index = 1; index <= 256; index++ ) { rows.append( index ); }
+readRow = index => Effect::sync( () => fileRead( payloadPath ) );
+try {
+	for ( scenario in [ "sequential", "batched", "ordered", "unordered" ] ) {
+		source = Stream::fromArray( rows );
+		mapped = scenario == "batched"
+			? source.grouped( 8 ).mapEffect( batch => Effect::forEach( batch, readRow, { concurrency: 8 } ) )
+				.flatMap( batch => Stream::fromArray( batch ) )
+			: source.mapEffect( readRow, { concurrency: scenario == "sequential" ? 1 : 8, unordered: scenario == "unordered" } );
+		measurement = BenchmarkSupport::measure( () => Effect::runSync( mapped.runFold( 0, ( total, value ) => total + value.len() ) ) );
+		if ( measurement.value != rows.len() * payloadBytes ) {
+			throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Native file mapping lost data" );
+		}
+		writeOutput( "nativeFileRead=#scenario# rows=256 bytesPerRow=#payloadBytes# medianMs=#measurement.medianMs# " );
+	}
+
+	// Hold item one while the rest of the admission window finishes. Heap readings
+	// after full-GC requests are indicative; the exact admission assertion is deterministic.
+	for ( limit in [ 8, 32, 128 ] ) {
+		entered = new CountDownLatch( limit );
+		pending = futureNew();
+		reads = new AtomicInteger();
+		inputs = [];
+		for ( index = 1; index <= 2048; index++ ) { inputs.append( index ); }
+		System::gc();
+		Thread::sleep( 50 );
+		before = ManagementFactory::getMemoryMXBean().getHeapMemoryUsage().getUsed();
+		fiber = Effect::runFork( Stream::fromArray( inputs ).mapEffect( index => readRow( index ).flatMap( contents => {
+			reads.incrementAndGet();
+			entered.countDown();
+			return index == 1 ? Effect::fromBoxFuture( () => pending ).as( contents ) : Effect::succeed( contents );
+		} ), { concurrency: limit } ).runFold( 0, ( total, value ) => total + value.len() ) );
+		try {
+			if ( !entered.await( 10, TimeUnit::SECONDS ) ) {
+				throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Native mapping did not fill its window" );
+			}
+			System::gc();
+			Thread::sleep( 50 );
+			stalled = ManagementFactory::getMemoryMXBean().getHeapMemoryUsage().getUsed();
+			if ( reads.get() != limit ) {
+				throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Ordered mapping exceeded admission while stalled" );
+			}
+			pending.complete( null );
+			outcome = fiber.terminationFuture().get( 30000 );
+			if ( outcome.isFailure() || outcome.value() != inputs.len() * payloadBytes || reads.get() != inputs.len() ) {
+				throw( type: "bxeffect.benchmarks.BenchmarkFailureException", message: "Native mapping failed to drain after a stall" );
+			}
+			fiber = null;
+			System::gc();
+			Thread::sleep( 50 );
+			drained = ManagementFactory::getMemoryMXBean().getHeapMemoryUsage().getUsed();
+			writeOutput( "window=#limit# stalledReads=#limit# drainedReads=2048 baselineHeap=#before# stalledHeap=#stalled# drainedHeap=#drained# " );
+		} finally {
+			pending.complete( null );
+			if ( !isNull( fiber ) ) {
+				fiber.interrupt();
+				fiber.awaitTermination();
+			}
+		}
+	}
+} finally {
+	fileDelete( payloadPath );
+}
+</bx:script>

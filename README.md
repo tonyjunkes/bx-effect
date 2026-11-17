@@ -24,13 +24,13 @@ BoxLang applications.
 | Capability | What you can do |
 | --- | --- |
 | Workflow composition | Transform results with `map`, chain operations with `flatMap`, and observe values with `tap`. |
-| Error handling | Recover from expected errors while keeping unexpected defects and interruption distinguishable. Inspect complete outcomes with `Exit` and `Cause`. |
+| Error handling | Map synchronous or native future failures to expected errors while keeping defects and interruption distinguishable. Inspect complete outcomes with `Exit` and `Cause`. |
 | Retries and timing | Retry failed operations, cap backoff waits with `Schedule.maxDelay`, repeat successful ones, and set timeouts. |
 | Concurrency | Run batches with a concurrency limit, race operations, and manage running work through Fibers. Integrate existing `BoxFuture` APIs. |
 | Resource cleanup | Pair acquisition with release and use `Effect::scoped` for local lifetimes that finish children and cleanup before following work. |
 | Dependency management | Supply services through `Context` and `Layer`, and reuse services across runs with `ManagedRuntime`. |
 | Coordination | Signal completion with `Deferred`, limit access with `Semaphore`, buffer work with `Queue`, and broadcast through `PubSub`. |
-| Streams | Transform and consume sequences on demand, including Queue and PubSub sources, with cleanup when consumption ends. |
+| Streams | Transform and consume sequences on demand, with explicit bounded concurrent mapping, Queue/PubSub sources, and cleanup when consumption ends. |
 | Testing and diagnostics | Control time with `TestClock` and observe runtime events with an optional observer or logging adapter. |
 
 ## Installation
@@ -100,6 +100,11 @@ after the initial attempt, importing `models.effect.Schedule@bxeffect` first.
 Retry applies to expected errors only. The [schedules guide](docs/schedules.md)
 covers delays, backoff, repeat, and timeout policies.
 
+For asynchronous operations, `Effect::tryBoxFuture(try: factory, catch: mapper)`
+maps native future rejection and ordinary factory exceptions to expected errors.
+Cancellation remains interruption. See the [HTTP recipe](docs/native-integrations.md#http)
+for a native client example.
+
 ### Process a batch concurrently
 
 `forEach` creates an Effect for each input and limits how many run at once.
@@ -166,54 +171,8 @@ the next concern in your application:
 
 ## Contributing & Testing
 
-Bug reports, documentation improvements, and pull requests are welcome through
-[GitHub](https://github.com/tonyjunkes/bx-effect). Include a small reproduction and
-your BoxLang and Java versions when reporting a bug. Add focused tests for
-behavior changes and update the relevant guide when public behavior changes.
-
-After cloning the repository, install the development dependencies and run the
-TestBox suite from the repository root:
-
-```bash
-# Using CommandBox
-box install
-box run-script test
-```
-
-Development installation includes pinned Derby and ColdBox modules for JDBC and
-framework integration tests. These are excluded from the published
-package and are not production dependencies. The [application example](examples/application/Index.bxm)
-can be run from the checkout with:
-
-```bash
-box boxlang cli --bx-home .boxlang/test --bx-config tests/boxlang.json examples/application/Index.bxm
-```
-
-The suite runs through the BoxLang CLI (via CommandBox or an OS install of BoxLang if preferred).
-CI runs the TestBox suite and module-setting checks on BoxLang `1.18.0`, `latest`, and
-`snapshot`. For performance work, see the [benchmarks](benchmarks/README.md).
-
-The [WireBox and ColdBox recipes](docs/native-integrations.md#wirebox-and-coldbox)
-show explicit runtime mappings and framework shutdown ownership. Framework
-specs live under `tests/specs/frameworks/wirebox` and
-`tests/specs/frameworks/coldbox`. The normal CLI suite runs WireBox and explicitly
-skips the HTTP-only ColdBox cases. With BoxLang MiniServer on PATH, run those via
-the BoxLang test entry point:
-
-```bash
-box run-script test:frameworks
-```
-
-For a standalone BoxLang installation, the same entry point is:
-
-```bash
-boxlang --bx-home .boxlang/framework-runner --bx-config tests/boxlang.json tests/RunFrameworks.bx
-```
-
-The runner uses TestBox's server helper to start a loopback-only server, check
-handlers, reinitialization, and application-end cleanup, then stop its process
-tree. It writes JSON totals and server output under `.boxlang/framework-integration`;
-failed or empty test runs fail the command. Set `MINISERVER_JAR` to
-a MiniServer JAR when its launcher is not on PATH, or
-`BX_EFFECT_FRAMEWORK_PORT` to change the default port `8951`.
-Both test configurations keep CFML compatibility disabled.
+Bug reports and pull requests are welcome through
+[GitHub](https://github.com/tonyjunkes/bx-effect). Include a reproduction and your
+BoxLang/Java versions. See [Contributing](CONTRIBUTING.md) for the BoxLang 1.19.0
+development baseline, dependency preparation, tests, and benchmarks. Production
+applications require no TestBox or framework development dependencies.
